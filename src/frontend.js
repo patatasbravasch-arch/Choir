@@ -1041,12 +1041,16 @@ export async function setup(ctx) {
   let capturedDefaults=null,defaultOperation=false,defaultsRevision=0;
   let closeDefaultEditor;
   unsubs.push(()=>closeDefaultEditor?.());
-  // Settings saved for the retired direct Gemini route fall back to the default TTS connection.
-  function retireGeminiRoute(saved){
+  // Repair older settings before hidden voice styles or retired routes reach validation.
+  function normalizeSavedSettings(saved){
     const value=structuredClone(saved);
     for(const name of ['mode','model','allowVoiceFallback','autoDesignNPCs','batchGemini'])delete value[name];
     delete value.casts?.gemini;delete value.singleVoices?.gemini;
-    for(const actor of [...(value.fixed || []),...(value.leadVoices || []),...Object.values(value.casts || {}).flat(),value.npcPolicy])if(actor?.route==='gemini')actor.route='';
+    for(const actor of [...(value.fixed || []),...(value.leadVoices || []),...Object.values(value.casts || {}).flat()]){
+      if(actor?.route==='gemini')actor.route='';
+      if(typeof actor?.style==='string')actor.style=actor.style.slice(0,600);
+    }
+    if(value.npcPolicy?.route==='gemini')value.npcPolicy.route='';
     for(const id in value.extraVoiceRoutes)value.extraVoiceRoutes[id]=value.extraVoiceRoutes[id].filter(route=>route!=='gemini');
     return value;
   }
@@ -2152,11 +2156,11 @@ export async function setup(ctx) {
     const defaultRevision=defaultsRevision;
     const [globalSaved,saved,preset]=await Promise.all([ctx.settings.get(GLOBAL_SETTINGS_KEY),id?ctx.settings.get(settingsKey(id)):null,ctx.settings.get(CAPTURED_DEFAULTS_KEY)]);
     if(disposed || version!==loadVersion)return;
-    if(defaultRevision===defaultsRevision)capturedDefaults=[1,2].includes(preset?.version)?retireGeminiRoute({version:2,...(Array.isArray(preset.leadVoices)?{leadVoices:preset.leadVoices}:{}),...(Array.isArray(preset.voiceCatalogue)?{voiceCatalogue:preset.voiceCatalogue}:{}),...(preset.npcPolicy || preset.preferences?.npcPolicy?{npcPolicy:preset.npcPolicy || preset.preferences.npcPolicy}:{})}):null;
+    if(defaultRevision===defaultsRevision)capturedDefaults=[1,2].includes(preset?.version)?normalizeSavedSettings({version:2,...(Array.isArray(preset.leadVoices)?{leadVoices:preset.leadVoices}:{}),...(Array.isArray(preset.voiceCatalogue)?{voiceCatalogue:preset.voiceCatalogue}:{}),...(preset.npcPolicy || preset.preferences?.npcPolicy?{npcPolicy:preset.npcPolicy || preset.preferences.npcPolicy}:{})}):null;
     const preferences={...preferenceSnapshot(preset?.preferences || await ctx.settings.get('settings:defaults')),...preferenceSnapshot(saved),...preferenceSnapshot(globalSaved)};
     if(disposed || version!==loadVersion)return;
     const legacyCast=!saved && !capturedDefaults && Array.isArray(globalSaved?.fixed)?globalSaved:null;
-    config=retireGeminiRoute({...defaults(),...Object.fromEntries(preferenceFields.filter(name=>preferences && Object.hasOwn(preferences,name)).map(name=>[name,preferences[name]])),...(legacyCast || {}),...(saved || {}),...preferences});
+    config=normalizeSavedSettings({...defaults(),...Object.fromEntries(preferenceFields.filter(name=>preferences && Object.hasOwn(preferences,name)).map(name=>[name,preferences[name]])),...(legacyCast || {}),...(saved || {}),...preferences});
     config.plannerMode=resolvePlannerMode(preferences);
     config.useFastClassifier=config.plannerMode==='heuristic';config.useJev=config.plannerMode==='jev';
     if(!saved && !legacyCast)config.fixed[0].voice='';
@@ -3458,7 +3462,7 @@ export async function setup(ctx) {
   $('exportCast').onclick=()=>{$('castJson').value=JSON.stringify(castExport(capture()),null,2);status('Cast exported below. Copy this JSON to transfer it. Credentials are excluded.');};
   $('importCast').onclick=()=>run(async()=>{
     if(!chatId)throw new Error('Open a chat first.');
-    const imported=castImport(retireGeminiRoute(JSON.parse($('castJson').value))),candidate={...capture(),...imported};
+    const imported=castImport(normalizeSavedSettings(JSON.parse($('castJson').value))),candidate={...capture(),...imported};
     const routes=new Set([scope(candidate),...candidate.fixed.map(actor=>actor.route || scope(candidate)),...Object.keys(candidate.casts),...Object.keys(candidate.singleVoices || {}),...Object.values(candidate.casts).flat().map(actor=>actor.route).filter(Boolean)]);
     for(const route of routes)await ensureCatalogue(route);
     for(const [route,choices] of Object.entries(candidate.singleVoices || {}))for(const voice of Object.values(choices))if(voice && !voiceCatalogues.get(route)?.some(v=>v.id===voice))throw new Error(`Imported voice ${voice} is unavailable on ${route}.`);

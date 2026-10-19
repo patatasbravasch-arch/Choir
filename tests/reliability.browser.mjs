@@ -312,6 +312,35 @@ const playedFoley=async h=>(await Promise.all(h.audioBlobs.map(blob=>blob.text()
 
 const captureDefault=h=>{h.$('captureDefaults').click();const dialog=()=>document.querySelector('[role="dialog"][aria-label="Set default"]');[...dialog().querySelectorAll('button')].find(button=>button.textContent==='Use current chat settings').click();[...dialog().querySelectorAll('button')].find(button=>button.textContent==='Save default').click();};
 
+test('legacy voice styles are bounded across saved leads and NPC connections before planning and playback',async()=>{
+ const h=await harness();try{
+  const saved=h.store.get('chat:chat-a'),longStyle='Warm and measured. '.repeat(50),bounded=longStyle.slice(0,600);
+  saved.fixed[0].style=longStyle;saved.fixed[2].style=longStyle;
+  saved.casts['native:a'][0].style=longStyle;saved.casts['native:b']=[{speaker:'Other guard',voice:'g',style:longStyle}];
+  await h.reload();await h.plan();await h.play();
+  const cast=h.requests.filter(request=>request.action==='plan').at(-1).input.config;
+  assert.equal(cast.fixed[0].style,bounded);assert.equal(cast.fixed[2].style,bounded);assert.equal(cast.npcs[0].style,bounded);
+  const persisted=h.store.get('chat:chat-a');assert.equal(persisted.casts['native:b'][0].style,bounded);
+  assert.equal(persisted.fixed[1].style,'');assert.equal(persisted.fixed[2].pronunciation,'Mira: mee-rah');assert.equal(persisted.fixed[2].voice,'m');
+  assert.equal(h.synthesis.length,4);assert.equal(h.message.content,'At dawn. "Hello." "Wait." The gate closed.');
+ }finally{await h.close();}
+});
+
+test('legacy default voice styles can be saved and applied without clearing omitted styles',async()=>{
+ const h=await harness();try{
+  const saved=h.store.get('chat:chat-a'),longStyle='Clear narration. '.repeat(50),exactStyle='s'.repeat(600);
+  saved.fixed[2].style='Independent character style';
+  h.store.set('settings:captured-defaults',{version:2,leadVoices:saved.fixed.map((actor,index)=>({voice:actor.voice,route:actor.route || '',...(index===0?{style:longStyle}:index===1?{style:exactStyle}:{})}))});
+  await h.reload();h.$('captureDefaults').click();
+  const dialog=document.querySelector('[role="dialog"][aria-label="Set default"]');[...dialog.querySelectorAll('button')].find(button=>button.textContent==='Save default').click();
+  await until(()=>h.$('defaultStatus').textContent.startsWith('Default saved.'));
+  assert.equal(h.store.get('settings:captured-defaults').leadVoices[0].style,longStyle.slice(0,600));
+  h.$('applyDefaults').click();await until(()=>h.$('defaultStatus').textContent.startsWith('Default applied'));
+  const applied=h.store.get('chat:chat-a');assert.equal(applied.fixed[0].style,longStyle.slice(0,600));assert.equal(applied.fixed[1].style,exactStyle);assert.equal(applied.fixed[2].style,'Independent character style');
+  await h.plan();await h.play();assert.equal(h.synthesis.length,4);
+ }finally{await h.close();}
+});
+
 test('cast defaults contain only lead and NPC choices; cancel and navigation discard drafts',async()=>{
  const h=await harness();try{
   const current=structuredClone(h.store.get('chat:chat-a')),get=()=>document.querySelector('[role="dialog"][aria-label="Set default"]'),button=name=>[...get().querySelectorAll('button')].find(item=>item.textContent===name);
