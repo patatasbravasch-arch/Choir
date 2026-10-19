@@ -92,9 +92,46 @@ function normalizeName(value) {
   return String(value || '').normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
+const escapePattern = value => value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+
+// Preserve older free-form instructions. Only unambiguous name mappings and
+// hyphenated respellings are interpreted as pronunciation rules.
+function namePronunciation(actor) {
+  if(Object.hasOwn(actor,'sayAs'))return typeof actor.sayAs==='string'?actor.sayAs.trim():'';
+  const legacy=actor.pronunciation?.trim() || '';
+  const name=escapePattern(actor.speaker || '');
+  const explicit=name && legacy.match(new RegExp(`^(?:pronounce\\s+)?${name}\\s*(?::|=|is pronounced as|is pronounced|as)\\s*["“']?(.+?)["”']?\\.?$`,'iu'));
+  const spelling=(explicit?.[1] || (/^[\p{L}\p{M}]+(?:[-‐‑][\p{L}\p{M}]+)+$/u.test(legacy)?legacy:'')).trim();
+  return spelling.length<=120 && !/[<>\[\]\r\n]/u.test(spelling)?spelling:'';
+}
+
+function namePronunciations(actors=[]) {
+  const rules=new Map();
+  for(const actor of actors){
+    const name=actor.speaker?.trim(),sayAs=namePronunciation(actor);
+    if(name && normalizeName(name)!=='narrator' && sayAs && sayAs!==name)rules.set(normalizeName(name),{name,sayAs});
+  }
+  return [...rules.values()].sort((a,b)=>b.name.length-a.name.length || a.name.localeCompare(b.name));
+}
+
+function wholeNamePattern(names) {
+  return names.length?new RegExp(`(?<![\\p{L}\\p{M}\\p{N}_-])(?:${names.map(escapePattern).join('|')})(?![\\p{L}\\p{M}\\p{N}_-])`,'giu'):null;
+}
+
+function respellNames(text,actors=[]) {
+  const rules=namePronunciations(actors),pattern=wholeNamePattern(rules.map(rule=>rule.name));
+  const spellings=new Map(rules.map(rule=>[normalizeName(rule.name),rule.sayAs]));
+  // One pass prevents rules from rewriting each other's replacement text.
+  return pattern?text.replace(pattern,name=>spellings.get(normalizeName(name))):text;
+}
+
 // Multi-character cards commonly give each person a top-level heading or named XML section.
 // Require those explicit profiles before splitting a title: "War and Peace" is not a cast list.
 function characterCardRoles(card={}) {return characterCardRoleDiscovery(card).roles;}
+
+// These labels describe card structure or authoring rules, not a person's
+// identity. A mention of "main character" inside them is not profile evidence.
+const cardSectionName=value=>/^(?:speech|personality|appearance|background|history|relationships|likes|dislikes|behavio[u]?r|notes|details|voice|goals|traits|scenario|instructions?|guidelines?|rules?|examples?|example\s*dialogue|(?:narrative|narration|story|storytelling|writing|roleplay|role\s*play|response|dialogue|system|character|formatting|output)\s*(?:guidelines?|rules?|instructions?|requirements?|constraints?|style|format))$/i.test(String(value || '').replace(/[*_`]/g,'').replace(/[-:：]+/g,' ').trim());
 
 // Check all card fields and keep each profile inside its own section.
 function characterCardRoleDiscovery(card={}) {
@@ -104,6 +141,7 @@ function characterCardRoleDiscovery(card={}) {
   const titleNames=title.split(/\s+and\s+|\s*[&+]\s*|,\s*/i).map(name=>name.trim()).filter(Boolean);
   const nameFields=text=>[...text.matchAll(/^\s*(?:[-*]\s*)?(?:\*\*)?(?:Character\s+)?Name(?:\*\*)?\s*:\s*([^\n\r]+)/gim)].map(match=>clean(match[1]));
   const profiles=[];let needsAnalysis=false;
+  const secondary=value=>/^(?:NPCs?|supporting (?:cast|characters?)|secondary (?:cast|characters?)|side characters?|incidental characters?)$/i.test(String(value || '').trim());
   const add=(name,aliases,description,start)=>profiles.push({name,aliases,description:description.trim().slice(0,8000),__start:start});
   for(const field of ['description','personality','scenario','first_mes']){
   const fieldStart=profiles.length;
@@ -113,22 +151,26 @@ function characterCardRoleDiscovery(card={}) {
     const data=JSON.parse(description.replace(/^\s*```(?:json)?\s*|\s*```\s*$/g,''));
     const entries=Array.isArray(data)?data:data.characters || data.cast || data.profiles;
     if(Array.isArray(entries) && entries.length){
-      profiles.push(...validateCardRoles(entries.map(entry=>({name:entry.name,aliases:entry.aliases || [],description:typeof entry.description==='string'?entry.description:JSON.stringify(entry)}))));
+      profiles.push(...validateCardRoles(entries.filter(entry=>!secondary(entry.role || entry.category || entry.type)).map(entry=>({name:entry.name,aliases:entry.aliases || [],description:typeof entry.description==='string'?entry.description:JSON.stringify(entry)}))));
       continue;
     }
   }catch{}
   const headings=[...description.matchAll(/^(#{1,6})[ \t]+([^#\n\r]{1,100})[ \t]*$/gm)].map(match=>({name:clean(match[2]),level:match[1].length,start:match.index,end:match.index+match[0].length}));
   const sections=[...description.matchAll(/(?=<([\w-]+)\b[^>]*>([\s\S]*?)<\/\1\s*>)/g)].map(match=>({tag:match[1],text:match[2],start:match.index})).sort((a,b)=>a.text.length-b.text.length);
+  const excludedSpans=[...headings.filter(heading=>secondary(heading.name) || cardSectionName(heading.name)).map(heading=>[heading.start,headings.find(next=>next.start>heading.start && next.level<=heading.level)?.start ?? description.length]),...sections.filter(section=>secondary(section.tag.replace(/[_-]/g,' ')) || cardSectionName(section.tag)).map(section=>[section.start,section.start+section.text.length+section.tag.length*2+5])];
+  const excludedProfile=(start,text)=>excludedSpans.some(([from,to])=>start>=from && start<to) || /^\s*(?:[-*]\s*)?(?:role|category|type)\s*:\s*(?:NPC|supporting character|secondary character)\b/im.test(text);
   const candidates=headings.flatMap((heading,index)=>{
     const next=headings[index+1];
     const block=description.slice(heading.end,next?.start),names=nameFields(block);
+    if(excludedProfile(heading.start,block))return [];
     const inTitle=titleNames.some(name=>normalizeName(name)===normalizeName(heading.name));
     const namedSection=sections.some(section=>normalizeName(section.tag.replace(/[_-]/g,' '))===normalizeName(heading.name));
-    const explicitLead=!/^(?:speech|personality|appearance|background|history|relationships|likes|dislikes|behavio[u]?r|notes|details|voice|goals|traits|scenario)$/i.test(heading.name) && /\b(?:lead|primary character|main character|playable character)\b/i.test(block);
+    const explicitLead=/\b(?:lead|primary character|main character|playable character)\b/i.test(block);
     return names.length===1 || inTitle || namedSection || explicitLead?[{...heading,fullName:names.length===1?names[0]:undefined}]:[];
   });
   const spans=[],seenSections=new Set();
   for(const section of sections){
+    if(excludedProfile(section.start,section.text))continue;
     const names=nameFields(section.text);
     const heading=candidates.find(item=>item.start>=section.start && item.start<section.start+section.text.length && (normalizeName(item.name)===normalizeName(section.tag.replace(/[_-]/g,' ')) || names.some(name=>normalizeName(name)===normalizeName(item.fullName))));
     const sectionTitle=titleNames.find(name=>normalizeName(name)===normalizeName(section.tag.replace(/[_-]/g,' ')));
@@ -172,7 +214,7 @@ function characterCardRoleDiscovery(card={}) {
 function validateCardRoles(roles) {
   if(!Array.isArray(roles) || roles.length>20)throw new Error('Card analysis must return at most 20 lead characters.');
   const names=new Set();
-  const result=roles.map(role=>{
+  const result=roles.filter(role=>!cardSectionName(role?.name)).map(role=>{
     const name=typeof role?.name==='string'?role.name.trim():'';
     if(!name || name.length>100 || ['narrator','persona','user','{{user}}','{{char}}'].includes(normalizeName(name)) || names.has(normalizeName(name)))throw new Error('Card analysis returned invalid or duplicate character names.');
     names.add(normalizeName(name));
@@ -183,6 +225,31 @@ function validateCardRoles(roles) {
   const aliasCounts=new Map();for(const role of result)for(const alias of new Set(role.aliases.map(normalizeName)))aliasCounts.set(alias,(aliasCounts.get(alias) || 0)+1);
   for(const role of result)role.aliases=[...new Set(role.aliases)].filter(alias=>!names.has(normalizeName(alias)) && aliasCounts.get(normalizeName(alias))===1);
   return result;
+}
+
+// Evidence must still occur in one card field. Normalize presentation only;
+// paraphrases and invented excerpts are not evidence for a new lead.
+function cardAnalysisRoles(rawRoles,card={}) {
+  const candidates=validateCardRoles(rawRoles);
+  const normalize=value=>String(value || '')
+    .replace(/<\/?(?:p|div|li|h[1-6]|br|section|article|blockquote)\b[^>]*>/gi,' ').replace(/<[^>]*>/g,'')
+    .replace(/&(quot|apos|nbsp|amp|lt|gt|#\d+|#x[a-f0-9]+);/gi,(entity,name)=>{
+      const known={quot:'"',apos:"'",nbsp:' ',amp:'&',lt:'<',gt:'>'},key=name.toLowerCase();
+      if(Object.hasOwn(known,key))return known[key];
+      const point=key.startsWith('#x')?parseInt(key.slice(2),16):Number(key.slice(1));
+      return Number.isInteger(point) && point>0 && point<=0x10ffff?String.fromCodePoint(point):entity;
+    })
+    .normalize('NFKC').replace(/[\u2018\u2019]/g,"'").replace(/[\u201c\u201d]/g,'"')
+    .replace(/(\*{1,3}|_{1,3}|`{1,3})([^\n]*?)\1/g,'$2').replace(/\s+/gu,' ').trim().toLowerCase();
+  const sources=['name','description','personality','scenario','first_mes'].map(field=>normalize(card[field]));
+  const rawByName=new Map(rawRoles.map(role=>[normalizeName(role?.name),role]));
+  const verified=new Set(candidates.flatMap(role=>{
+    const quote=rawByName.get(normalizeName(role.name))?.evidence;
+    if(typeof quote!=='string' || !quote.trim() || quote.length>600)return [];
+    const evidence=normalize(quote);
+    return evidence && sources.some(source=>source.includes(evidence))?[normalizeName(role.name)]:[];
+  }));
+  return validateCardRoles(rawRoles.filter(role=>verified.has(normalizeName(role?.name))));
 }
 
 // A decorated single-character card title is another name for an existing lead,
@@ -379,14 +446,15 @@ function parsePlanJson(value) {
 }
 
 function validateCastConfig(config) {
-  if (!config || !Array.isArray(config.voices) || !config.voices.length || config.voices.length > 1000) throw new Error('Load an available voice list first.');
+  const communityRoute=route=>['community','both'].includes(config?.communityRoutes?.[route || config?.defaultRoute || '']);
+  if (!config || !Array.isArray(config.voices) || !config.voices.length && !Object.values(config.communityRoutes || {}).some(source=>['community','both'].includes(source)) || config.voices.length > 1000) throw new Error('Load an available voice list first.');
   const voices = new Set(config.voices.map(v => v.id));
   const available=(actor)=>config.voices.some(v=>v.id===actor.voice && (v.route || '')===(actor.route || config.defaultRoute || ''));
   if ([...voices].some(id => typeof id !== 'string' || !id || id.length > 200)) throw new Error('Invalid voice catalogue.');
   if (!Array.isArray(config.fixed) || !config.fixed.length || config.fixed.length > 50) throw new Error('Configure narrator, persona and main characters.');
   const names = new Set();
   for (const entry of config.fixed) {
-    if(!config.voices.some(v=>(v.route || '')===(entry.route || config.defaultRoute || '')))throw new Error(`Load the voice catalogue for ${entry.speaker}'s TTS connection.`);
+    if(!config.voices.some(v=>(v.route || '')===(entry.route || config.defaultRoute || '')) && !(communityRoute(entry.route) && entry.voice===''))throw new Error(`Load the voice catalogue for ${entry.speaker}'s TTS connection.`);
     if(entry.gender !== undefined && !['auto','female','male','neutral'].includes(entry.gender))throw new Error('Invalid voice gender preference.');
     const name = normalizeName(entry.speaker);
     if (!name || name.length > 100 || names.has(name)) throw new Error('Every fixed speaker must have a unique name.');
@@ -404,7 +472,7 @@ function validateCastConfig(config) {
   }
   if (!Array.isArray(config.npcs) || config.npcs.length > 500) throw new Error('Invalid NPC cast.');
   for (const npc of config.npcs) {
-    if(!config.voices.some(v=>(v.route || '')===(npc.route || config.defaultRoute || '')))throw new Error(`Load the voice catalogue for ${npc.speaker}'s TTS connection.`);
+    if(!config.voices.some(v=>(v.route || '')===(npc.route || config.defaultRoute || '')) && !(communityRoute(npc.route) && npc.voice===''))throw new Error(`Load the voice catalogue for ${npc.speaker}'s TTS connection.`);
     if(npc.gender !== undefined && !['auto','female','male','neutral'].includes(npc.gender))throw new Error('Invalid NPC voice gender preference.');
     const name = normalizeName(npc.speaker);
     if (!name || names.has(name) || (npc.voice !== '' && !available(npc))) throw new Error(`Invalid or conflicting NPC assignment: ${npc.speaker}`);
@@ -422,6 +490,7 @@ function validateCastConfig(config) {
       names.add(key);own.add(key);
     }
     for(const field of ['pronunciation','accent'])if(actor[field] !== undefined && (typeof actor[field]!=='string' || actor[field].length>300))throw new Error(`Invalid ${field} preference.`);
+    if(actor.sayAs!==undefined && (typeof actor.sayAs!=='string' || actor.sayAs.length>120 || /[<>\[\]\r\n]/u.test(actor.sayAs)))throw new Error('Say name as must be plain pronunciation spelling, up to 120 characters.');
     if(actor.excluded !== undefined && typeof actor.excluded!=='boolean')throw new Error('Invalid character exclusion.');
   }
   return config;
@@ -621,6 +690,41 @@ function mixerVolume(master, speaker, channels) {
   return Math.max(0,Math.min(1,Number(master ?? 1)))*Math.max(0,Math.min(MAX_CHANNEL_VOLUME,Number(channel.volume ?? 1)))*(channel.mute || (solo && !channel.solo)?0:1);
 }
 
+// Playback speed and the pause between spoken blocks. Stored values are clamped and snapped to these steps.
+// Speed can be typed or stepped from 0.07 to 16 times, the browser maximum. The mixer slider shows the practical part, 0.25 to 4.
+const PLAYBACK_RATE_LIMITS={min:0.07,max:16,step:0.01,fallback:1};
+const VOICE_GAP_LIMITS={min:0,max:3000,step:50,fallback:0};
+function snapToLimits(value,{min,max,step,fallback}){
+  if(value===undefined || value===null || value==='' || typeof value==='boolean')return fallback;
+  const number=Number(value);
+  if(!Number.isFinite(number))return fallback;
+  const clamped=Math.min(max,Math.max(min,number));
+  return Number((min+Math.round((clamped-min)/step)*step).toFixed(2));
+}
+const normalizePlaybackRate=value=>snapToLimits(value,PLAYBACK_RATE_LIMITS);
+const normalizeVoiceGap=value=>snapToLimits(value,VOICE_GAP_LIMITS);
+// The user's top end for the speed sliders. Typed speeds still reach the full PLAYBACK_RATE_LIMITS range.
+const SPEED_SLIDER_MAX_LIMITS={min:1,max:16,step:0.25,fallback:4};
+const normalizeSpeedSliderMax=value=>snapToLimits(value,SPEED_SLIDER_MAX_LIMITS);
+// A speaker's own speed lives beside its volume in the mixer state (channels[speaker].speed). It replaces the playback speed for that speaker. Null means no own speed: the speaker follows the playback speed.
+function speakerPlaybackRate(channels, speaker) {
+  const channel=channels && Object.hasOwn(channels,speaker)?channels[speaker]:{};
+  const value=channel?.speed;
+  if(value===undefined || value===null || value==='' || typeof value==='boolean' || !Number.isFinite(Number(value)))return null;
+  return normalizePlaybackRate(value);
+}
+// A speaker's own speed replaces the playback speed for that speaker. Without one, the playback speed applies.
+function effectivePlaybackRate(globalRate, channels, speaker) {
+  return speakerPlaybackRate(channels,speaker) ?? normalizePlaybackRate(globalRate);
+}
+// Browsers play only inside their own range. A value outside it moves to the nearest end they accept.
+const BROWSER_PLAYBACK_RATE_LIMITS={min:0.0625,max:16};
+function browserPlaybackRate(rate) {
+  const number=Number(rate);
+  if(!Number.isFinite(number))return 1;
+  return Math.min(BROWSER_PLAYBACK_RATE_LIMITS.max,Math.max(BROWSER_PLAYBACK_RATE_LIMITS.min,number));
+}
+
 function loudnessGain(channels, target=0.12) {
   let squares=0,peak=0,count=0;
   for(const samples of channels)for(const sample of samples){squares+=sample*sample;peak=Math.max(peak,Math.abs(sample));count++;}
@@ -676,7 +780,8 @@ function castImport(raw) {
   }
   const clean=actor=>{
     if(!actor || typeof actor.speaker!=='string' || typeof actor.voice!=='string' || typeof actor.style!=='string')throw new Error('Invalid imported cast row.');
-    return Object.fromEntries(['speaker','voice','style','route','gender','aliases','pronunciation','accent','excluded'].filter(key=>actor[key]!==undefined).map(key=>[key,structuredClone(actor[key])]));
+    if(actor.sayAs!==undefined && (typeof actor.sayAs!=='string' || actor.sayAs.length>120 || /[<>\[\]\r\n]/u.test(actor.sayAs)))throw new Error('Invalid imported name pronunciation.');
+    return Object.fromEntries(['speaker','voice','style','route','gender','aliases','pronunciation','sayAs','accent','excluded'].filter(key=>actor[key]!==undefined).map(key=>[key,structuredClone(actor[key])]));
   };
   return {...routing,fixed:raw.fixed.map(clean),casts:Object.fromEntries(Object.entries(raw.casts).map(([route,actors])=>{
     if(!Array.isArray(actors) || actors.length>500 || !/^native:[\w.-]+$/.test(route))throw new Error('Invalid imported cast provider.');
@@ -757,23 +862,35 @@ function speechRequestLimits(provider = '', model = '') {
   return {maxChars:2000};
 }
 
-function splitSegment(segment, maxChars = 350, maxBytes = Infinity) {
+function splitSegment(segment, maxChars = 350, maxBytes = Infinity, {transform=text=>text,atomic=[]}={}) {
   if (!Number.isInteger(maxChars) || maxChars < 80 || maxChars > MAX_SPEECH_CHARS) throw new Error('Chunk size must be 80–10000 characters.');
   if(maxBytes!==Infinity && (!Number.isInteger(maxBytes) || maxBytes<80))throw new Error('Speech byte budget must be at least 80.');
   const bytes=text=>maxBytes===Infinity?0:new TextEncoder().encode(text).length;
+  const fits=text=>{const speech=transform(text);return speech.length<=maxChars && bytes(speech)<=maxBytes;};
+  const names=wholeNamePattern(atomic);
   const out = [];
   let text = segment.text;
-  while (text.length > maxChars || bytes(text)>maxBytes) {
+  while (!fits(text)) {
     let limit=Math.min(text.length,maxChars);
-    if(bytes(text.slice(0,limit))>maxBytes){
-      let low=0,high=limit;
-      while(low<high){const mid=Math.ceil((low+high)/2);if(bytes(text.slice(0,mid))<=maxBytes)low=mid;else high=mid-1;}
-      limit=low;
-    }
+    if(transform(text)===text){
+      // Most passages need no respelling. Preserve the fast byte-budget search.
+      if(bytes(text.slice(0,limit))>maxBytes){
+        let low=0,high=limit;
+        while(low<high){const mid=Math.ceil((low+high)/2);if(bytes(text.slice(0,mid))<=maxBytes)low=mid;else high=mid-1;}
+        limit=low;
+      }
+    }else while(limit>0 && !fits(text.slice(0,limit)))limit--;
+    if(!limit)throw new Error('A pronunciation is too long for this speech request. Shorten its Say name as spelling.');
     const head = text.slice(0, limit);
     const sentence = [...head.matchAll(/[.!?…]["'”’]?\s+/g)].at(-1);
     let end = sentence && sentence.index > limit/3 ? sentence.index + sentence[0].length : head.lastIndexOf(' ');
     if (end < limit/3) end = limit;
+    // Keep a mapped name intact even when its original spelling spans words.
+    if(names)for(const match of text.matchAll(names))if(match.index<end && match.index+match[0].length>end){
+      end=match.index || match[0].length;
+      if(!fits(text.slice(0,end)))throw new Error('A name pronunciation exceeds the speech request limit. Shorten its Say name as spelling or raise Max characters per request.');
+      break;
+    }
     // Do not split a UTF-16 surrogate pair.
     if (/[\uD800-\uDBFF]/.test(text[end-1]) && /[\uDC00-\uDFFF]/.test(text[end])) end--;
     out.push({...segment, text:text.slice(0,end).trim()});
@@ -788,10 +905,11 @@ function speechBatches(segments,maxChars,defaultRoute,limitsForSegment=()=>({}))
   for(const source of segments) {
     const limits=limitsForSegment(source,source.route || defaultRoute);
     const charLimit=Math.min(maxChars,limits.maxChars || maxChars),byteLimit=limits.maxBytes ?? Infinity;
-    for(const segment of splitSegment(source,charLimit,byteLimit)) {
+    for(const segment of splitSegment(source,charLimit,byteLimit,{transform:limits.speechText,atomic:limits.atomicWords})) {
     const route=segment.route || defaultRoute,previous=batches.at(-1);
     const joined=previous?previous.text+'\n'+segment.text:'';
-    const fits=previous && joined.length<=charLimit && (byteLimit===Infinity || new TextEncoder().encode(joined).length<=byteLimit);
+    const spokenJoined=limits.speechText?limits.speechText(joined):joined;
+    const fits=previous && spokenJoined.length<=charLimit && (byteLimit===Infinity || new TextEncoder().encode(spokenJoined).length<=byteLimit);
     if(segment.unison){batches.push({...segment,route});continue;}
     if(previous && !previous.unison && !previous.kind && !segment.kind && previous.route===route && previous.voice===segment.voice && previous.speaker===segment.speaker && previous.style===segment.style && fits)previous.text+='\n'+segment.text;
     else batches.push({...segment,route});
@@ -812,7 +930,7 @@ function groupedSpeechBatches(segments,maxChars,defaultRoute,limitsForSegment,{s
     if(source.kind){flush();batches.push({...source,route});continue;}
     if(source.unison){
       flush();const limits=limitsForSegment(source,route);
-      batches.push(...splitSegment({...source,route},Math.min(maxChars,limits.maxChars || maxChars),limits.maxBytes ?? Infinity));first=false;continue;
+      batches.push(...splitSegment({...source,route},Math.min(maxChars,limits.maxChars || maxChars),limits.maxBytes ?? Infinity,{transform:limits.speechText,atomic:limits.atomicWords}));first=false;continue;
     }
     const limits=limitsForSegment(source,route),opening=sfx?900:1200;
     // Keep a moderate passage intact. A long opening turn still starts with a
@@ -830,7 +948,7 @@ function groupedSpeechBatches(segments,maxChars,defaultRoute,limitsForSegment,{s
     if(current && (size.chars>cap || size.bytes>(limits.maxBytes ?? Infinity))){flush();queue.unshift(source);continue;}
     if(size.chars>cap || size.bytes>(limits.maxBytes ?? Infinity)){
       const overhead=measure([{...source,text:''}]);
-      const pieces=splitSegment(source,Math.max(80,cap-overhead.chars),limits.maxBytes?limits.maxBytes-overhead.bytes:Infinity);
+      const pieces=splitSegment(source,Math.max(80,cap-overhead.chars),limits.maxBytes?limits.maxBytes-overhead.bytes:Infinity,{transform:limits.speechText,atomic:limits.atomicWords});
       if(pieces.length<2)throw new Error('Delivery instructions leave too little room for grouped speech.');
       queue.unshift(...pieces);continue;
     }
@@ -1388,7 +1506,7 @@ segment is the index of the numbered segment where the sound happens. trigger co
 For sound effects, keep each spoken phrase intact. Anchor at a sentence start, after clause punctuation (comma, semicolon, colon or dash), or at a conjunction that begins a complete action group, such as "and slid" or "as the glass shattered". Include the subject with its action; never insert an effect between a name/pronoun and its verb, inside a noun phrase, or inside a quoted utterance. For "Once she took the bite, Kellin set the plate back on the walnut edge and slid his hand beneath the hoodie", use "Kellin set the plate" or "and slid his hand", never "set the plate" after Kellin. If the action has no nearby clean break, use the start of its sentence.
 Return at most ${soundCueLimit(segments)} cues in story order, at most one per sentence. Prefer fewer, clearly audible moments.
 ambience entries follow the same segment, trigger and query rules but start a quiet looping background bed for a sustained environment the scene clearly stays in, such as "rain", "tavern crowd", "forest birds", "wind" or "fire crackle". A bed starts right before its trigger words and lasts until the next ambience entry or the end of the text; an entry with "stop":true instead of a query ends it when the scene moves somewhere quiet. Return at most ${AMBIENCE_LIMIT} ambience entries in story order, none for brief sounds.${music?`
-music entries follow the same segment and trigger rules but start instrumental background music that sits quietly under the narration and suits the mood and setting. feels lists 1 to 3 of: ${MUSIC_FEELS.join(', ')}. genres lists 1 or 2 of: ${Object.values(MUSIC_GENRES).join(', ')}. keywords lists 2 to 5 English words naming fitting instruments or the setting, such as "piano", "lute", "tavern" or "space". Music lasts until the next music entry or the end of the text; an entry with "stop":true instead ends it. Return at most ${MUSIC_LIMIT} music entries in story order, usually one at the start, and change music only when the mood clearly shifts.${playing?` Music ${playing} is already playing from the previous text and carries on: return a music entry only when this text clearly changes the mood or setting, otherwise return no music entries.`:''}`:''}
+music entries follow the same segment and trigger rules but start instrumental background music that sits quietly under the narration and suits the mood and setting. feels lists 1 to 3 of: ${MUSIC_FEELS.join(', ')}. genres lists 1 or 2 of: ${Object.values(MUSIC_GENRES).join(', ')}. keywords lists 2 to 5 English words naming fitting instruments, mood or setting, such as "piano", "romantic", "lute", "tavern" or "space". Music lasts until the next music entry or the end of the text; an entry with "stop":true instead ends it. Read the entire text as a mood timeline before choosing cues. Return at most ${MUSIC_LIMIT} music entries in story order: one for the opening mood when needed, then one at each clear sustained mood change, including changes within the SAME segment or message. Do not let the opening mood decide the soundtrack for the whole message. For example, if a frightening encounter gives way to a tender romantic scene, start with Eerie/Suspenseful music, then use Calming/Relaxed music with romantic piano or strings at the exact words where tenderness begins. Use different feels and keywords for distinct moods. Keep one track through minor emotional beats and brief dialogue; use stop:true when silence fits better.${playing?` Music ${playing} is already playing from the previous text and carries on: return a music entry only when this text clearly changes the mood or setting, otherwise return no music entries. Check later parts of this text too; the opening may match the current music even when the ending needs a replacement.`:''}`:''}
 Return {"cues":[],"ambience":[]${music?',"music":[]':''}} when nothing fits.`},
     {role:'user',content:JSON.stringify({segments:segments.map((segment, index) => ({index, speaker:segment.speaker, text:segment.text}))})}
   ];
@@ -1433,6 +1551,465 @@ function applySoundCues(segments, {cues=[], ambience=[], music=[]}={}) {
   });
 }
 
+
+// Onboarding owns a draft only. All provider, voice and storage operations are
+// supplied by Choir's frontend so the wizard cannot diverge from playback.
+const ONBOARDING_KEY = 'onboarding:state';
+const SETUP_STEPS = ['Welcome', 'Connections', 'TTS & Voices', 'Optional Features', 'Review'];
+
+function shouldOpenSetup(state) {
+  return !state?.completed && !state?.deferred;
+}
+
+function setupDraft(value, preset, existing) {
+  const draft = structuredClone(value);
+  draft.fixed = ['Narrator','Persona','Character'].map((speaker,index)=>draft.fixed[index] || {speaker,voice:'',style:''});
+  if (preset?.leadVoices) draft.fixed = draft.fixed.map((actor, index) => ({...actor, ...preset.leadVoices[index]}));
+  if (preset?.npcPolicy) draft.npcPolicy = structuredClone(preset.npcPolicy);
+  // Legacy defaults enable Foley without a key. New installations opt in.
+  if (!existing) {
+    Object.assign(draft, {enableSfx:false, enableAmbience:false, enableMusic:false, autoDesignNPCs:false,
+      auto:false, autoPlan:false, plannerMode:'heuristic', useFastClassifier:true, useJev:false});
+    draft.npcPolicy = {...draft.npcPolicy, mode:'skip'};
+  }
+  delete draft.jevApiKey;
+  delete draft.apiKey;
+  for(const field of ['mode','model','autoDesignNPCs','allowVoiceFallback'])delete draft[field];
+  return draft;
+}
+
+// These are structural checks, never evidence that a provider was tested.
+function setupIssues(draft, connections, session = {}) {
+  const issues = [];
+  const route = `native:${draft.connection}`;
+  const requireRoute = (selected, label) => {
+    const connection = connections.tts.find(item => `native:${item.id}` === selected);
+    if (!connection?.model) issues.push({step:1, message:`Choose an available TTS connection with a model for ${label}.`});
+  };
+  requireRoute(route, 'Default speech');
+  const llm = connections.llm.find(item => draft.planner ? item.id === draft.planner : item.is_default);
+  const decision = connections.decision.find(item => draft.decisionConnection ? item.id === draft.decisionConnection : item.is_default);
+  if (!['heuristic','jev','llm'].includes(draft.plannerMode)) issues.push({step:1,message:'Choose a planner engine.'});
+  if (draft.plannerMode === 'llm' && !llm?.model) issues.push({step:1,message:'Choose an available Planner LLM connection with a model.'});
+  if (draft.plannerMode === 'jev' && !decision && !(connections.directJev && session.jev)) issues.push({step:1,message:connections.directJev?'Choose a Decision connection or provide a session Jev key.':'Choose an available Decision connection in Lumiverse’s Connect panel.'});
+  for (const actor of draft.fixed) {
+    if (actor.excluded) continue;
+    requireRoute(draft.connectionMode === 'one' ? route : actor.route || route, actor.speaker);
+    if (!actor.voice && draft.plannerMode==='heuristic') issues.push({step:2,message:`Choose a voice for ${actor.speaker}, turn off that voice, or switch to Standard LLM on Connections to let the LLM choose. Heuristic attribution needs an assigned voice.`});
+  }
+  const policy = draft.npcPolicy || {mode:'skip'};
+  if (policy.mode !== 'skip') requireRoute(draft.connectionMode === 'one' ? route : policy.route || route, 'NPC speech');
+  if (policy.mode === 'single' && !policy.voice) issues.push({step:2,message:'Choose a shared NPC voice.'});
+  if (policy.mode === 'preferred' && !policy.voices?.length) issues.push({step:2,message:'Select at least one preferred NPC voice.'});
+  if (policy.mode === 'llm' && draft.plannerMode === 'heuristic') issues.push({step:2,message:'Automatic NPC voice selection needs Jev or an LLM planner. Choose shared, preferred, or disabled NPC speech.'});
+  if ((draft.enableSfx || draft.enableAmbience) && !draft.freesoundApiKey?.trim()) issues.push({step:3,message:'Sound effects and ambient sound need a Freesound API key.'});
+  if ((draft.enableSfx || draft.enableAmbience || draft.enableMusic) && !llm?.model) issues.push({step:3,message:'Sound effects, ambience, and music need a Planner LLM connection for cue selection.'});
+  return issues.filter((item,index,all) => all.findIndex(other => other.message === item.message) === index);
+}
+
+// Spindle settings writes are separate requests. Complete last, compensate on
+// failure, and leave completion unset if any write fails so retry remains safe.
+async function saveSetupSettings(settings, writes, completedState) {
+  const all = [...writes, [ONBOARDING_KEY, completedState]];
+  const previous = await Promise.all(all.map(async ([key]) => [key, await settings.get(key)]));
+  const applied = [];
+  try {
+    for (const [key,value] of all) {
+      applied.push(key);
+      await settings.set(key, structuredClone(value));
+    }
+  } catch (error) {
+    let rollbackFailed = false;
+    for (const key of applied.reverse()) {
+      const value = previous.find(item => item[0] === key)[1];
+      try {
+        if (value == null && settings.remove) await settings.remove(key);
+        else await settings.set(key, value ?? null);
+      } catch { rollbackFailed = true; }
+    }
+    throw new Error(`Setup could not be saved: ${error.message}.${rollbackFailed ? ' Some settings may have saved; review them and retry.' : ' Previous settings were restored. Retry when storage is available.'}`);
+  }
+}
+
+function createSetupWizard(ctx, adapter) {
+  let active = null, opening = false, disposed = false, saving = false;
+  const removeStyle = ctx.dom.addStyle(`
+    .choir-setup{font:inherit;line-height:1.5;color:var(--lumiverse-text,inherit);min-width:0;display:flex;flex-direction:column;max-height:min(700px,calc(100dvh - 150px))}
+    .choir-setup [data-setup-body]{min-height:0;overflow:auto;padding-right:4px}
+    .choir-setup .cs-progress,.choir-setup .cs-actions,.choir-setup .cs-feedback{flex-shrink:0}
+    .choir-setup *{box-sizing:border-box}
+    .choir-setup [hidden]{display:none!important}
+    .choir-setup h2{font-size:1.35em;margin:0 0 10px;letter-spacing:-.02em}
+    .choir-setup h3{font-size:1em;margin:0 0 8px}
+    .choir-setup p{margin:8px 0 16px}
+    .choir-setup small,.choir-setup .cs-hint{color:var(--lumiverse-text-muted,inherit);font-size:.88em}
+    .choir-setup small{display:block;margin-top:6px}
+    .choir-setup .cs-progress{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:6px;margin:0 0 24px;padding:0;list-style:none}
+    .choir-setup .cs-progress button{width:100%;padding:9px 4px;font-size:.8em;display:grid;justify-items:center;gap:5px;background:transparent}
+    .choir-setup .cs-progress span{display:grid;place-items:center;width:28px;height:28px;border:1px solid var(--lumiverse-border,#8886);border-radius:50%}
+    .choir-setup .cs-progress [aria-current="step"]{color:var(--lumiverse-primary,inherit);border-color:var(--lumiverse-primary,#888)}
+    .choir-setup .cs-progress [aria-current="step"] span{background:var(--lumiverse-primary-010,#8882);border-color:currentColor}
+    .choir-setup .cs-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+    .choir-setup .cs-card{background:var(--lumiverse-fill-subtle,#8881);border:1px solid var(--lumiverse-border,#8884);border-radius:12px;padding:16px;margin:0 0 14px;min-width:0}
+    .choir-setup .cs-guide{margin:12px 0 18px;font-size:.92em}
+    .choir-setup .cs-guide summary{cursor:pointer;font-weight:600}
+    .choir-setup .cs-guide ol{padding-left:22px;margin:12px 0;list-style:decimal}
+    .choir-setup .cs-guide li{display:list-item;list-style:decimal;margin:8px 0;overflow-wrap:anywhere}
+    .choir-setup .cs-guide a{color:var(--lumiverse-primary,inherit);text-decoration:underline;text-underline-offset:3px}
+    .choir-setup label{display:flex;flex-direction:column;gap:6px;margin:8px 0;font-size:.92em;min-width:0}
+    .choir-setup input,.choir-setup select,.choir-setup textarea{font:inherit;width:100%;min-width:0;min-height:42px;padding:8px 10px;border:1px solid var(--lumiverse-border,#8886);border-radius:8px;background:var(--lumiverse-bg-elevated,transparent);color:inherit}
+    .choir-setup option{background:var(--lumiverse-bg,Canvas);color:var(--lumiverse-text,CanvasText)}
+    .choir-setup button{font:inherit;min-height:42px;padding:8px 14px;border:1px solid var(--lumiverse-border,#8886);border-radius:8px;background:var(--lumiverse-fill,#8881);color:inherit;cursor:pointer}
+    .choir-setup button:hover:enabled{background:var(--lumiverse-fill-hover,#8882);border-color:var(--lumiverse-primary,#888)}
+    .choir-setup button:disabled{opacity:.5;cursor:default}
+    .choir-setup :focus-visible{outline:2px solid var(--lumiverse-primary,currentColor);outline-offset:3px}
+    .choir-setup .cs-primary{background:var(--lumiverse-primary-010,#8883);border-color:var(--lumiverse-primary,#888);font-weight:600}
+    .choir-setup .cs-check{flex-direction:row;align-items:center;gap:10px}
+    .choir-setup .cs-check input{width:18px;min-height:18px;flex-shrink:0;accent-color:var(--lumiverse-primary)}
+    .choir-setup .cs-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:14px 0 0;margin-top:12px;border-top:1px solid var(--lumiverse-border,#8884)}
+    .choir-setup .cs-actions .cs-primary{margin-left:auto}
+    .choir-setup .cs-feedback{white-space:pre-line;overflow-wrap:anywhere;min-height:1.5em}
+    .choir-setup .cs-error{color:var(--lumiverse-danger,#c05252)}
+    .choir-setup .cs-review{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
+    .choir-setup .cs-review small{display:block;overflow-wrap:anywhere}
+    .choir-setup .cs-status{border:1px solid var(--lumiverse-border,#8885);border-radius:20px;padding:3px 10px;white-space:nowrap;font-size:.8em}
+    .choir-setup .cs-mark{font-size:2.1em;color:var(--lumiverse-primary,inherit);margin-bottom:10px}
+    @media(max-width:560px){.choir-setup .cs-grid{grid-template-columns:1fr}.choir-setup .cs-progress button{font-size:.68em;padding:6px 1px}.choir-setup .cs-card{padding:12px}.choir-setup .cs-review{flex-wrap:wrap}.choir-setup input,.choir-setup select,.choir-setup textarea{font-size:16px}.choir-setup .cs-actions{gap:6px}.choir-setup .cs-actions button{flex:1;padding:8px 6px;font-size:.9em;white-space:nowrap}.choir-setup .cs-actions .cs-primary{margin-left:0}}
+    @media(max-width:400px){.choir-setup .cs-progress b{display:none}.choir-setup .cs-progress button{padding:6px 2px;gap:0}}
+    @media(prefers-reduced-motion:reduce){.choir-setup *{scroll-behavior:auto}}
+  `);
+  const report = error => adapter.report(error.message);
+  async function open(automatic = false) {
+    if (disposed || opening || active || saving) return;
+    if (typeof ctx.ui.showModal !== 'function') {
+      if (!automatic) adapter.report('Setup needs a Lumiverse staging build with ctx.ui.showModal(). Update Lumiverse and reload.');
+      return;
+    }
+    opening = true;
+    let snapshot;
+    try {
+      const state = await ctx.settings.get(ONBOARDING_KEY);
+      if (disposed || automatic && !shouldOpenSetup(state)) return;
+      snapshot = await adapter.snapshot();
+      if (disposed) return;
+      mount(snapshot, state);
+    } catch (error) { report(error); }
+    finally { opening = false; }
+  }
+  function mount(snapshot, previousState) {
+    const modal = ctx.ui.showModal({title:'Set up Choir', width:760, maxHeight:820, persistent:true});
+    const doc = modal.root.ownerDocument;
+    const shell = doc.createElement('div');shell.className='choir-setup';shell.dataset.choirSetup='';modal.root.append(shell);
+    const draft = setupDraft(snapshot.config, snapshot.preset, snapshot.existing);
+    let connections = snapshot.connections, step = 0, visited = 0, busy = false, closed = false, completed = false, ctrl = null, renderId = 0;
+    const tests = new Map();
+    const element = (tag,text,parent) => {const node=doc.createElement(tag);if(text)node.textContent=text;parent?.append(node);return node;};
+    const nav = element('ol','',shell);nav.className='cs-progress';nav.setAttribute('aria-label','Setup progress');
+    const navButtons = SETUP_STEPS.map((title,index) => {
+      const li=element('li','',nav),button=element('button','',li);button.type='button';
+      element('span',String(index+1),button).setAttribute('aria-hidden','true');element('b',title,button);
+      button.setAttribute('aria-label',`Step ${index+1}: ${title}`);button.onclick=()=>navigate(index);return button;
+    });
+    const body = element('section','',shell);body.dataset.setupBody='';
+    const feedback = element('p','',shell);feedback.className='cs-feedback';feedback.setAttribute('role','status');feedback.setAttribute('aria-live','polite');
+    const actions = element('div','',shell);actions.className='cs-actions';
+    const button = (text,parent,action) => {const node=element('button',text,parent);node.type='button';node.onclick=action;return node;};
+    const back = button('Back',actions,()=>navigate(step-1));
+    const skip = button('Skip for now',actions,()=>task(async()=>{await defer();modal.dismiss();},'Saving your choice…'));
+    const next = button('Next',actions,()=>step===4?finish():navigate(step+1));next.className='cs-primary';
+    const say = (message,error=false) => {if(closed)return;feedback.textContent=message;feedback.classList.toggle('cs-error',error);feedback.setAttribute('role',error?'alert':'status');};
+    const session = () => adapter.session();
+    const safeError = error => {
+      let message=error.message || String(error);
+      for(const secret of [session().jev,draft.freesoundApiKey].filter(Boolean)) message=message.split(secret).join('[redacted]');
+      return message;
+    };
+    const lock = () => {
+      shell.setAttribute('aria-busy',String(busy));
+      for(const node of body.querySelectorAll('input,select,button'))node.disabled=busy || node.dataset.unavailable==='true';
+      navButtons.forEach((node,index)=>{node.disabled=busy || completed || index>visited;node.setAttribute('aria-current',index===step?'step':'false');});
+      back.disabled=busy || completed || step===0;skip.disabled=busy || completed;next.disabled=busy;
+    };
+    async function task(operation,message) {
+      if(busy || closed)return;
+      busy=true;ctrl=new AbortController();say(message);lock();
+      try {await operation(ctrl.signal);}
+      catch(error){if(!closed && error.name!=='AbortError')say(safeError(error),true);}
+      finally {busy=false;ctrl=null;if(!closed)lock();}
+    }
+    async function defer() {
+      if(completed || previousState?.completed)return;
+      if((await ctx.settings.get(ONBOARDING_KEY))?.completed)return;
+      await ctx.settings.set(ONBOARDING_KEY,{version:1,completed:false,deferred:true});
+    }
+    const cleanup = (persistDismissal = true) => {
+      if(closed)return;closed=true;++renderId;ctrl?.abort();adapter.stopTest();active=null;
+      unsubDismiss();
+      if(persistDismissal && !completed && !saving) void defer().catch(error=>adapter.report(`Could not remember setup dismissal: ${safeError(error)}. You may see setup again on reload.`));
+      shell.remove();snapshot=null;
+    };
+    const unsubDismiss = modal.onDismiss(()=>cleanup());
+    active = {dispose(){cleanup(false);modal.dismiss();}};
+    function field(label,input,parent,hint) {
+      const wrap=element('label',label,parent);input.setAttribute('aria-label',label);wrap.append(input);
+      if(hint)element('small',hint,wrap);return input;
+    }
+    function select(label,options,value,parent,onChange,hint) {
+      const node=element('select');for(const [id,title] of options){const option=element('option',title,node);option.value=id;}
+      if(value && !options.some(item=>item[0]===value)){const missing=element('option',`${value} · unavailable`,node);missing.value=value;}
+      node.value=value || '';node.onchange=()=>{onChange(node.value);};return field(label,node,parent,hint);
+    }
+    function input(label,value,parent,onChange,{password=false,hint='',placeholder=''}={}) {
+      const node=element('input');node.type=password?'password':'text';node.value=value || '';node.autocomplete='off';node.placeholder=placeholder;
+      node.oninput=()=>onChange(node.value.trim());return field(label,node,parent,hint);
+    }
+    function check(label,value,parent,onChange,hint) {
+      const node=element('input');node.type='checkbox';node.checked=Boolean(value);node.onchange=()=>onChange(node.checked);
+      const wrap=element('label','',parent);wrap.className='cs-check';node.setAttribute('aria-label',label);wrap.append(node);element('span',label,wrap);
+      if(hint)element('p',hint,parent).className='cs-hint';return node;
+    }
+    const defaultRoute = () => `native:${draft.connection}`;
+    const routes = () => [['','Use default speech connection'],...connections.tts.map(item=>[`native:${item.id}`,`${item.name} · ${item.provider} · ${item.model || 'no model'}`])];
+    const signature = kind => JSON.stringify(kind==='planner'?[draft.plannerMode,draft.planner,draft.decisionConnection,Boolean(session().jev)]:[defaultRoute(),draft.connectionMode,draft.fixed[0]?.route,draft.fixed[0]?.voice]);
+    function navigate(target) {
+      if(busy || completed || target<0 || target>4)return;
+      if(target>step){
+        const issues=setupIssues(draft,connections,session()).filter(item=>item.step===step);
+        if(issues.length){say(issues.map(item=>item.message).join('\n'),true);return;}
+      }
+      step=target;visited=Math.max(visited,step);say('');render();body.querySelector('h2')?.focus();
+      body.scrollTop=0;modal.root.scrollTop=0;
+    }
+    function refresh() {
+      return task(async signal=>{connections=await adapter.connections(signal);tests.clear();render();say('Connections refreshed. No synthesis or planner test was run.');},'Refreshing connection lists…');
+    }
+    function testPlanner() {
+      const key=signature('planner');
+      return task(async signal=>{const result=await adapter.testPlanner(draft,signal);tests.set('planner',{key,message:result});say(result);},draft.plannerMode==='heuristic'?'Checking local attribution…':'Sending one planner test request…');
+    }
+    function testVoice(actor = draft.fixed[0]) {
+      if(!actor?.voice){say('This voice is set to automatic selection. Choir chooses it when you plan a reply. Select a specific voice to audition it now.',true);return;}
+      const key=signature('tts');
+      return task(async signal=>{await adapter.testVoice(draft,actor,signal);if(actor===draft.fixed[0])tests.set('tts',{key,message:'A narrator sample was synthesized and played.'});say(`Voice test passed: ${actor.voice}. A sample was synthesized and played.`);},'Synthesizing a short voice sample…');
+    }
+    function voiceField(actor,parent,label,changed,allowAutomatic=false) {
+      const row=element('div','',parent),id=renderId;
+      const effective=()=>draft.connectionMode==='one'?defaultRoute():actor.route || defaultRoute();
+      const automaticLabel=draft.plannerMode==='jev'?'Let Choir choose (Jev)':'Let the LLM choose';
+      const emptyLabel=allowAutomatic?automaticLabel:'Choose a voice';
+      const choices=select(`${label} voice`,[['',emptyLabel]],actor.voice,row,value=>{actor.voice=value;changed?.();});
+      const note=element('small','Loading voices…',row);
+      if(allowAutomatic)element('small',draft.plannerMode==='heuristic'?'Let the LLM choose requires switching the planner to Standard LLM on Connections.':'Automatic selection happens during planning, using this connection’s catalogue and Choir’s existing casting logic. Planner calls may incur charges.',row);
+      const custom=element('details','',row);element('summary','Use a provider voice ID',custom);
+      input(`${label} voice ID`,actor.voice,custom,value=>{
+        actor.voice=value;if(value && ![...choices.options].some(item=>item.value===value)){const entry=element('option',`${value} · custom ID`,choices);entry.value=value;}
+        choices.value=value;changed?.();
+      },{hint:'Use an ID from this provider. Choir validates it with the selected route; a successful test confirms synthesis.'});
+      const token=effective();
+      void adapter.voices(token).then(catalogue=>{
+        if(closed || id!==renderId || token!==effective())return;
+        const known=new Map(catalogue.map(item=>[item.id,item]));
+        choices.replaceChildren();const empty=element('option',emptyLabel,choices);empty.value='';
+        for(const item of known.values()){const option=element('option',item.name || item.id,choices);option.value=item.id;}
+        if(actor.voice && !known.has(actor.voice)){const option=element('option',`${actor.voice} · custom or saved ID`,choices);option.value=actor.voice;}
+        choices.value=actor.voice || '';note.textContent='Voice IDs belong to this connection. Test before relying on them.';
+      }).catch(error=>{if(!closed && id===renderId){note.textContent=`Voice list unavailable: ${safeError(error)}. Retry or enter a provider voice ID.`;button('Retry voice list',row,()=>{render();});}});
+      return choices;
+    }
+    function externalLink(parent,title,url) {
+      const node=element('a',title,parent);node.href=url;node.target='_blank';node.rel='noopener noreferrer';return node;
+    }
+    function fishGuide(parent) {
+      const guide=element('details','',parent);guide.className='cs-guide';element('summary','How to connect Fish Audio',guide);
+      const steps=element('ol','',guide);
+      const account=element('li','',steps);externalLink(account,'Sign in to Fish Audio','https://fish.audio/auth/signup');account.append(' or create an account.');
+      const key=element('li','',steps);externalLink(key,'Open API Keys','https://fish.audio/app/api-keys');key.append(' and create a key with a name such as Choir. Copy the key when Fish shows it.');
+      element('li','In Lumiverse, open Connect → TTS, add a Fish Audio connection, paste the API key, choose a model available to your account, and save.',steps);
+      element('li','Return to this wizard and choose Refresh connections, then select your saved Fish Audio connection above.',steps);
+      element('li','On TTS & Voices, choose a voice and use Test narrator voice to check that speech plays.',steps);
+      element('p','The API key gives Lumiverse access to Fish Audio. A voice ID selects a particular voice; they are different values. Keep the API key in the Lumiverse connection, not the voice ID field.',guide).className='cs-hint';
+      element('p','If a test fails, check the reported error: an invalid key, account access or balance, and an unavailable voice require different fixes.',guide).className='cs-hint';
+      externalLink(guide,'Official Fish Audio getting-started guide','https://docs.fish.audio/developer-guide/getting-started/quickstart');
+    }
+    function render() {
+      ++renderId;body.replaceChildren();
+      const heading=element('h2',completed?'Choir is ready':SETUP_STEPS[step],body);heading.tabIndex=-1;
+      next.textContent=completed?'Close':step===4?'Finish setup':'Next';next.onclick=completed?()=>modal.dismiss():()=>step===4?finish():navigate(step+1);
+      if(completed){
+        element('div','♪',body).className='cs-mark';
+        element('p','Your setup is saved. New chats will use these cast defaults. Existing chats keep their voices.',body);
+        button('Test final playback',body,()=>testVoice());element('p','Optional: this synthesizes and plays one short narrator sample and may incur provider charges.',body).className='cs-hint';lock();return;
+      }
+      if(step===0){
+        element('div','♪',body).className='cs-mark';
+        element('p','Give your story a voice. Choir reads narration and dialogue with different voices, and can add a soundscape when you want one.',body);
+        const card=element('div','',body);card.className='cs-card';
+        element('h3',snapshot.existing?'Your existing setup was found':'A few choices, then you’re ready',card);
+        element('p',snapshot.existing?'We’ll start from your saved preferences and cast defaults. Nothing changes until you finish. Your existing chat casts are preserved.':'You need a speech provider and voices. Start with local heuristic attribution, or choose an LLM or Jev for more complex dialogue.',card);
+        element('p','Sound effects, ambience, music, and automatic playback are optional. Connection and voice tests run only when you ask; they may use paid APIs.',body);
+        element('p','Speech & Planner preferences are shared across chats. Voice defaults are used by new chats; existing chat casts stay independent. Skip saves no configuration.',body).className='cs-hint';
+      } else if(step===1){
+        element('p','Choose a speech connection saved in Lumiverse. Your API key and model are managed in Lumiverse’s Connect panel.',body);
+        select('Default TTS connection',[['','Choose a connection'],...connections.tts.map(item=>[item.id,`${item.name} · ${item.provider} · ${item.model || 'no model'}`])],draft.connection,body,value=>{draft.connection=value;tests.delete('tts');render();});
+        fishGuide(body);
+        select('Planner engine',[['heuristic','Heuristic · local, no planner API'],['jev','Jev · Decision classification'],['llm','Standard LLM planner']],draft.plannerMode,body,value=>{draft.plannerMode=value;draft.useFastClassifier=value==='heuristic';draft.useJev=value==='jev';tests.delete('planner');render();});
+        element('p',draft.plannerMode==='heuristic'?'Heuristic attribution works locally for narration and simple dialogue. Ambiguous speakers can stop planning. Assign voices explicitly; use Jev or LLM for complex scenes. Speech still uses your TTS provider.':draft.plannerMode==='jev'?'Jev classifies dialogue through a Decision connection. LLM fallback stays controlled by your existing Choir preference. Tests and classification can incur charges.':'An LLM identifies speakers and chooses voices. Planning and connection tests can incur charges.',body).className='cs-hint';
+        if(draft.plannerMode==='jev'){
+          select('Decision connection',[['','Default Decision connection'],...connections.decision.map(item=>[item.id,`${item.name} · ${item.provider} · ${item.model || 'Jev'}`])],draft.decisionConnection,body,value=>{draft.decisionConnection=value;tests.delete('planner');});
+          if(connections.directJev){
+            const advanced=element('details','',body);element('summary','Session Jev key for older Lumiverse hosts',advanced);
+            input('Jev session API key',session().jev,advanced,value=>{adapter.setSession('jev',value);tests.delete('planner');},{password:true,hint:'Used by Choir’s existing fallback on hosts without Decision APIs. Never saved.'});
+          }
+        }
+        if(draft.plannerMode!=='heuristic' || draft.enableSfx || draft.enableAmbience || draft.enableMusic){
+          select('Planner LLM connection',[['','Default LLM connection'],...connections.llm.map(item=>[item.id,`${item.name} · ${item.provider} · ${item.model || 'no model'}`])],draft.planner,body,value=>{draft.planner=value;tests.delete('planner');});
+        }else{
+          const optional=element('details','',body);element('summary','Optional LLM for sound cues and card analysis',optional);
+          select('Planner LLM connection',[['','Default LLM connection'],...connections.llm.map(item=>[item.id,`${item.name} · ${item.model || 'no model'}`])],draft.planner,optional,value=>{draft.planner=value;tests.delete('planner');});
+        }
+        button('Test planner connection',body,testPlanner);element('small',' Sends one small request unless Heuristic is selected.',body);
+        element('p','TTS connection testing is on the next step, using an actual voice sample.',body).className='cs-hint';
+        const guide=element('div','',body);guide.className='cs-card';element('h3','Missing a connection?',guide);
+        element('p','Open Lumiverse’s Connect panel and select TTS, LLM, or Decision. Create or edit your connection there, choose its model, then reopen this wizard and refresh. Choir uses your connections; it does not create host-managed connections.',guide);
+        button('Configure connections later',guide,()=>task(async()=>{await defer();modal.dismiss();adapter.connectionGuide();},'Saving your choice…'));
+        button('Refresh connections',guide,refresh);
+        for(const error of connections.errors || [])element('p',error,guide).className='cs-error';
+      } else if(step===2){
+        element('p','Choose voices for new chats. Existing chats keep their cast. A voice test synthesizes and plays one short sample.',body);
+        select('Voice connection mode',[['one','One connection for the whole cast'],['several','A connection for each character']],draft.connectionMode,body,value=>{draft.connectionMode=value;render();});
+        {
+          const selected=connections.tts.find(item=>item.id===draft.connection);
+          const provider=select('Default TTS provider',[['','Choose provider'],...[...new Set(connections.tts.map(item=>item.provider))].map(id=>[id,id])],selected?.provider,body,value=>{draft.connection=connections.tts.find(item=>item.provider===value)?.id || '';tests.delete('tts');render();});
+          select('TTS model and connection',[['','Choose model'],...connections.tts.filter(item=>item.provider===provider.value).map(item=>[item.id,`${item.model || 'No model configured'} · ${item.name}`])],draft.connection,body,value=>{draft.connection=value;tests.delete('tts');render();},'Native models are configured in Lumiverse’s Connect panel. Selecting one here selects its saved connection.');
+        }
+        const grid=element('div','',body);grid.className='cs-grid';
+        draft.fixed.forEach((actor,index)=>{
+          const name=['Narrator','Persona','Main character'][index],card=element('div','',grid);card.className='cs-card';element('h3',name,card);
+          if(draft.connectionMode==='several') select(`${name} connection`,routes(),actor.route || '',card,value=>{actor.route=value;actor.voice='';tests.delete('tts');render();});
+          voiceField(actor,card,name,()=>tests.delete('tts'),true);
+          check(`Enable ${name.toLowerCase()} speech`,!actor.excluded,card,value=>{actor.excluded=!value;});
+          button(`Test ${name.toLowerCase()} voice`,card,()=>testVoice(actor));
+        });
+        const npc=element('div','',body);npc.className='cs-card';element('h3','NPC casting',npc);
+        const policy=draft.npcPolicy;
+        select('NPC casting',[['skip','Disabled'],['single','Shared voice'],['preferred','Preferred voices'],['llm','Automatic selection']],policy.mode,npc,value=>{policy.mode=value;render();});
+        if(policy.mode!=='skip' && draft.connectionMode==='several') select('NPC connection',routes(),policy.route || '',npc,value=>{policy.route=value;policy.voice='';policy.voices=[];render();});
+        if(policy.mode==='single')voiceField(policy,npc,'Shared NPC');
+        if(policy.mode==='preferred'){
+          input('Preferred NPC voice IDs',(policy.voices || []).join(', '),npc,value=>{policy.voices=value.split(',').map(id=>id.trim()).filter(Boolean);},{hint:'Comma-separated IDs from the selected NPC connection.'});
+          const id=renderId;void adapter.voices(draft.connectionMode==='one'?defaultRoute():policy.route || defaultRoute()).then(list=>{if(!closed && id===renderId)element('small',`Available: ${list.map(item=>item.id).join(', ')}`,npc);}).catch(error=>{if(!closed && id===renderId)say(safeError(error),true);});
+        }
+        element('p','Automatic NPC selection needs Jev or an LLM and may make planner calls. Shared or disabled NPC speech is easiest for local heuristic attribution.',npc).className='cs-hint';
+      } else if(step===3){
+        element('p','Start with speech, then add the extras you want. Unconfigured features should stay off.',body);
+        const sound=element('div','',body);sound.className='cs-card';element('h3','A soundscape for your story',sound);
+        input('Freesound API key',draft.freesoundApiKey,sound,value=>{draft.freesoundApiKey=value;},{password:true,hint:'Saved in Choir’s existing preferences. Sound effects and ambience need this key plus an LLM for cue selection.'});
+        const guide=element('details','',sound);guide.className='cs-guide';element('summary','How to get a Freesound API key',guide);
+        const link=(parent,title,url)=>{const node=element('a',title,parent);node.href=url;node.target='_blank';node.rel='noopener noreferrer';return node;};
+        const steps=element('ol','',guide);
+        const account=element('li','',steps);link(account,'Sign in to Freesound','https://freesound.org/');account.append(' or create an account. Verify your email if Freesound asks.');
+        const apply=element('li','',steps);link(apply,'Open the API key page','https://freesound.org/apiv2/apply/');apply.append(' and request an API credential for your Choir setup. Suggested application name: Choir. Describe your use, such as sound effects and ambience for personal story playback.');
+        element('li','Copy the value labelled “Client secret/Api key” from your credentials. The Client ID is a different value; Choir needs the API key.',steps);
+        element('li','Return here, paste the key above, enable Sound effects and/or Ambient sound, and choose a Sound cue LLM connection. Select Finish setup on Review to save.',steps);
+        element('p','You can leave these features off and finish without a key. Choir uses the key to search sounds and play previews; no OAuth setup is needed.',guide).className='cs-hint';
+        link(guide,'Official Freesound key instructions','https://freesound.org/docs/api/authentication.html#token-authentication');
+        check('Sound effects',draft.enableSfx,sound,value=>{draft.enableSfx=value;});
+        check('Ambient sound',draft.enableAmbience,sound,value=>{draft.enableAmbience=value;});
+        check('Background music',draft.enableMusic,sound,value=>{draft.enableMusic=value;},'Music uses Choir’s existing library and attribution. Sound cue planning uses your LLM and may incur charges.');
+        select('Sound cue LLM connection',[['','Default LLM connection'],...connections.llm.map(item=>[item.id,`${item.name} · ${item.model || 'no model'}`])],draft.planner,sound,value=>{draft.planner=value;tests.delete('planner');});
+        const reading=element('div','',body);reading.className='cs-card';element('h3','Reading',reading);
+        check('Skip non-story blocks',draft.skipMeta!==false,reading,value=>{draft.skipMeta=value;},'Keep automatic filtering of trackers, recaps and interface panels. LLM and Jev modes can also use your planner to find non-story text.');
+        const skipped=element('textarea');skipped.rows=2;skipped.value=draft.ignoredTags || '';skipped.placeholder='summary, .status-panel, #phone-panel';
+        skipped.oninput=()=>{draft.ignoredTags=skipped.value;};field('Skip tags and blocks',skipped,reading,'Add tag names, classes or IDs separated by commas. These rules apply across chats; automatic filtering stays available.');
+        select('Highlight spoken text',[['off','Off'],['passage','Passage'],['word','Word by word']],draft.readAlong || 'off',reading,value=>{draft.readAlong=value;});
+        check('Follow narration',Boolean(draft.followNarration),reading,value=>{draft.followNarration=value;});
+        element('p','Set name pronunciation in the character’s editor after setup. “Say name as” applies when any voice says that name in the chat.',reading).className='cs-hint';
+        const automation=element('div','',body);automation.className='cs-card';element('h3','Automation',automation);
+        const previousPolicy=draft.npcPolicy.mode==='llm'?'skip':draft.npcPolicy.mode;
+        check('Automatic NPC voice casting',draft.npcPolicy.mode==='llm',automation,value=>{draft.npcPolicy.mode=value?'llm':previousPolicy;},'Chooses NPC voices with your Jev or LLM planner. It may use paid planner calls; local heuristic attribution needs shared, preferred, or disabled NPC speech.');
+        check('Auto-plan new replies',draft.autoPlan,automation,value=>{draft.autoPlan=value;},'Plans incoming replies automatically. LLM or Jev calls may incur charges.');
+        check('Auto-play new replies',draft.auto,automation,value=>{draft.auto=value;},'Automatically generates speech for new replies. Provider charges and browser playback restrictions can apply.');
+        element('p','Automatic voice selection is controlled by NPC casting on the previous step. Nothing plays or calls a planner as part of saving setup.',body).className='cs-hint';
+      } else {
+        element('p','Review your choices. Ready means configuration is present; only a successful explicit test confirms a connection worked.',body);
+        const issues=setupIssues(draft,connections,session());
+        const review=(title,detail,target,status)=>{
+          const row=element('div','',body);row.className='cs-card cs-review';const info=element('div','',row);element('h3',title,info);element('small',detail,info);element('span',status,row).className='cs-status';button('Edit',row,()=>navigate(target));
+        };
+        const tts=connections.tts.find(item=>item.id===draft.connection);
+        review('Speech',`${tts?.name || 'Missing TTS connection'} · ${tts?.provider || ''} · ${tts?.model || 'no model'}`,1,issues.some(item=>item.step===1)?'Needs Attention':'Ready');
+        review('Planner',draft.plannerMode==='heuristic'?'Local heuristic · ambiguous dialogue may need manual help':`${draft.plannerMode} · ${draft.planner || draft.decisionConnection || 'host default'}`,1,issues.some(item=>item.step===1)?'Needs Attention':'Ready');
+        review('Cast defaults',draft.fixed.map((actor,index)=>`${['Narrator','Persona','Main character'][index]}: ${actor.excluded?'disabled':actor.voice || (draft.plannerMode==='llm'?'LLM chooses during planning':draft.plannerMode==='jev'?'Choir chooses with Jev':'needs a voice')}`).join(' · ')+` · NPCs: ${draft.npcPolicy.mode}`,2,issues.some(item=>item.step===2)?'Needs Attention':'Ready');
+        review('Optional features',[['Sound effects',draft.enableSfx],['Ambience',draft.enableAmbience],['Music',draft.enableMusic],['Auto-plan',draft.autoPlan],['Auto-play',draft.auto]].filter(item=>item[1]).map(item=>item[0]).join(', ') || 'All optional features are off',3,issues.some(item=>item.step===3)?'Needs Attention':'Optional');
+        review('Reading',`Custom skip rules: ${draft.ignoredTags || 'none'} · Automatic non-story filtering: ${draft.skipMeta===false?'off':'on'} · Highlight: ${draft.readAlong || 'off'}`,3,'Optional');
+        for(const kind of ['tts','planner']){const test=tests.get(kind);element('p',test?.key===signature(kind)?`${kind==='tts'?'Speech':'Planner'} test passed: ${test.message}`:`${kind==='tts'?'Speech':'Planner'} connection has not been tested with these choices.`,body).className='cs-hint';}
+        if(issues.length)say(issues.map(item=>item.message).join('\n'),true);
+        element('p','Finish saves shared Speech & Planner preferences and defaults for new chats. Existing chat voice choices remain intact. You can run setup again from Choir settings.',body).className='cs-hint';
+      }
+      lock();
+    }
+    function finish() {
+      const issues=setupIssues(draft,connections,session());
+      if(issues.length){say(issues.map(item=>item.message).join('\n'),true);return;}
+      return task(async signal=>{
+        saving=true;
+        try {
+        // Re-read connections to catch deleted connections before committing.
+        connections=await adapter.connections(signal);
+        const latest=setupIssues(draft,connections,session());
+        if(latest.length)throw new Error(latest.map(item=>item.message).join('\n'));
+        await adapter.save(draft,snapshot.config,signal);
+        completed=true;if(!closed){render();say('Setup completed successfully.');}
+        } finally {saving=false;}
+      },'Validating and saving setup…');
+    }
+    render();
+  }
+  return {open, async start(){await open(true);}, dispose(){disposed=true;active?.dispose();removeStyle();}};
+}
+
+// Static decoration with no remote assets, timers or changes to the host theme.
+const abyssalStars = `url("data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="360" height="220" viewBox="0 0 360 220">
+  <g fill="none" stroke="#86abd5" stroke-opacity=".16" stroke-width=".6"><path d="m26 44 53 21 43-38 52 50M212 153l40-31 49 22 33-45"/></g>
+  <g fill="#b9d0eb" fill-opacity=".55"><circle cx="26" cy="44" r="1.1"/><circle cx="79" cy="65" r="1.4"/><circle cx="122" cy="27" r="1"/><circle cx="174" cy="77" r="1.2"/><circle cx="212" cy="153" r="1"/><circle cx="252" cy="122" r="1.3"/><circle cx="301" cy="144" r="1"/><circle cx="334" cy="99" r="1.4"/><circle cx="41" cy="166" r=".7"/><circle cx="139" cy="132" r=".6"/><circle cx="284" cy="42" r=".8"/><circle cx="184" cy="199" r=".7"/></g>
+  <g fill="#e0cfaa" fill-opacity=".65"><path d="m226 27 1.5 4.5L232 33l-4.5 1.5L226 39l-1.5-4.5L220 33l4.5-1.5z"/><path d="m93 182 1 3 3 1-3 1-1 3-1-3-3-1 3-1z"/></g>
+</svg>`)}")`;
+
+const ABYSSAL_THEME_CSS = `
+  :where(.choir-mixer[data-abyssal-theme="true"]){
+    --abyss-bg:#061323;--abyss-surface:#0d2138;--abyss-hover:#15304d;
+    --abyss-accent:#86abd5;--abyss-accent-hover:#a3c3e8;
+    --abyss-text:#eaf1fb;--abyss-muted:#b8c9dd;--abyss-dim:#91a8c1;
+    --abyss-gold:var(--ac-starlight,#e0cfaa);
+    --abyss-line:rgb(151 187 224 / 27%);--abyss-line-hover:rgb(177 211 245 / 48%);
+    --abyss-stars:${abyssalStars};color-scheme:dark;
+  }
+  .choir-mixer[data-abyssal-theme="true"]{
+    --cm-accent:var(--abyss-accent);--cm-accent-text:#e9f2ff;--cm-accent-contrast:#061323;
+    --cm-bg:var(--abyss-bg);--cm-bg-elevated:var(--abyss-surface);--cm-text:var(--abyss-text);
+    --cm-muted:var(--abyss-muted);--cm-dim:var(--abyss-dim);--cm-line:var(--abyss-line);
+    --cm-border-hover:var(--abyss-line-hover);--cm-hover:var(--abyss-hover);--cm-fill:rgb(10 28 50 / 62%);
+    --cm-accent-soft:rgb(134 171 213 / 12%);--cm-accent-line:rgb(134 171 213 / 50%);--cm-warning:#e0cfaa;
+    --lumiverse-primary-hover:var(--abyss-accent-hover);--lumiverse-input-bg:rgb(4 13 27 / 76%);
+    background:radial-gradient(ellipse at 100% 0%,rgb(35 83 134 / 27%),transparent 65%),linear-gradient(150deg,#0d2138,#061323 70%);
+    border-color:var(--abyss-line-hover);box-shadow:0 16px 48px rgb(1 7 16 / 60%),0 0 22px rgb(134 171 213 / 8%),inset 0 1px 0 rgb(185 208 235 / 8%);
+    font-family:var(--ac-ui-font,"Segoe UI",system-ui,sans-serif);
+  }
+  .choir-mixer[data-abyssal-theme="true"] .cm-header{background-image:var(--abyss-stars);background-position:30% 0}
+  .choir-mixer[data-abyssal-theme="true"] .cm-brand strong{color:var(--abyss-gold);font-family:var(--ac-display-font,Georgia,serif);font-size:16px;letter-spacing:.03em}
+  .choir-mixer[data-abyssal-theme="true"] .cm-brand-icon{color:var(--abyss-gold);border:1px solid var(--abyss-line);background:rgb(134 171 213 / 9%)}
+  .choir-mixer[data-abyssal-theme="true"] .cm-auto-plan button[aria-pressed="true"]{background:var(--cm-accent-soft);border-color:var(--abyss-accent);color:var(--cm-accent-text)}
+  .choir-mixer[data-abyssal-theme="true"] .cm-channel-tabs{background:var(--abyss-bg)}
+  .choir-mixer[data-abyssal-theme="true"] .cm-channel-tab[aria-selected="true"]{border-color:var(--abyss-accent);box-shadow:inset 0 1px 0 rgb(185 208 235 / 10%)}
+  .choir-mixer[data-abyssal-theme="true"] .cm-channel[aria-current="true"]{border-radius:8px}
+  .choir-mixer[data-abyssal-theme="true"][data-collapsed="true"]{background:radial-gradient(circle at 35% 25%,#254569,#061323 75%);box-shadow:0 6px 20px rgb(1 7 16 / 55%),0 0 18px rgb(134 171 213 / 15%);color:var(--abyss-gold)}
+  @media(forced-colors:active){
+    .choir-mixer[data-abyssal-theme="true"],.choir-mixer[data-abyssal-theme="true"][data-collapsed="true"]{background:Canvas;color:CanvasText;border-color:CanvasText;box-shadow:none}
+    .choir-mixer[data-abyssal-theme="true"] .cm-header{background-image:none}
+    .choir-mixer[data-abyssal-theme="true"] .cm-brand strong{color:CanvasText}
+    .choir-mixer[data-abyssal-theme="true"] .cm-auto-plan button[aria-pressed="true"]{background:Highlight;color:HighlightText;border-color:Highlight}
+  }
+`;
 
 
 const CHOIR_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 12a4.16 4.16 0 0 1-5.62 3.89 3.78 3.78 0 0 1-2.38-3.39 3.42 3.42 0 0 1 2.34-3.38l3.79-1.42a2.89 2.89 0 0 0 1.87-2.7 2 2 0 1 0-4 0v14a2 2 0 1 1-4 0"/><path d="M20 2v4"/><path d="M22 4h-4"/></svg>`;
@@ -1583,6 +2160,40 @@ export async function setup(ctx) {
     .choir-mixer .cm-seek span{white-space:nowrap}
     .choir-mixer .cm-master{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:6px;margin:0;padding:5px 10px;color:var(--cm-text);font-size:10px;border-bottom:1px solid var(--cm-line);flex-shrink:0}
     .choir-mixer .cm-master .cm-percent,.choir-mixer .cm-channel-head .cm-percent{display:none}
+    .choir-mixer .cm-playback-tuning{display:flex;flex-direction:column;flex-shrink:0;min-width:0}
+    .choir-mixer .cm-speed-options{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:5px;padding:6px 10px;border-bottom:1px solid var(--cm-line)}
+    .choir-mixer .cm-speed-options button{min-width:0;min-height:30px;padding:4px 2px;border:1px solid var(--cm-border-hover);border-radius:5px;background:var(--cm-fill);font-size:10px}
+    .choir-mixer .cm-speed-options button[aria-pressed="true"]{background:var(--cm-accent);border-color:var(--cm-accent);color:var(--cm-accent-contrast)}
+    .ensemble-tts .et-character-speed{grid-column:1/-1}
+    .ensemble-tts .et-character-speed .cm-inherited>input,.ensemble-tts .et-character-speed .cm-inherited .cm-volume-entry{opacity:.55}
+    .ensemble-tts .et-tuning-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,250px),1fr));gap:10px;margin:4px 0 6px}
+    .ensemble-tts .et-tuning{--cm-accent:var(--lumiverse-primary,#c4b5fd);--cm-accent-contrast:var(--lumiverse-primary-contrast,#1a142a);--cm-text:var(--lumiverse-text,#f1f3fa);--cm-muted:var(--lumiverse-text-muted,#a6afc2);--cm-line:var(--lumiverse-border,#ffffff12);--cm-border-hover:var(--lumiverse-border-hover,#ffffff25);--cm-hover:var(--lumiverse-bg-hover,#ffffff10);--cm-fill:var(--lumiverse-fill-subtle,#ffffff04);display:flex;flex-direction:column;gap:7px;min-width:0;margin:0;padding:10px 12px;border:1px solid var(--cm-line);border-radius:8px;background:var(--cm-fill)}
+    .ensemble-tts .et-tuning-head{display:flex;flex-direction:column;gap:2px;min-width:0}
+    .ensemble-tts .et-tuning-title{font-size:.9em;font-weight:600;color:var(--cm-text)}
+    .ensemble-tts .et-tuning-hint{font-size:.78em;line-height:1.35;color:var(--cm-muted)}
+    .ensemble-tts .et-tuning-slot{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:8px;min-width:0}
+    .ensemble-tts .et-tuning-slot>.cm-volume,.ensemble-tts .et-tuning-slot .cm-volume-steps{display:contents}
+    .ensemble-tts .et-tuning-slot .cm-volume-steps>button{display:none}
+    .ensemble-tts .et-tuning-slot .cm-volume-entry{display:flex;align-items:center;gap:2px;box-sizing:border-box;width:76px;height:28px;padding:0 6px;border:1px solid var(--cm-border-hover);border-radius:6px;background:var(--lumiverse-input-bg,var(--cm-fill))}
+    .ensemble-tts .et-tuning-slot .cm-volume-entry:focus-within{border-color:var(--cm-accent)}
+    .ensemble-tts .et-tuning-slot .cm-volume-entry input{appearance:textfield;-moz-appearance:textfield;box-sizing:border-box;width:100%;min-width:0;height:100%;margin:0;padding:0;border:0;border-radius:0;background:transparent;box-shadow:none;color:inherit;font:12px system-ui,sans-serif;text-align:right;outline:none}
+    .ensemble-tts .et-tuning-slot .cm-volume-entry input::-webkit-inner-spin-button,.ensemble-tts .et-tuning-slot .cm-volume-entry input::-webkit-outer-spin-button{appearance:none;margin:0}
+    .ensemble-tts .et-tuning-slot .cm-volume-entry span{flex-shrink:0;font-size:11px;color:var(--cm-muted)}
+    .ensemble-tts .et-tuning-slot input[type="range"]{appearance:none;-webkit-appearance:none;display:block;box-sizing:border-box;width:100%;min-width:0;height:18px;margin:0;padding:0;border:0;border-radius:0;background:transparent;box-shadow:none;cursor:pointer;--choir-level:100%;--cm-track:linear-gradient(to right,var(--cm-accent) 0%,var(--cm-accent) var(--choir-level),var(--cm-border-hover) var(--choir-level),var(--cm-border-hover) 100%)}
+    .ensemble-tts .et-tuning-slot input[type="range"]::-webkit-slider-runnable-track{height:4px;border-radius:3px;background:var(--cm-track)}
+    .ensemble-tts .et-tuning-slot input[type="range"]::-moz-range-track{height:4px;border-radius:3px;background:var(--cm-track)}
+    .ensemble-tts .et-tuning-slot input[type="range"]::-webkit-slider-thumb{appearance:none;-webkit-appearance:none;box-sizing:border-box;width:14px;height:14px;margin-top:-5px;border:1px solid var(--cm-accent-contrast);border-radius:50%;background:var(--cm-accent);box-shadow:0 1px 4px #0006}
+    .ensemble-tts .et-tuning-slot input[type="range"]::-moz-range-thumb{box-sizing:border-box;width:14px;height:14px;border:1px solid var(--cm-accent-contrast);border-radius:50%;background:var(--cm-accent);box-shadow:0 1px 4px #0006}
+    .ensemble-tts .et-tuning-slot input[type="range"]:focus-visible,.ensemble-tts .et-tuning-slot input[type="number"]:focus-visible{outline:2px solid var(--cm-accent);outline-offset:3px}
+    .ensemble-tts .et-tuning-reset{height:28px;padding:0 10px;border:1px solid var(--cm-border-hover);border-radius:6px;background:var(--cm-fill);color:var(--cm-muted);font:inherit;font-size:.8em;white-space:nowrap;cursor:pointer;box-shadow:none;width:auto}
+    .ensemble-tts .et-tuning-reset:hover{color:var(--cm-text);background:var(--cm-hover)}
+    .ensemble-tts .et-tuning-reset:focus-visible{outline:2px solid var(--cm-accent);outline-offset:2px}
+  .ensemble-tts .et-tuning-max{display:flex;align-items:center;justify-content:flex-end;gap:8px;margin:0;font-size:.78em;color:var(--cm-muted)}
+  .ensemble-tts .et-tuning-max-entry{display:flex;align-items:center;gap:2px;box-sizing:border-box;width:76px;height:26px;padding:0 6px;border:1px solid var(--cm-border-hover);border-radius:6px;background:var(--lumiverse-input-bg,var(--cm-fill));color:var(--cm-text)}
+  .ensemble-tts .et-tuning-max-entry:focus-within{border-color:var(--cm-accent)}
+  .ensemble-tts .et-tuning-max-entry input{appearance:textfield;-moz-appearance:textfield;box-sizing:border-box;width:100%;min-width:0;height:100%;margin:0;padding:0;border:0;border-radius:0;background:transparent;box-shadow:none;color:inherit;font:12px system-ui,sans-serif;text-align:right;outline:none}
+  .ensemble-tts .et-tuning-max-entry input::-webkit-inner-spin-button,.ensemble-tts .et-tuning-max-entry input::-webkit-outer-spin-button{appearance:none;margin:0}
+  .ensemble-tts .et-tuning-max-entry span{flex-shrink:0;font-size:11px;color:var(--cm-muted)}
     .choir-mixer .cm-auto-plan{display:flex;flex-wrap:wrap;gap:3px;padding:4px 6px;border-bottom:1px solid var(--cm-line);flex-shrink:0}
     .choir-mixer .cm-auto-plan button{flex:1 0 auto;min-height:24px;padding:3px 4px;border:1px solid var(--cm-line);border-radius:5px;font-size:10px;color:var(--cm-muted);background:var(--cm-fill);white-space:nowrap}
     .choir-mixer .cm-auto-plan button[aria-pressed="true"]{background:var(--lumiverse-success-015,color-mix(in srgb,var(--cm-success) 15%,transparent));border-color:var(--lumiverse-success-050,color-mix(in srgb,var(--cm-success) 50%,transparent));color:color-mix(in srgb,var(--cm-success) 65%,var(--cm-text))}
@@ -1639,9 +2250,10 @@ export async function setup(ctx) {
     @keyframes choir-level{to{transform:scaleY(.35)}}
     @media(prefers-reduced-motion:reduce){.choir-mixer .cm-activity i{animation:none!important}.choir-mixer button{transition:none}}
     @media(pointer:coarse){.choir-mixer .cm-transport{height:44px;gap:6px;padding:0}.choir-mixer .cm-transport button,.choir-mixer .cm-transport button[data-choir-action]{position:static;min-width:44px;min-height:44px}.choir-mixer .cm-auto-plan button,.choir-mixer .cm-channels-title,.choir-mixer .cm-channel-tab{min-width:44px;min-height:44px}}
-    @media(pointer:coarse),(max-width:600px){.choir-mixer{max-height:calc(100dvh - 24px)}.choir-mixer .cm-header{padding:7px 12px}.choir-mixer .cm-player{padding:6px 12px}.choir-mixer .cm-now{margin-bottom:4px}.choir-mixer .cm-master{padding:6px 12px}.choir-mixer .cm-auto-plan{gap:3px;padding:6px}.choir-mixer .cm-auto-plan button{padding:4px 3px}.choir-mixer .cm-channels-title{padding:8px 12px}.choir-mixer .cm-volume{grid-template-columns:minmax(0,1fr)}.choir-mixer .cm-volume>input[type="range"]{display:none}.choir-mixer .cm-volume-steps{grid-template-columns:44px minmax(0,1fr) 44px}.choir-mixer .cm-volume-steps>button{display:inline-flex}.choir-mixer .cm-volume-entry{height:44px}.choir-mixer .cm-volume-entry input{font-size:16px}.choir-mixer .cm-channel-head{gap:5px}.choir-mixer .cm-toggle{width:44px;height:44px}.choir-mixer .cm-toggle svg{width:19px;height:19px}}
-    @media(max-height:480px){.choir-mixer .cm-header{padding:4px 10px}.choir-mixer .cm-body{overflow:auto;overscroll-behavior:contain}.choir-mixer .cm-player{padding:4px 10px}.choir-mixer .cm-caption{display:none}.choir-mixer .cm-transport{margin-bottom:0}.choir-mixer .cm-master{padding:4px 10px}.choir-mixer .cm-auto-plan{padding:4px 8px}.choir-mixer .cm-levels{flex-shrink:0}.choir-mixer .cm-levels-body{overflow:visible}}
-  `);
+    @media(pointer:coarse),(max-width:600px){.choir-mixer{max-height:calc(100dvh - 24px)}.choir-mixer .cm-header{padding:7px 12px}.choir-mixer .cm-player{padding:6px 12px}.choir-mixer .cm-now{margin-bottom:4px}.choir-mixer .cm-master,.choir-mixer .cm-tuning{padding:6px 12px}.choir-mixer .cm-auto-plan{gap:3px;padding:6px}.choir-mixer .cm-auto-plan button{padding:4px 3px}.choir-mixer .cm-channels-title{padding:8px 12px}.choir-mixer .cm-volume{grid-template-columns:minmax(0,1fr)}.choir-mixer .cm-volume>input[type="range"]{display:none}.choir-mixer .cm-volume-steps{grid-template-columns:44px minmax(0,1fr) 44px}.choir-mixer .cm-volume-steps>button{display:inline-flex}.choir-mixer .cm-volume-entry{height:44px}.choir-mixer .cm-volume-entry input{font-size:16px}.choir-mixer .cm-channel-head{gap:5px}.choir-mixer .cm-toggle{width:44px;height:44px}.choir-mixer .cm-toggle svg{width:19px;height:19px}}
+    @media(pointer:coarse),(max-width:600px){.choir-mixer .cm-speed-options button{min-height:44px}}
+    @media(max-height:480px){.choir-mixer .cm-header{padding:4px 10px}.choir-mixer .cm-body{overflow:auto;overscroll-behavior:contain}.choir-mixer .cm-player{padding:4px 10px}.choir-mixer .cm-caption{display:none}.choir-mixer .cm-transport{margin-bottom:0}.choir-mixer .cm-master,.choir-mixer .cm-tuning{padding:4px 10px}.choir-mixer .cm-auto-plan{padding:4px 8px}.choir-mixer .cm-levels{flex-shrink:0}.choir-mixer .cm-levels-body{overflow:visible}}
+  ${ABYSSAL_THEME_CSS}`);
   root.innerHTML = `<div class="ensemble-tts">
     <div class="et-header">
       <div class="et-title-group">
@@ -1654,6 +2266,7 @@ export async function setup(ctx) {
         <button data-et="stop" disabled title="Stop planning, speech generation, and playback">${ICON_STOP} Stop</button>
         <button data-et="save" class="et-btn-primary" hidden>Retry save</button>
         <button data-et="showMixer">Open mixer</button>
+        <button data-et="setupWizard">Set up Choir</button>
       </div>
     </div>
     <p data-et="latestNotice" role="status" hidden>Already planned. Plan latest again to redo it.</p>
@@ -1711,6 +2324,18 @@ export async function setup(ctx) {
       <label class="et-check" title="Kevin MacLeod's incompetech tracks, CC BY 4.0"><input data-et="enableMusic" type="checkbox"> Music</label>
       <label class="et-check" data-et="loopMusicWrap" title="Keep the track playing between replies until another music cue replaces it. Stop, music off, or changing chats ends playback."><input data-et="loopMusic" type="checkbox"> Loop music</label>
     </div>
+    <h4 class="et-subhead">Playback</h4>
+    <div class="et-tuning-grid">
+      <section class="et-tuning">
+        <div class="et-tuning-head"><span class="et-tuning-title">Playback speed</span><span class="et-tuning-hint">Speaks voices faster or slower with the pitch kept. Type any speed from 0.07× to 16×, the browser maximum. Sound effects and ambience stay at normal speed.</span></div>
+        <div class="et-tuning-slot" data-et="playbackSpeedSlot"></div>
+        <label class="et-tuning-max" title="Top end of every speed slider, from 1× to 16×. Typed speeds are not limited by it.">Slider maximum<span class="et-tuning-max-entry"><input data-et="speedSliderMax" type="number" min="1" max="16" step="0.25" inputmode="decimal"><span aria-hidden="true">×</span></span></label>
+      </section>
+      <section class="et-tuning">
+        <div class="et-tuning-head"><span class="et-tuning-title">Gap between voices</span><span class="et-tuning-hint">Silence between consecutive spoken blocks. Sound effects and ambience are not counted.</span></div>
+        <div class="et-tuning-slot" data-et="voiceGapSlot"></div>
+      </section>
+    </div>
     <h4 class="et-subhead">Reading</h4>
     <div class="et-row">
       <label class="et-check" style="display:inline-flex">Highlight spoken text<select data-et="readAlong" style="width:auto"><option value="off">Off</option><option value="passage">Passage</option><option value="word">Word by word</option></select></label>
@@ -1719,7 +2344,16 @@ export async function setup(ctx) {
       <label class="et-check" hidden><input data-et="useStyle" type="checkbox" checked> Delivery styles</label>
       <label class="et-check" hidden><input data-et="useFastClassifier" type="checkbox"> Fast Attribution (0ms instant for narration & 1-on-1 dialogue)</label>
     </div>
-    <label hidden>Ignored tags<textarea data-et="ignoredTags" rows="2" placeholder="summary, .panel-class, #panel-id"></textarea></label>
+    <details>
+      <summary>Skip tags and blocks</summary>
+      <p class="et-hint">Automatic filtering skips interface panels. Add tags, classes or IDs below to exclude other blocks from speech across all chats.</p>
+      <label>Custom skip rules<textarea data-et="ignoredTags" rows="2" placeholder="summary, .status-panel, #phone-panel" aria-label="Skip tags and blocks"></textarea></label>
+      <small>Separate entries with commas or spaces. For example, &lt;summary&gt;, .status-panel or #phone-panel. Text inside matching blocks is skipped too.</small>
+      <label class="et-check"><input data-et="skipMeta" type="checkbox" checked> Skip non-story blocks</label>
+      <div class="et-row"><button data-et="previewReading" class="et-btn-subtle">Preview text to read</button></div>
+      <small>The preview applies tag and interface filtering. Optional non-story checking runs when you plan a reply.</small>
+      <pre data-et="readingPreview" role="status" hidden style="white-space:pre-wrap;overflow-wrap:anywhere;max-height:240px;overflow:auto;font:inherit;font-size:.85em"></pre>
+    </details>
 
     <details>
       <summary>Advanced Settings</summary>
@@ -1731,7 +2365,6 @@ export async function setup(ctx) {
         <label>Prefetch passages<input data-et="prefetch" type="number" min="0" max="4" value="1"></label>
         <label class="et-check"><input data-et="allowLlmFallback" type="checkbox"> Allow LLM fallback after Jev fails (extra cost)</label>
         <label class="et-check"><input data-et="normalizeLoudness" type="checkbox" checked> Match passage loudness</label>
-        <label class="et-check"><input data-et="skipMeta" type="checkbox" checked> Skip non-story blocks</label>
         <label hidden>Lumiverse API base<input data-et="apiBase" value="/api/v1"></label>
         <label>Freesound API key (Foley)<input data-et="freesoundApiKey" type="password" placeholder="Freesound token"></label>
       </div>
@@ -1739,6 +2372,7 @@ export async function setup(ctx) {
       <div class="et-row">
         <label class="et-check"><input data-et="sectionButtons" type="checkbox"> Show message play controls</label>
         <label class="et-check"><input data-et="enableMixer" type="checkbox"> Floating audio mixer</label>
+        <label class="et-check" title="Use the Abyssal Constellation appearance for the mixer."><input data-et="abyssalMixerTheme" type="checkbox"> Match Abyssal Constellation</label>
         <label class="et-check"><input data-et="showAutoPlanAction" type="checkbox"> Show Auto-plan in chat toolbar</label>
       </div>
       <label data-et="extraVoicesWrap" style="margin-top:10px"><span data-et="extraVoicesLabel">Additional voices & community models (ID | description)</span><textarea data-et="extraVoices" rows="2" placeholder="voice_id | description (e.g. Fish Audio community model ID or Gemini voice)"></textarea></label>
@@ -1863,8 +2497,12 @@ export async function setup(ctx) {
   const followResume=document.createElement('button');followResume.type='button';followResume.className='choir-follow-resume';followResume.hidden=true;
   document.body.append(followResume);unsubs.push(()=>followResume.remove());
   let currentSpeaker='', currentGroupLevel=null,currentGroupNames=[], audioContext, currentGain, currentNormalize=1, activePlayback,advancePlayback,skipAudio,audioReady=false,generationPolicyChanged,mixerPlaybackSegments=null,bedsPaused=false;
+  // Speech takes the playback speed; the silence before a spoken block is held here so Pause and skips reach it.
+  let currentAudioSpeech=false,currentSpeedSpeaker='',voiceGapHold=null;
   // Keep the launcher unobtrusive on every load, including existing expanded preferences.
-  const savedMixer=await ctx.settings.get('ui:mixer').catch(()=>null);let mixerState={master:1,sfx:1,ambience:1,music:1,levelsCollapsed:true,channelTab:'',channels:{},x:20,y:80,enabled:savedMixer?(savedMixer.enabled??true):Boolean(config?.enableMixer),...(savedMixer||{}),collapsed:true};
+  const savedMixer=await ctx.settings.get('ui:mixer').catch(()=>null);let mixerState={master:1,sfx:1,ambience:1,music:1,levelsCollapsed:true,channelTab:'',channels:{},x:20,y:80,enabled:savedMixer?(savedMixer.enabled??true):Boolean(config?.enableMixer),abyssalTheme:false,playbackRate:PLAYBACK_RATE_LIMITS.fallback,voiceGapMs:VOICE_GAP_LIMITS.fallback,...(savedMixer||{}),collapsed:true};
+  // Global speed and gap are mixer state, saved in ui:mixer beside the channel levels, so they work with or without a chat open.
+  mixerState.speedSliderMax=normalizeSpeedSliderMax(mixerState.speedSliderMax);mixerState.playbackRate=normalizePlaybackRate(mixerState.playbackRate);mixerState.voiceGapMs=normalizeVoiceGap(mixerState.voiceGapMs);
   // Solo is no longer exposed; old solo preferences must not silently mute other voices.
   for(const channel of Object.values(mixerState.channels))delete channel.solo;
   // Dedicated effect levels replace legacy voice-channel preferences.
@@ -1901,8 +2539,112 @@ export async function setup(ctx) {
   }
   const masterLabel=document.createElement('div');masterLabel.className='cm-master';masterLabel.textContent='Master';
   const masterReadout=document.createElement('span');masterReadout.className='cm-percent';masterReadout.setAttribute('aria-hidden','true');const masterVolume=makeMixerVolume('Master',mixerState.master,masterReadout,value=>{mixerState.master=value;applyVolume();});masterLabel.append(masterVolume,masterReadout);
+  // Same slider, step buttons and entry as the volume rows. The slider shows min..max; typed values and buttons reach hardMin..hardMax, and the readout always shows the true value.
+  function makeMixerTuning(name,{min,max,hardMin=min,hardMax=max,step,nudge,fallback,decimals,unit,text,title,onValue,onCommit,onReset}){
+    const root=document.createElement('div');root.className='cm-volume';root.title=title;
+    const range=document.createElement('input');range.type='range';range.min=String(min);range.max=String(max);range.step=String(step);range.setAttribute('aria-label',name);
+    range.title=`Drag or use arrow keys to adjust, or double-click to reset to ${text(fallback)}.`;
+    const steps=document.createElement('div');steps.className='cm-volume-steps';
+    const minus=document.createElement('button'),plus=document.createElement('button');minus.type=plus.type='button';minus.textContent='−';plus.textContent='+';
+    minus.setAttribute('aria-label',`Decrease ${name.toLowerCase()}`);plus.setAttribute('aria-label',`Increase ${name.toLowerCase()}`);
+    const entry=document.createElement('div');entry.className='cm-volume-entry';const number=document.createElement('input');number.type='number';number.min=String(hardMin);number.max=String(hardMax);number.step=String(step);number.inputMode='decimal';number.setAttribute('aria-label',`${name} value`);
+    const suffix=document.createElement('span');suffix.textContent=unit;suffix.setAttribute('aria-hidden','true');entry.append(number,suffix);steps.append(minus,entry,plus);root.append(range,steps);
+    let current=fallback;
+    const clamp=(value,low,high)=>Math.min(high,Math.max(low,value));
+    // Typed values and buttons land on the step grid inside hardMin..hardMax. NaN keeps the current value.
+    const quantize=value=>{const numeric=Number(value);if(!Number.isFinite(numeric))return current;return Number((hardMin+Math.round((clamp(numeric,hardMin,hardMax)-hardMin)/step)*step).toFixed(decimals));};
+    // An entry keeps its text only while the user types in it. Any other change, such as the drawer slider, repaints it even if the entry still has focus.
+    let typing=false;
+    const paint=()=>{
+      // The slider can only show min..max, so a value beyond it pins the thumb at the end and the fill at 100%.
+      const shown=clamp(current,min,max);
+      range.value=String(shown);
+      // Inside the slider's range the thumb's value is the one the browser kept, so thumb and readout always agree.
+      const actual=Number(range.value);if(current>=min && current<=max && Number.isFinite(actual))current=actual;
+      if(!typing)number.value=current.toFixed(decimals);
+      range.style.setProperty('--choir-level',`${(shown-min)/(max-min)*100}%`);range.setAttribute('aria-valuetext',text(current));
+      minus.disabled=current<=hardMin;plus.disabled=current>=hardMax;
+    };
+    const change=(next,commit)=>{current=quantize(next);paint();onValue(current);if(commit)onCommit();};
+    range.oninput=()=>{typing=false;change(range.value,false);};range.onchange=()=>onCommit();
+    // Double-click resets to the default, unless the control supplies its own reset (a character that follows the master speed).
+    const reset=()=>{typing=false;return onReset?onReset():change(fallback,true);};
+    range.ondblclick=reset;
+    number.oninput=()=>{if(number.value.trim() && Number.isFinite(Number(number.value))){typing=true;change(number.value,true);}};
+    number.onblur=()=>{typing=false;paint();};number.onkeydown=event=>{if(event.key==='Enter'){event.preventDefault();number.blur();}};
+    minus.onclick=()=>{typing=false;change(current-nudge,true);};plus.onclick=()=>{typing=false;change(current+nudge,true);};
+    // A row that follows another value shows it dimmed and says how to set its own value.
+    const setInherited=(flag,inheritedHint,ownHint)=>{root.classList.toggle('cm-inherited',Boolean(flag));root.title=flag?inheritedHint:ownHint;};
+    paint();
+    // The slider's top end can move (the user's slider maximum). Typed values keep their own hardMin..hardMax.
+    const setSliderMax=value=>{max=Math.max(min+step,Number(value)||max);range.max=String(max);paint();};
+    return {root,set(value){const next=quantize(value);if(next!==current)typing=false;current=next;paint();},reset,setInherited,setSliderMax};
+  }
+  // Speed and gap are mixer state saved in ui:mixer beside the channel levels, so they work with or without a chat open.
+  // The slider shows a practical part of the speed range. Typed values and the step buttons reach every speed the browser plays.
+  // The slider's top end is the user's choice (settings card), from 1× up to the 16× browser maximum.
+  const SPEED_SLIDER={min:0.25,max:mixerState.speedSliderMax};
+  const SPEED_CONTROL={...SPEED_SLIDER,hardMin:PLAYBACK_RATE_LIMITS.min,hardMax:PLAYBACK_RATE_LIMITS.max,step:PLAYBACK_RATE_LIMITS.step,fallback:PLAYBACK_RATE_LIMITS.fallback,nudge:0.05,decimals:2,unit:'×',text:value=>`${value.toFixed(2)}×`};
+  const GAP_CONTROL={...VOICE_GAP_LIMITS,nudge:50,decimals:0,unit:'ms',text:value=>`${value} ms`};
+  const SPEED_TITLE='Speaks Choir voices faster or slower with the pitch kept. Drag between 0.25× and the slider maximum set in Choir settings. Type any speed from 0.07× to 16×, the browser maximum. Sound effects and ambience stay at normal speed.';
+  const GAP_TITLE='Silence between consecutive spoken blocks. Sound effects and ambience are not counted.';
+  // A typed speed above the slider's top end raises it, so dragging continues from the typed speed instead of jumping back.
+  const stretchSpeedSlider=value=>{if(value>mixerState.speedSliderMax)setSpeedSliderMax(Math.ceil(value));};
+  const refreshSpeechGrouping=()=>{updateGroupingStatus();if(config?.batchSpeech)refreshSectionControls();};
+  const setSpeed=value=>{stretchSpeedSlider(value);mixerState.playbackRate=value;syncVoiceControls();applyPlaybackRate();refreshSpeechGrouping();};
+  const setGap=value=>{mixerState.voiceGapMs=value;syncVoiceControls();refreshSpeechGrouping();};
+  const saveMixerValue=()=>void persistMixer();
+  // Detailed controls stay in settings; the mixer offers three quick speed choices.
+  const speedSettings=makeMixerTuning('Playback speed in settings',{...SPEED_CONTROL,title:SPEED_TITLE,onValue:setSpeed,onCommit:saveMixerValue});
+  const gapSettings=makeMixerTuning('Gap between voices in settings',{...GAP_CONTROL,title:GAP_TITLE,onValue:setGap,onCommit:saveMixerValue});
+  // A character's own speed replaces the master speed for that character. Without one (no key, or null) it follows the master speed.
+  const speakerSpeedRows=[];
+  function paintSpeakerSpeeds(){
+    const master=voiceRate();
+    for(let index=speakerSpeedRows.length-1;index>=0;index--)if(!speakerSpeedRows[index].speed.root.isConnected)speakerSpeedRows.splice(index,1);
+    for(const row of speakerSpeedRows){
+      row.speed.root.querySelector('input[type="range"]').setAttribute('aria-label',`${row.speaker} speed`);
+      row.speed.root.querySelector('input[type="number"]').setAttribute('aria-label',`${row.speaker} speed value`);
+      row.followButton.setAttribute('aria-label',`Follow playback speed for ${row.speaker}`);
+      const custom=speakerPlaybackRate(mixerState.channels,row.speaker);
+      const shown=custom ?? master;
+      row.speed.set(shown);
+      row.speed.setInherited(custom===null,
+        `Follows master speed (${shown.toFixed(2)}×). Change to set a custom speed for ${row.speaker}.`,
+        `Custom speed for ${row.speaker}, used instead of the global speed. Double-click or choose Use global to follow the global speed again.`);
+      row.followButton.hidden=custom===null;
+    }
+  }
+  // Clears the custom speed entirely, so the character follows the master speed again.
+  function followMasterSpeed(speaker){if(Object.hasOwn(mixerState.channels,speaker))delete mixerState.channels[speaker].speed;paintSpeakerSpeeds();applyPlaybackRate();refreshSpeechGrouping();saveMixerValue();}
+  function attachDrawerTuning(slotName,control,label,defaultText){
+    const slot=$(slotName);if(!slot)return;
+    const reset=document.createElement('button');reset.type='button';reset.className='et-tuning-reset';reset.textContent='Reset';reset.title=`Reset ${label} to ${defaultText}`;reset.setAttribute('aria-label',`Reset ${label}`);reset.onclick=()=>control.reset();
+    slot.replaceChildren(control.root,reset);
+  }
+  attachDrawerTuning('playbackSpeedSlot',speedSettings,'playback speed',SPEED_CONTROL.text(SPEED_CONTROL.fallback));
+  attachDrawerTuning('voiceGapSlot',gapSettings,'gap between voices',GAP_CONTROL.text(GAP_CONTROL.fallback));
+  speedSettings.root.querySelector('input[type="range"]').dataset.et='playbackRate';speedSettings.root.querySelector('input[type="number"]').dataset.et='playbackRateEntry';
+  gapSettings.root.querySelector('input[type="range"]').dataset.et='voiceGapMs';gapSettings.root.querySelector('input[type="number"]').dataset.et='voiceGapMsEntry';
+  // Moves the top end of the global settings slider and each character's slider.
+  function setSpeedSliderMax(value){
+    mixerState.speedSliderMax=normalizeSpeedSliderMax(value);
+    for(const control of [speedSettings,...speakerSpeedRows.map(row=>row.speed)])control.setSliderMax(mixerState.speedSliderMax);
+    const field=$('speedSliderMax');if(field && document.activeElement!==field)field.value=String(mixerState.speedSliderMax);
+  }
+  const sliderMaxField=$('speedSliderMax');
+  if(sliderMaxField){
+    sliderMaxField.value=String(mixerState.speedSliderMax);
+    sliderMaxField.onchange=()=>{setSpeedSliderMax(sliderMaxField.value);sliderMaxField.value=String(mixerState.speedSliderMax);saveMixerValue();};
+  }
+  const speedOptions=document.createElement('div');speedOptions.className='cm-speed-options';speedOptions.setAttribute('role','group');speedOptions.setAttribute('aria-label','Playback speed');
+  const speedButtons=[['Normal',1],['Fast',1.5],['Very fast',2]].map(([label,rate])=>{
+    const button=document.createElement('button');button.type='button';button.dataset.playbackRate=String(rate);button.setAttribute('aria-label',label);button.textContent=label;
+    button.onclick=()=>{setSpeed(rate);saveMixerValue();};speedOptions.append(button);return button;
+  });
+  const playbackTuning=document.createElement('div');playbackTuning.className='cm-playback-tuning';playbackTuning.append(speedOptions);
   const mixerPlay=document.createElement('button');mixerPlay.type='button';mixerPlay.dataset.choirAction='playback';
-  mixerPlay.onclick=()=>{if(currentAudio){if(currentAudio.paused){currentAudio.play().then(updateTransport).catch(e=>status(e.message,true));pauseBeds(false);}else{currentAudio.pause();pauseBeds(true);updateTransport();}}else if(!busy && !controller){mixerPlay.disabled=true;status('Loading playback…');run(async()=>{const latest=latestReply();if(!latest)throw new Error('No assistant reply in the active chat.');if(plan && planSource?.chatId===chatId && planSource.messageId===latest.id && sameSpeech(planSource.content,ctx.messages.getContent(latest.id)))await play({resume:true});else await playMessage(latest.id);});}};
+  mixerPlay.onclick=()=>{if(voiceGapHold){voiceGapHold.paused?voiceGapHold.resume():voiceGapHold.pause();pauseBeds(voiceGapHold.paused);updateTransport();return;}if(currentAudio){if(currentAudio.paused){currentAudio.play().then(updateTransport).catch(e=>status(e.message,true));pauseBeds(false);}else{currentAudio.pause();pauseBeds(true);updateTransport();}}else if(!busy && !controller){mixerPlay.disabled=true;status('Loading playback…');run(async()=>{const latest=latestReply();if(!latest)throw new Error('No assistant reply in the active chat.');if(plan && planSource?.chatId===chatId && planSource.messageId===latest.id && sameSpeech(planSource.content,ctx.messages.getContent(latest.id)))await play({resume:true});else await playMessage(latest.id);});}};
   const mixerPlanLatest=document.createElement('button');mixerPlanLatest.type='button';mixerPlanLatest.dataset.choirAction='plan-latest';mixerPlanLatest.innerHTML=ICON_PLAN;mixerPlanLatest.title='Plan latest reply without starting audio';mixerPlanLatest.setAttribute('aria-label','Plan latest reply');mixerPlanLatest.onclick=()=>run(planLatest);
   const mixerNext=document.createElement('button');mixerNext.type='button';mixerNext.innerHTML=ICON_NEXT;mixerNext.title='Next spoken block';mixerNext.setAttribute('aria-label','Next spoken block');mixerNext.disabled=true;mixerNext.onclick=()=>advancePlayback?.();
   const mixerPrevious=document.createElement('button');mixerPrevious.type='button';mixerPrevious.innerHTML=ICON_PREVIOUS;mixerPrevious.title='Previous spoken block';mixerPrevious.setAttribute('aria-label','Previous spoken block');mixerPrevious.disabled=true;mixerPrevious.onclick=()=>advancePlayback?.(-1);
@@ -1926,7 +2668,7 @@ export async function setup(ctx) {
   const mixerMusic=document.createElement('button');mixerMusic.type='button';mixerMusic.dataset.choirAction='music';mixerMusic.setAttribute('aria-label','Background music');mixerMusic.onclick=()=>run(()=>{if(!chatId)throw new Error('Open a chat first.');$('enableMusic').checked=!$('enableMusic').checked;scheduleSettingsSave();syncMusicPlayback();});
   autoPlanRow.append(mixerAutoPlan,mixerAutoPlay,mixerSfx,mixerAmbience,mixerMusic);
   levelsBody.append(channelTabs,channelsRoot,legend);levels.append(channelsTitle,levelsBody);
-  player.append(nowPlaying,transport,mixerSeek.root);mixerBody.append(player,masterLabel,autoPlanRow,levels);mixer.append(mixerHeader,mixerBody);document.body.append(mixer);
+  player.append(nowPlaying,transport,mixerSeek.root);mixerBody.append(player,masterLabel,playbackTuning,autoPlanRow,levels);mixer.append(mixerHeader,mixerBody);document.body.append(mixer);
   unsubs.push(()=>{autoPlanAction?.destroy();autoPlanAction=null;toolbarAutoPlan.remove();});
   function refreshAutoPlanControls(){
     mixerAutoPlan.textContent='Auto-plan';
@@ -2062,11 +2804,53 @@ export async function setup(ctx) {
   const docWin=root?.ownerDocument?.defaultView || (typeof window!=='undefined'?window:null);
   const resizeMixer=()=>positionMixer();docWin?.addEventListener('resize',resizeMixer);
   unsubs.push(()=>{docWin?.removeEventListener('resize',resizeMixer);mixer.remove();audioContext?.close().catch(()=>{});});
+  function voiceRate(){return normalizePlaybackRate(mixerState.playbackRate);}
+  function voiceGapSetting(){return normalizeVoiceGap(mixerState.voiceGapMs);}
+  // The silence goes before a spoken block only when an earlier spoken block precedes it. Sound effects and ambience are skipped over.
+  function gapBefore(items,index){
+    if(!items?.[index] || items[index].kind)return 0;
+    for(let i=index-1;i>=0;i--)if(items[i] && !items[i].kind && !playbackExcluded(items[i]))return voiceGapSetting();
+    return 0;
+  }
+  // Keep the quick speed buttons and drawer controls in step with saved playback settings.
+  function syncVoiceControls(){
+    const rate=voiceRate(),gap=voiceGapSetting();
+    speedSettings.set(rate);gapSettings.set(gap);
+    for(const button of speedButtons)button.setAttribute('aria-pressed',String(Number(button.dataset.playbackRate)===rate));
+    paintSpeakerSpeeds();
+  }
+  // Browsers accept only their own playback range, so the speed is first clamped into it. A browser that still refuses it plays at normal speed instead of stopping the block.
+  function setAudioRate(audio,rate){
+    try{audio.playbackRate=browserPlaybackRate(rate);}
+    catch{try{audio.playbackRate=1;}catch{}}
+  }
+  // Speed reaches the spoken block that is playing; sound effects, ambience and previews keep normal speed.
+  function applyPlaybackRate(){if(currentAudio)setAudioRate(currentAudio,currentAudioSpeech?playbackRateFor(currentSpeedSpeaker):1);}
+  // A character's own speed when it has one, otherwise the playback speed.
+  function playbackRateFor(speaker){return effectivePlaybackRate(voiceRate(),mixerState.channels,speaker);}
+  // The speaker whose speed a block uses: the first speaker of a unison or dialogue block, otherwise the block's speaker.
+  function primarySpeaker(item,fallback){return item?.unison?.[0]?.speaker ?? item?.turns?.[0]?.speaker ?? fallback;}
+  // A held gap counts as playback that has not started yet, so Next and Previous keep its paused state.
+  const heldPaused=()=>voiceGapHold?voiceGapHold.paused:Boolean(currentAudio?.paused);
+  // The silence before a spoken block. Its countdown runs in real time and only while playback runs, so Pause holds it.
+  function startVoiceGap(ms,paused,finish){
+    let remaining=ms,since=0,timer=null;
+    const hold={
+      paused,
+      run(){if(hold.paused || timer!==null)return;since=Date.now();timer=setTimeout(()=>{timer=null;remaining=0;finish();},remaining);},
+      pause(){if(hold.paused)return;hold.paused=true;if(timer!==null){clearTimeout(timer);timer=null;remaining=Math.max(0,remaining-(Date.now()-since));}},
+      resume(){if(!hold.paused)return;hold.paused=false;hold.run();},
+      cancel(){if(timer!==null){clearTimeout(timer);timer=null;}}
+    };
+    hold.run();
+    return hold;
+  }
   function renderMixer(){
     const doc=root?.ownerDocument || (typeof document!=='undefined'?document:null);
     if(!doc)return;
     updateGroupingStatus();
     refreshAutoPlanControls();
+    syncVoiceControls();
     const focused=doc.activeElement,focusLabel=channelsRoot.contains(focused)?focused.getAttribute('aria-label'):null,focusTabKey=channelTabs.contains(focused)?focused.dataset.channelKey:null,scrollTop=channelsRoot.scrollTop;
     updateNextControls();
     channelsRoot.replaceChildren();speakerLabel.replaceChildren();
@@ -2122,7 +2906,7 @@ export async function setup(ctx) {
     updateSeekControls();
   }
   function updateTransport(){
-    const latest=latestReply(),paused=!currentAudio || currentAudio.paused,label=currentAudio?(paused?'Resume Choir audio':'Pause Choir audio'):'Play latest reply';
+    const latest=latestReply(),paused=voiceGapHold?voiceGapHold.paused:(!currentAudio || currentAudio.paused),label=currentAudio?(paused?'Resume Choir audio':'Pause Choir audio'):'Play latest reply';
     mixerPlay.innerHTML=(paused?ICON_TRANSPORT_PLAY:ICON_TRANSPORT_PAUSE).replace(/<circle[^>]*\/>/,'');mixerPlay.title=label;mixerPlay.setAttribute('aria-label',label);mixerPlay.disabled=currentAudio?!audioReady:busy || Boolean(controller) || !chatId || !latest;
     mixerPlanLatest.disabled=busy || Boolean(controller) || !chatId || !latest;
     mixerStop.disabled=!controller && !currentAudio && !autoReplyQueue.size && !beds.ambience && !beds.music;
@@ -2168,6 +2952,9 @@ export async function setup(ctx) {
   }
   $('showMixer').onclick=()=>{const close=Boolean(config?.enableMixer) && !mixerState.collapsed;config.enableMixer=true;if($('enableMixer'))$('enableMixer').checked=true;mixerState.enabled=true;mixerState.collapsed=close;positionMixer();persistMixer();scheduleSettingsSave();};
   if($('enableMixer'))$('enableMixer').onchange=()=>{config.enableMixer=$('enableMixer').checked;mixerState.enabled=config.enableMixer;positionMixer();scheduleSettingsSave();persistMixer();};
+  const applyMixerTheme=()=>{const enabled=mixerState.abyssalTheme===true;mixer.dataset.abyssalTheme=String(enabled);$('abyssalMixerTheme').checked=enabled;};
+  $('abyssalMixerTheme').onchange=()=>{mixerState.abyssalTheme=$('abyssalMixerTheme').checked;applyMixerTheme();void persistMixer();};
+  applyMixerTheme();
   positionMixer();
   function status(text,error=false) {
     if(disposed)return;
@@ -2229,6 +3016,11 @@ export async function setup(ctx) {
     if(!nativeConnections.some(c=>c.id===connectionId))throw new Error('Select an available TTS connection for this speaker.');
     const conn=nativeConnections.find(c=>c.id===connectionId);
     const provider=detectProvider(route);
+    if(provider==='fish_audio'){
+      const assigned=[...(config.fixed || []),...Object.values(config.casts || {}).flat()].filter(actor=>config.connectionMode==='one' || (actor.route || scope(config))===route);
+      const ids=[conn.voice,...assigned.map(actor=>config.connectionMode==='one'?config.singleVoices?.[route]?.[actor.speaker] ?? actor.voice:actor.voice)];
+      extra.push(...ids.filter(id=>/^[a-f0-9]{32}$/i.test(id || '')).map(id=>({id,name:id})));
+    }
     const fallback=nativeProviders.find(item=>item.id===conn.provider)?.capabilities?.staticVoices || [];
     let data;
     try{data=await api(`/tts-connections/${encodeURIComponent(connectionId)}/voices`).then(response=>response.json());}
@@ -2246,7 +3038,9 @@ export async function setup(ctx) {
     const merged=new Map(baseVoices.map(voice=>[voice.id,voice]));
     for(const voice of extra)merged.set(voice.id,{...merged.get(voice.id),...voice});
     const catalogue=normalizeVoiceCatalogue([...merged.values()]);
-    if(!catalogue.length)throw new Error(data.error || 'This TTS connection returned no voices. Configure its voice catalogue in Lumiverse.');
+    // Fish IDs come from its community catalogue or a pasted voice ID. The
+    // relay's mixed preset list can legitimately contain no Fish voices yet.
+    if(!catalogue.length && (provider!=='fish_audio' || data.error))throw new Error(data.error || 'This TTS connection returned no voices. Configure its voice catalogue in Lumiverse.');
     voiceCatalogues.set(route,catalogue);return catalogue;
   }
   const settingsKey = id => `chat:${id}`;
@@ -2257,16 +3051,123 @@ export async function setup(ctx) {
   let capturedDefaults=null,defaultOperation=false,defaultsRevision=0;
   let closeDefaultEditor;
   unsubs.push(()=>closeDefaultEditor?.());
-  // Settings saved for the retired direct Gemini route fall back to the default TTS connection.
-  function retireGeminiRoute(saved){
+  // Repair older settings before hidden voice styles or retired routes reach validation.
+  function normalizeSavedSettings(saved){
     const value=structuredClone(saved);
     for(const name of ['mode','model','allowVoiceFallback','autoDesignNPCs','batchGemini'])delete value[name];
     delete value.casts?.gemini;delete value.singleVoices?.gemini;
-    for(const actor of [...(value.fixed || []),...(value.leadVoices || []),...Object.values(value.casts || {}).flat(),value.npcPolicy])if(actor?.route==='gemini')actor.route='';
+    for(const actor of [...(value.fixed || []),...(value.leadVoices || []),...Object.values(value.casts || {}).flat()]){
+      if(actor?.route==='gemini')actor.route='';
+      if(typeof actor?.style==='string')actor.style=actor.style.slice(0,600);
+    }
+    if(value.npcPolicy?.route==='gemini')value.npcPolicy.route='';
     for(const id in value.extraVoiceRoutes)value.extraVoiceRoutes[id]=value.extraVoiceRoutes[id].filter(route=>route!=='gemini');
     return value;
   }
   const preferenceSnapshot=value=>Object.fromEntries(preferenceFields.filter(name=>value && Object.hasOwn(value,name)).map(name=>[name,structuredClone(value[name])]));
+  // The wizard uses the same connections, catalogue, synthesis, and default
+  // format as the settings panel. It never persists a chat cast.
+  let setupTestController=null,setupAutoStarted=false;
+  const wizardConnections=async(signal)=>{
+    const paths=['/tts-connections?limit=200','/connections?limit=200','/decision-connections?limit=200'];
+    const results=await Promise.allSettled([...paths.map(path=>api(path,{signal}).then(response=>response.json())),rpc('ping',{},signal,8000)]);
+    if(signal?.aborted)throw abortError();
+    const result={tts:[],llm:[],decision:[],errors:[]};
+    ['tts','llm','decision'].forEach((kind,index)=>{
+      if(results[index].status==='fulfilled')result[kind]=results[index].value.data || [];
+      else result.errors.push(`Could not load ${kind==='tts'?'TTS':kind==='llm'?'LLM':'Decision'} connections: ${results[index].reason.message}. Refresh to retry.`);
+    });
+    // Use the fresh TTS list for every catalogue and synthesis lookup.
+    if(results[0].status==='fulfilled')nativeConnections=result.tts;
+    result.directJev=results[3].status==='fulfilled' && results[3].value.decisionsAvailable===false;
+    return result;
+  };
+  async function withSetupTest(signal,operation){
+    if(disposed || signal.aborted)throw abortError();
+    stop(false);const ctrl=new AbortController();setupTestController=controller=ctrl;const token=revision;
+    const cancel=()=>ctrl.abort();signal.addEventListener('abort',cancel,{once:true});setBusy(true);
+    try{return await operation(ctrl.signal);}
+    finally{
+      signal.removeEventListener('abort',cancel);ctrl.abort();
+      if(setupTestController===ctrl)setupTestController=null;
+      if(controller===ctrl)controller=null;
+      if(!disposed && token===revision)setBusy(false);
+    }
+  }
+  const setupWizard=createSetupWizard(ctx,{
+    report:message=>status(message,true),
+    session:()=>({jev:$('jevKey').value.trim()}),
+    setSession:(kind,value)=>{if(kind==='jev')$('jevKey').value=value;},
+    connections:wizardConnections,
+    voices:route=>ensureCatalogue(route),
+    stopTest:()=>{if(setupTestController){setupTestController.abort();setupTestController=null;stop(false);}},
+    connectionGuide:()=>{tab.activate?.();status('Open Lumiverse’s Connect panel, then TTS, LLM, or Decision to configure a connection. Return to Choir, run setup again, and refresh connections.');},
+    snapshot:async()=>{
+      await flushSettings();
+      const [global,preset,legacy,chat,connections]=await Promise.all([ctx.settings.get(GLOBAL_SETTINGS_KEY),ctx.settings.get(CAPTURED_DEFAULTS_KEY),ctx.settings.get('settings:defaults'),chatId?ctx.settings.get(settingsKey(chatId)):null,wizardConnections()]);
+      const value=structuredClone(config || defaults());
+      if(value.connectionMode==='one')value.fixed=casting(value).fixed;
+      return {config:value,preset,connections,existing:Boolean(global || preset || legacy || chat)};
+    },
+    testPlanner:(draft,signal)=>withSetupTest(signal,async testSignal=>{
+      const result=await rpc('testPlanner',{
+        plannerMode:draft.plannerMode,connectionId:draft.planner,decisionConnection:draft.decisionConnection,
+        jevApiKey:$('jevKey').value.trim(),jevEndpoint:draft.jevEndpoint,
+        config:{fixed:[{speaker:'Narrator',voice:'local',style:''}],npcs:[],voices:[{id:'local'}],useStyle:false}
+      },testSignal,65000);
+      return `${result.provider} · ${result.model}: ${result.response}`;
+    }),
+    testVoice:(draft,actor,signal)=>withSetupTest(signal,async testSignal=>{
+      const route=draft.connectionMode==='one'?scope(draft):actor.route || scope(draft);
+      const request=synthesisSettings({speaker:actor.speaker || 'NPC',voice:actor.voice,text:'Hello! Choir is ready to bring your story to life.',style:actor.style || '',route},draft);
+      if(!request.connection)throw new Error('This TTS connection is no longer available. Refresh connections.');
+      const blob=await nativeSpeech(request.connection,{voice:actor.voice,text:request.segment.text,parameters:request.parameters},testSignal,actor.speaker || 'NPC');
+      if(testSignal.aborted)throw abortError();
+      await playBlob(blob,testSignal,actor.speaker || 'NPC',0,draft.normalizeLoudness);
+    }),
+    save:async(draft,initial,signal)=>{
+      await flushSettings();if(disposed || signal.aborted)throw abortError();
+      const route=scope(draft),fixed=draft.fixed.map(actor=>({...actor,route:draft.connectionMode==='one'?route:actor.route || route}));
+      const policy={...draft.npcPolicy,route:draft.connectionMode==='one'?'':draft.npcPolicy.route || ''};
+      const selected=fixed.filter(actor=>!actor.excluded).map(actor=>({id:actor.voice,route:actor.route}));
+      if(['single','preferred'].includes(policy.mode))selected.push(...(policy.mode==='single'?[policy.voice]:policy.voices).map(id=>({id,route:policy.route || route})));
+      const routes=[...new Set([route,...fixed.map(actor=>actor.route),...(policy.mode==='skip'?[]:[policy.route || route])])];
+      const lists=await Promise.all(routes.map(async route=>{
+        let list;
+        try{list=await ensureCatalogue(route);}
+        catch(error){if(detectProvider(route)!=='fish_audio' || !selected.some(voice=>voice.route===route && voice.id))throw error;list=[];}
+        return list.map(voice=>({...voice,route}));
+      }));
+      // Existing defaults support explicit provider IDs not returned by a
+      // catalogue (e.g. private/community Fish voices). Preserve that behavior.
+      const catalogue=new Map(lists.flat().map(voice=>[JSON.stringify([voice.route,voice.id]),voice]));
+      for(const voice of selected)if(voice.id && !catalogue.has(JSON.stringify([voice.route,voice.id]))){
+        if(detectProvider(voice.route)==='fish_audio'){
+          if(!/^[A-Za-z0-9_-]{1,200}$/.test(voice.id))throw new Error('Enter a Fish Audio voice ID using letters, numbers, hyphens or underscores.');
+          if([...GEMINI_VOICES,...OPENAI_VOICES].some(item=>item.id===voice.id))throw new Error(`Fish Audio requires a Fish voice ID; ${voice.id} belongs to Gemini or OpenAI.`);
+        }else throw new Error(`Voice ${voice.id} is not in this connection’s catalogue. Choose an available voice or configure the voice catalogue in Lumiverse.`);
+        catalogue.set(JSON.stringify([voice.route,voice.id]),{...voice,name:voice.id});
+      }
+      validateNumericSettings(draft);
+      validateCastConfig({fixed:fixed.map(actor=>actor.excluded?{...actor,voice:''}:actor),npcs:[],voices:[...catalogue.values()],defaultRoute:route,npcPolicy:policy,useStyle:draft.useStyle});
+      if(disposed || signal.aborted)throw abortError();
+      const [global,preset]=await Promise.all([ctx.settings.get(GLOBAL_SETTINGS_KEY),ctx.settings.get(CAPTURED_DEFAULTS_KEY)]);
+      const choices=preferenceSnapshot(draft),baseline=preferenceSnapshot(initial);
+      // Preserve fields edited elsewhere while the wizard was open.
+      const changes=Object.fromEntries(Object.entries(choices).filter(([name,value])=>!Object.hasOwn(global || {},name) || JSON.stringify(value)!==JSON.stringify(baseline[name])));
+      const defaultsPreset={...(preset || {}),version:2,npcPolicy:structuredClone(policy),leadVoices:fixed.map(actor=>Object.fromEntries(defaultVoiceFields.filter(name=>Object.hasOwn(actor,name)).map(name=>[name,actor[name]]))),
+        voiceCatalogue:[...new Map([...(preset?.voiceCatalogue || []),...selected.filter(voice=>voice.id).map(voice=>catalogue.get(JSON.stringify([voice.route,voice.id])))].map(voice=>[JSON.stringify([voice.route,voice.id]),voice])).values()]};
+      await saveSetupSettings(ctx.settings,[[GLOBAL_SETTINGS_KEY,{...(global || {}),...changes}],[CAPTURED_DEFAULTS_KEY,defaultsPreset]],{version:1,completed:true,deferred:false});
+      capturedDefaults=defaultsPreset;++defaultsRevision;
+      if(!disposed){
+        // Reload through the normal path: saved chats retain their own cast;
+        // unsaved/new chats inherit the just-captured defaults.
+        await run(()=>switchChat(true));
+      }
+    }
+  });
+  $('setupWizard').onclick=()=>void setupWizard.open();
+  unsubs.push(()=>setupWizard.dispose());
   function refreshDefaultControls(){
     for(const name of ['captureDefaults','captureNpcDefaults'])$(name).disabled=busy || defaultOperation || !chatId || !castRows.length;
     $('applyDefaults').disabled=busy || defaultOperation || !chatId || !castRows.length || !capturedDefaults?.leadVoices;
@@ -2436,6 +3337,8 @@ export async function setup(ctx) {
       for(const name of ['chunk','plannerTokens','prefetch'])if(!$(name).value.trim())throw new Error('Enter a value for '+$(name).parentElement.firstChild.textContent.trim()+'.');
     }catch(error){++settingsEdit;pendingSettings=null;clearTimeout(autosaveTimer);autosaveTimer=null;saveState('Not saved · check Advanced Settings',true);status(error.message,true);return false;}
     if(candidate.ignoredTags!==config.ignoredTags){stop(false);clearPlan();paragraphCues.clear();renderMessages();}
+    if(JSON.stringify(namePronunciations(pronunciationActors(candidate)))!==JSON.stringify(namePronunciations(pronunciationActors(config))))stop(false);
+    $('readingPreview').hidden=true;
     config=candidate;pendingSettings={chatId,value:structuredClone(config),edit:++settingsEdit};
     if(!config.autoPlan && !config.auto)cancelAutoReplies();
     if(autoReplyActive?.token===revision){
@@ -2743,18 +3646,19 @@ export async function setup(ctx) {
 
   let castEditorId=0;
   function makeRow(actor,container,reserved=false,open=false) {
+    const required=reserved || container===$('fixed') && actor===config.fixed[1];
     const row=document.createElement('div');row.className='et-card et-cast-row';
     const header=document.createElement('div');header.className='et-cast-header';
     const heading=document.createElement('strong'),edit=document.createElement('button');edit.type='button';edit.className='et-btn-subtle';edit.dataset.choirEdit='';
     const editor=document.createElement('div');editor.className='et-grid et-cast-editor';editor.dataset.choirCastEditor='';editor.id=`choir-cast-editor-${++castEditorId}`;editor.hidden=!open;edit.setAttribute('aria-controls',editor.id);
     const name=document.createElement('input');name.value=actor.speaker;name.disabled=reserved;name.style.display='none';name.dataset.choirPersist='';editor.prepend(name);
     const refreshHeading=()=>{const speaker=name.value.trim() || 'Character';heading.textContent=speaker;edit.textContent=editor.hidden?'Edit':'Done';edit.setAttribute('aria-label',editor.hidden?`Edit ${speaker}`:`Close ${speaker} editor`);edit.setAttribute('aria-expanded',String(!editor.hidden));};
-    if(!reserved){
+    if(!required){
       const delBtn=document.createElement('button');delBtn.type='button';delBtn.className='et-btn-subtle';delBtn.title='Remove character';delBtn.setAttribute('aria-label','Remove character');delBtn.innerHTML=ICON_CLOSE;
       delBtn.style.cssText='padding:1px 5px;line-height:1;border-radius:4px;cursor:pointer;opacity:0.65;margin-right:6px';
       delBtn.onmouseenter=()=>{delBtn.style.opacity='1';delBtn.style.color='#ef7878';};
       delBtn.onmouseleave=()=>{delBtn.style.opacity='0.65';delBtn.style.color='inherit';};
-      delBtn.onclick=(e)=>{e.preventDefault();e.stopPropagation();row.remove();};
+      delBtn.onclick=(e)=>{e.preventDefault();e.stopPropagation();row.remove();scheduleSettingsSave();renderMixer();};
       header.append(delBtn);
     }
     name.addEventListener('input',refreshHeading);edit.onclick=()=>{editor.hidden=!editor.hidden;refreshHeading();};refreshHeading();
@@ -2900,19 +3804,19 @@ export async function setup(ctx) {
     auditionRowBtn.type='button';auditionRowBtn.className='et-btn-subtle';
     auditionRowBtn.title='Audition voice';auditionRowBtn.innerHTML=ICON_PLAY;
     auditionRowBtn.style.cssText='padding:2px 8px';
-    auditionRowBtn.onclick=()=>run(async()=>{
+    const audition=sampleText=>run(async()=>{
       const selectedVoice=voice.value;
       if(!selectedVoice)throw new Error('Choose a voice first to audition.');
+      const snapshot=capture();validateNumericSettings(snapshot);
       stop(false);const token=revision,ctrl=new AbortController();controller=ctrl;setBusy(true);
       status(`Auditioning ${selectedVoice}…`);
       try {
-        const sampleText='Hello! I am your voice for this story.';
         const selectedRoute=route.value || scope(config);
-        const previewRequest=synthesisSettings({speaker:name.value || 'Voice',voice:selectedVoice,text:sampleText,style:style.value.trim(),route:selectedRoute},capture());
+        const previewRequest=synthesisSettings({speaker:name.value || 'Voice',voice:selectedVoice,text:sampleText,style:style.value.trim(),route:selectedRoute},snapshot);
         const connectionId=selectedRoute.startsWith('native:')?selectedRoute.slice(7):config.connection;
         const conn=nativeConnections.find(c=>c.id===connectionId) || nativeConnections[0];
         if(!conn)throw new Error('TTS connection not available for audition.');
-        const textToSend=detectProvider(selectedRoute)==='fish_audio' && conn.provider!=='openrouter_tts' ? `[cheerful] ${sampleText}` : sampleText;
+        const textToSend=detectProvider(selectedRoute)==='fish_audio' && conn.provider!=='openrouter_tts' ? `[cheerful] ${previewRequest.segment.text}` : previewRequest.segment.text;
         const blob=await nativeSpeech(conn,{voice:selectedVoice,text:textToSend,parameters:previewRequest.parameters},ctrl.signal,name.value || 'Voice');
         if(token!==revision || ctrl.signal.aborted)return;
         await playBlob(blob,ctrl.signal,name.value || 'Voice',0,$('normalizeLoudness').checked);
@@ -2920,9 +3824,12 @@ export async function setup(ctx) {
       } finally {if(token===revision){controller=null;setBusy(false);}}
     });
 
+    auditionRowBtn.onclick=()=>audition('Hello! I am your voice for this story.');
+
     const style=document.createElement('input');style.value=actor.style || '';style.maxLength=600;
     const aliases=document.createElement('input');aliases.value=(actor.aliases || []).join(', ');aliases.maxLength=3000;
-    const pronunciation=document.createElement('input');pronunciation.value=actor.pronunciation || '';pronunciation.maxLength=300;pronunciation.placeholder='e.g. Jev is pronounced “Jev”';
+    const pronunciation=document.createElement('input');pronunciation.value=actor.pronunciation || '';pronunciation.maxLength=300;pronunciation.placeholder='Optional instruction for supported providers';
+    const sayAs=document.createElement('input');sayAs.value=namePronunciation(actor);sayAs.maxLength=120;sayAs.placeholder='e.g. Eh-Lee-Zah';sayAs.dataset.choirSayAs='';
     const accent=document.createElement('input');accent.value=actor.accent || '';accent.maxLength=300;accent.placeholder='Used only when the provider supports accent or instructions';
     const excluded=document.createElement('input');excluded.type='checkbox';excluded.checked=Boolean(actor.excluded);
 
@@ -2963,17 +3870,49 @@ export async function setup(ctx) {
     voiceSearchRow.append(voiceSearchInput,searchCommBtn,voiceIdBtn,auditionRowBtn);
     voiceWrap.append(voiceSearchRow,voice,voiceIdEditor);
 
-    for (const [label,node] of [['TTS connection',route],['Voice gender filter',gender],['Voice',voiceWrap],['Base delivery style',style],['Aliases (comma separated)',aliases],['Pronunciation instruction',pronunciation],['Accent preference',accent]]) {
+    for (const [label,node] of [['TTS connection',route],['Voice gender filter',gender],['Voice',voiceWrap],['Base delivery style',style],['Aliases (comma separated)',aliases],['Say name as',sayAs],['Speaking instruction',pronunciation],['Accent preference',accent]]) {
       if(node!==route)(node===voiceWrap?voice:node).dataset.choirPersist='';
       const wrap=document.createElement('label');wrap.textContent=label;wrap.append(node);editor.append(wrap);
       if(node===route)wrap.hidden=single;
+      if(node===sayAs)wrap.hidden=reserved;
+      if(node===pronunciation)wrap.title='Used only when the speech provider supports instructions. Use Say name as for name pronunciation.';
       if(node===gender || node===style)wrap.hidden=true;
       if(node===voiceWrap)wrap.style.cssText='grid-column:1 / -1;margin-top:2px';
     }
-    if(!reserved){const remove=document.createElement('button');remove.type='button';remove.textContent='Remove';remove.onclick=()=>{row.remove();scheduleSettingsSave();renderMixer();};editor.append(remove);}
+    const speedSection=document.createElement('div');speedSection.className='et-tuning et-character-speed';
+    const speedHeading=document.createElement('span');speedHeading.className='et-tuning-title';speedHeading.textContent='Voice speed';
+    const speedSlot=document.createElement('div');speedSlot.className='et-tuning-slot';
+    const speed=makeMixerTuning(`${actor.speaker} speed`,{...SPEED_CONTROL,max:mixerState.speedSliderMax,title:'Replaces the global playback speed for this character. Pitch is kept.',onValue:value=>{
+      stretchSpeedSlider(value);const speaker=name.value.trim(),channel=Object.hasOwn(mixerState.channels,speaker)?mixerState.channels[speaker]:{volume:1,mute:false};
+      channel.speed=value;Object.defineProperty(mixerState.channels,speaker,{value:channel,writable:true,enumerable:true,configurable:true});
+      paintSpeakerSpeeds();applyPlaybackRate();refreshSpeechGrouping();
+    },onCommit:saveMixerValue,onReset:()=>followMasterSpeed(name.value.trim())});
+    const followButton=document.createElement('button');followButton.type='button';followButton.className='et-tuning-reset';followButton.textContent='Use global';followButton.setAttribute('aria-label',`Follow playback speed for ${actor.speaker}`);followButton.onclick=()=>followMasterSpeed(name.value.trim());
+    speakerSpeedRows.push({get speaker(){return name.value.trim();},speed,followButton});
+    speedSlot.append(speed.root,followButton);speedSection.append(speedHeading,speedSlot);editor.append(speedSection);
+    if(!reserved){
+      const tools=document.createElement('div');tools.style.gridColumn='1 / -1';
+      const hint=document.createElement('small');hint.textContent='Say name as changes how every voice says this name in this chat. Story text stays unchanged. Leave blank to use its written spelling.';
+      const test=document.createElement('button');test.type='button';test.className='et-btn-subtle';test.textContent='Test pronunciation';test.dataset.choirPronunciationTest='';test.setAttribute('aria-label',`Test pronunciation of ${actor.speaker}`);
+      test.onclick=()=>audition(`${name.value.trim()} opened the door.`);tools.append(hint,document.createElement('br'),test);editor.append(tools);
+    }
+    if(!required){
+      const move=document.createElement('button');move.type='button';move.className='et-btn-subtle';
+      const toNPC=container===$('fixed');move.textContent=toNPC?'Move to NPC cast':'Move to lead cast';move.setAttribute('aria-label',`Move ${actor.speaker} to ${toNPC?'NPC':'lead'} cast`);
+      move.onclick=()=>{
+        const value=capture(),key=normalizeName(name.value),matches=entry=>normalizeName(entry.speaker)===key;
+        const current=toNPC?value.fixed.find(matches):(value.casts[scope(value)] || []).find(matches);if(!current)return;
+        const overrides=new Set((value.cardCastNPCs || []).map(normalizeName));
+        if(toNPC){value.fixed=value.fixed.filter(entry=>!matches(entry));value.casts[scope(value)]=[...(value.casts[scope(value)] || []).filter(entry=>!matches(entry)),current];for(const alias of [current.speaker,...(current.aliases || [])])overrides.add(normalizeName(alias));}
+        else{value.casts=Object.fromEntries(Object.entries(value.casts).map(([route,actors])=>[route,actors.filter(entry=>!matches(entry))]));value.fixed.push(current);for(const alias of [current.speaker,...(current.aliases || [])])overrides.delete(normalizeName(alias));}
+        value.cardCastNPCs=[...overrides];config=value;clearPlan();renderCast();scheduleSettingsSave();status(`${current.speaker} moved to ${toNPC?'NPC':'lead'} cast.`);
+      };
+      const remove=document.createElement('button');remove.type='button';remove.textContent='Remove';remove.onclick=()=>{row.remove();scheduleSettingsSave();renderMixer();};editor.append(move,remove);
+    }
     container.append(row);
+    paintSpeakerSpeeds();
     updateCardProviderControls();
-    return {row,voiceChoice:()=>[name.value.trim(),voice.value],setExcluded:value=>{excluded.checked=value;},read:()=>({speaker:name.value.trim(),voice:single?actor.voice || '':voice.value,route:single?actor.route || '':route.value,gender:gender.value,style:style.value.trim(),aliases:aliases.value.split(',').map(a=>a.trim()).filter((a,i,list)=>a && normalizeName(a)!==normalizeName(name.value) && list.findIndex(b=>normalizeName(b)===normalizeName(a))===i),pronunciation:pronunciation.value.trim(),accent:accent.value.trim(),excluded:excluded.checked})};
+    return {row,voiceChoice:()=>[name.value.trim(),voice.value],setExcluded:value=>{excluded.checked=value;},read:()=>({speaker:name.value.trim(),voice:single?actor.voice || '':voice.value,route:single?actor.route || '':route.value,gender:gender.value,style:style.value.trim(),aliases:aliases.value.split(',').map(a=>a.trim()).filter((a,i,list)=>a && normalizeName(a)!==normalizeName(name.value) && list.findIndex(b=>normalizeName(b)===normalizeName(a))===i),pronunciation:pronunciation.value.trim(),sayAs:sayAs.value.trim(),accent:accent.value.trim(),excluded:excluded.checked})};
   }
   function renderCast() {
     $('fixed').replaceChildren();$('npcs').replaceChildren();
@@ -3058,6 +3997,7 @@ export async function setup(ctx) {
     return chosen;
   }
   function validateNumericSettings(c){
+    for(const actor of [...(c.fixed || []),...Object.values(c.casts || {}).flat()])if(actor.sayAs!==undefined && (typeof actor.sayAs!=='string' || actor.sayAs.length>120 || /[<>\[\]\r\n]/u.test(actor.sayAs)))throw new Error('Say name as must be plain pronunciation spelling, up to 120 characters.');
     if(!Number.isInteger(c.chunk) || c.chunk<80 || c.chunk>MAX_SPEECH_CHARS)throw new Error('Max characters per request must be a whole number from 80 to 10000 (default: 1800).');
     if(!Number.isInteger(c.concurrency) || c.concurrency<1 || c.concurrency>4)throw new Error('Choose 1–4 concurrent TTS requests.');
     if(!Number.isInteger(c.prefetch) || c.prefetch<0 || c.prefetch>4)throw new Error('Prefetch must be 0–4 passages.');
@@ -3130,7 +4070,7 @@ export async function setup(ctx) {
     if($('jevEndpoint'))$('jevEndpoint').value=config.jevEndpoint||'';
     for(const name of ['allowLlmFallback','normalizeLoudness','skipMeta','sectionButtons'])$(name).checked=Boolean(config[name]);
     $('prefetch').value=config.prefetch;
-    $('batchSpeech').checked=Boolean(config.batchSpeech);
+    $('batchSpeech').checked=Boolean(config.batchSpeech);syncVoiceControls();
     updatePlannerVisibility();
     updateProviderVisibility();
   }
@@ -3196,6 +4136,7 @@ export async function setup(ctx) {
       }
       $('decisionConnection').value=config.decisionConnection || '';
     }
+    if(!setupAutoStarted){setupAutoStarted=true;void setupWizard.start();}
     if(results[0].status==='rejected'){renderCast();throw new Error(`Could not load TTS connections: ${results[0].reason.message}. Your selected connection is retained; use Reload to retry.`);}
     if(!nativeConnections.length){renderCast();throw new Error('Choir speaks through Lumiverse TTS connections. Add one in Lumiverse, then use Reload.');}
     await loadVoices(version);
@@ -3203,6 +4144,8 @@ export async function setup(ctx) {
   async function loadVoices(version=loadVersion) {
     cataloguesReady=false;
     voiceCatalogues.clear();
+    // Keep saved editors available even if the catalogue request fails.
+    renderCast();
     const catalogue=await ensureCatalogue(scope(config),version);
     if(disposed || version!==loadVersion)return;
     voices=catalogue;
@@ -3217,9 +4160,9 @@ export async function setup(ctx) {
     if(config.styleParam && !parameters[config.styleParam]){config.styleParam='';$('styleParam').value='';}
     cataloguesReady=true;renderCast();refreshSectionControls();
   }
-  async function switchChat() {
+  async function switchChat(force=false) {
     const id=ctx.getActiveChat().chatId;
-    if(id===chatId && config)return;
+    if(!force && id===chatId && config)return;
     // Capture the old chat before awaiting its save; a later navigation must win.
     const version=++loadVersion;
     cataloguesReady=false;
@@ -3235,11 +4178,11 @@ export async function setup(ctx) {
     const defaultRevision=defaultsRevision;
     const [globalSaved,saved,preset]=await Promise.all([ctx.settings.get(GLOBAL_SETTINGS_KEY),id?ctx.settings.get(settingsKey(id)):null,ctx.settings.get(CAPTURED_DEFAULTS_KEY)]);
     if(disposed || version!==loadVersion)return;
-    if(defaultRevision===defaultsRevision)capturedDefaults=[1,2].includes(preset?.version)?retireGeminiRoute({version:2,...(Array.isArray(preset.leadVoices)?{leadVoices:preset.leadVoices}:{}),...(Array.isArray(preset.voiceCatalogue)?{voiceCatalogue:preset.voiceCatalogue}:{}),...(preset.npcPolicy || preset.preferences?.npcPolicy?{npcPolicy:preset.npcPolicy || preset.preferences.npcPolicy}:{})}):null;
+    if(defaultRevision===defaultsRevision)capturedDefaults=[1,2].includes(preset?.version)?normalizeSavedSettings({version:2,...(Array.isArray(preset.leadVoices)?{leadVoices:preset.leadVoices}:{}),...(Array.isArray(preset.voiceCatalogue)?{voiceCatalogue:preset.voiceCatalogue}:{}),...(preset.npcPolicy || preset.preferences?.npcPolicy?{npcPolicy:preset.npcPolicy || preset.preferences.npcPolicy}:{})}):null;
     const preferences={...preferenceSnapshot(preset?.preferences || await ctx.settings.get('settings:defaults')),...preferenceSnapshot(saved),...preferenceSnapshot(globalSaved)};
     if(disposed || version!==loadVersion)return;
     const legacyCast=!saved && !capturedDefaults && Array.isArray(globalSaved?.fixed)?globalSaved:null;
-    config=retireGeminiRoute({...defaults(),...Object.fromEntries(preferenceFields.filter(name=>preferences && Object.hasOwn(preferences,name)).map(name=>[name,preferences[name]])),...(legacyCast || {}),...(saved || {}),...preferences});
+    config=normalizeSavedSettings({...defaults(),...Object.fromEntries(preferenceFields.filter(name=>preferences && Object.hasOwn(preferences,name)).map(name=>[name,preferences[name]])),...(legacyCast || {}),...(saved || {}),...preferences});
     config.plannerMode=resolvePlannerMode(preferences);
     config.useFastClassifier=config.plannerMode==='heuristic';config.useJev=config.plannerMode==='jev';
     if(!saved && !legacyCast)config.fixed[0].voice='';
@@ -3359,7 +4302,11 @@ export async function setup(ctx) {
   // Only placeholder lead names are replaced, so names the user typed stay. Runs after each chat load and
   // whenever the persona changes, because the persona may become known only after the chat opened.
   const cardFingerprint=card=>sha256Hex(JSON.stringify(['name','description','personality','scenario','first_mes'].map(field=>card?.[field] || '')));
-  function rolesForCard(card){const local=characterCardRoles(card || {}),cached=config?.cardCastAnalysis?.key===activeCardKey?validateCardRoles(config.cardCastAnalysis.roles):[];return cached.length?cached:local;}
+  function rolesForCard(card){
+    const local=characterCardRoles(card || {}),cached=config?.cardCastAnalysis?.key===activeCardKey?validateCardRoles(config.cardCastAnalysis.roles):[];
+    const npcNames=new Set((config?.cardCastNPCs || []).map(normalizeName));
+    return (cached.length?cached:local).filter(role=>![role.name,...(role.aliases || [])].some(name=>npcNames.has(normalizeName(name))));
+  }
   function expandCardRoles(value,roles,character){
     let renamed=false;
     const matchesRole=(actor,role)=>actor && [actor.speaker,...(actor.aliases || [])].some(name=>[role.name,...(role.aliases || [])].some(other=>normalizeName(name)===normalizeName(other)));
@@ -3385,7 +4332,7 @@ export async function setup(ctx) {
         const existing=value.fixed.find(actor=>matchesRole(actor,role));
         if(existing){mergeAliases(existing,role);continue;}
         const prior=Object.values(value.casts || {}).flat().find(actor=>matchesRole(actor,role));
-        const added={...template,...prior,speaker:role.name,voice:prior?.voice || '',aliases:role.aliases || [],pronunciation:prior?.pronunciation || ''};
+        const added={...template,...prior,speaker:role.name,voice:prior?.voice || '',aliases:role.aliases || [],pronunciation:prior?.pronunciation || '',sayAs:prior?namePronunciation(prior):''};
         transferChoices(prior,added);value.fixed.push(added);renamed=true;
       }
       const names=new Set(value.fixed.flatMap(actor=>[actor.speaker,...(actor.aliases || [])]).map(normalizeName));
@@ -3396,7 +4343,7 @@ export async function setup(ctx) {
       const template=value.fixed[2],occupied=new Set(value.fixed.filter((_,index)=>index!==2).map(actor=>normalizeName(actor.speaker)));
       const leads=roles.filter(role=>!occupied.has(normalizeName(role.name))).map((role,index)=>{
         const prior=Object.values(value.casts || {}).flat().find(actor=>matchesRole(actor,role));
-        const added={...template,...prior,speaker:role.name,voice:prior?.voice || (index===0?template.voice:''),aliases:[...new Set([...(roles.length===1?template.aliases || []:[]),...(role.aliases || [])])],pronunciation:prior?.pronunciation || (roles.length===1?template.pronunciation:'') || ''};
+        const added={...template,...prior,speaker:role.name,voice:prior?.voice || (index===0?template.voice:''),aliases:[...new Set([...(roles.length===1?template.aliases || []:[]),...(role.aliases || [])])],pronunciation:prior?.pronunciation || (roles.length===1?template.pronunciation:'') || '',sayAs:prior?namePronunciation(prior):roles.length===1?namePronunciation(template):''};
         transferChoices(prior,added);if(index===0)transferChoices(template,added);
         return added;
       });
@@ -3738,7 +4685,11 @@ export async function setup(ctx) {
     currentGroupLevel=item?.unison?1:groupLevels.length?(groupLevels.every(level=>level===groupLevels[0])?groupLevels[0]:item.groupLevel ?? 1):null;
     renderMixer();applyVolume();
     const AudioContextClass=globalThis.AudioContext || globalThis.webkitAudioContext;
-    let mediaSource, gain, stopFollowing;
+    let mediaSource, gain, stopFollowing, gapHold=null;
+    // Speed applies to spoken blocks only. Sound effects, ambience and previews play at normal speed.
+    // A unison or dialogue block has several speakers; its first speaker's own speed is used for the whole block.
+    currentAudioSpeech=Boolean(item && !item.kind);currentSpeedSpeaker=currentAudioSpeech?primarySpeaker(item,speaker):'';setAudioRate(audio,currentAudioSpeech?playbackRateFor(currentSpeedSpeaker):1);audio.preservesPitch=true;
+    const endGap=()=>{gapHold?.cancel();if(voiceGapHold===gapHold)voiceGapHold=null;gapHold=null;};
     try {
     if(AudioContextClass){
       try{
@@ -3761,20 +4712,28 @@ export async function setup(ctx) {
       if(signal.aborted)throw abortError();
       await new Promise((resolve,reject)=>{
         let settled=false;
-        const done=error=>{if(settled)return;settled=true;signal.removeEventListener('abort',cancel);audio.onended=null;audio.onerror=null;if(currentAudio===audio){finishAudio=null;skipAudio=null;updateNextControls();}error?reject(error):resolve();};
+        const done=error=>{if(settled)return;settled=true;signal.removeEventListener('abort',cancel);audio.onended=null;audio.onerror=null;endGap();if(currentAudio===audio){finishAudio=null;skipAudio=null;updateNextControls();}error?reject(error):resolve();};
         const cancel=()=>{audio.pause();done(abortError());};finishAudio=cancel;
         skipAudio=()=>{audio.pause();done();};updateNextControls();
         audio.onended=()=>done();audio.onerror=()=>done(new Error('Browser could not decode this provider’s audio. Use WAV or MP3.'));
         signal.addEventListener('abort',cancel,{once:true});
         if(speakerExcluded(speaker) || speaker==='SFX' && config?.enableSfx===false){done();return;}
         if(track)stopFollowing=followSpeech(audio,track);
-        if(paused){audioReady=true;updateTransport();}
-        else audio.play().then(()=>{if(!settled && currentAudio===audio){audioReady=true;updateTransport();}}).catch(error=>done(new Error(error.name==='NotAllowedError'?'Browser blocked audio. Click Play in the mixer to enable playback.':error.message)));
+        const startAudio=()=>audio.play().then(()=>{if(!settled && currentAudio===audio){audioReady=true;updateTransport();}}).catch(error=>done(new Error(error.name==='NotAllowedError'?'Browser blocked audio. Click Play in the mixer to enable playback.':error.message)));
+        const gapMs=track?.gapMs || 0;
+        if(gapMs>0){
+          // The silence runs before the audio starts. Mixer Play pauses or resumes it, and a block started paused waits for Play.
+          audioReady=true;
+          gapHold=startVoiceGap(gapMs,paused,()=>{if(settled)return;gapHold=null;voiceGapHold=null;startAudio();});
+          voiceGapHold=gapHold;updateTransport();
+        }
+        else if(paused){audioReady=true;updateTransport();}
+        else startAudio();
       });
     } finally {
       if(activePlayback===position && position)savePosition(audio.currentTime || 0);
-      stopFollowing?.();audio.onloadedmetadata=null;audio.ontimeupdate=null;audio.ondurationchange=null;mediaSource?.disconnect();gain?.disconnect();
-      audio.pause();if(currentAudio===audio){currentAudio=null;skipAudio=null;currentGain=null;currentNormalize=1;audioReady=false;currentSpeaker='';currentGroupLevel=null;currentGroupNames=[];renderMixer();}
+      endGap();stopFollowing?.();audio.onloadedmetadata=null;audio.ontimeupdate=null;audio.ondurationchange=null;mediaSource?.disconnect();gain?.disconnect();
+      audio.pause();if(currentAudio===audio){currentAudio=null;currentAudioSpeech=false;currentSpeedSpeaker='';skipAudio=null;currentGain=null;currentNormalize=1;audioReady=false;currentSpeaker='';currentGroupLevel=null;currentGroupNames=[];renderMixer();}
       URL.revokeObjectURL(url);if(objectUrl===url)objectUrl=null;
     }
   }
@@ -3790,11 +4749,19 @@ export async function setup(ctx) {
     return {...segment,style:prefix && style.startsWith(prefix)?style.slice(prefix.length):style===actor?.style?'':style,...(segment.unison?{unison:segment.unison.map(member=>withoutBase(member,cast))}:{})};
   };
   const actorFor=(segment,snapshot)=>[...(snapshot.fixed || []),...(snapshot.casts?.[scope(snapshot)] || [])].find(actor=>normalizeName(actor.speaker)===normalizeName(segment.speaker));
+  const pronunciationActors=snapshot=>[...(snapshot.fixed || []),...(snapshot.casts?.[scope(snapshot)] || snapshot.npcs || [])];
+  const speechTextOptions=snapshot=>({speechText:text=>respellNames(text,pronunciationActors(snapshot)),atomicWords:namePronunciations(pronunciationActors(snapshot)).map(rule=>rule.name)});
+  function recordingSpeechText(segment,snapshot){return segment.kind?null:speechMembers(segment).map(member=>respellNames(member.text,pronunciationActors(snapshot)));}
+  function recordedSpeechMatches(recording,index,snapshot){
+    const segment=recording.segments[index];if(segment.kind)return true;
+    const before=recording.speechTexts?.[index] ?? speechMembers(segment).map(member=>member.text);
+    return JSON.stringify(before)===JSON.stringify(recordingSpeechText(segment,snapshot));
+  }
   function synthesisSettings(segment,snapshot){
     if(segment.turns?.length>1){
       const requests=segment.turns.map(turn=>synthesisSettings(turn,snapshot)),first=requests[0];
       const turns=requests.map(request=>request.segment);
-      return {segment:{...segment,turns},connection:first.connection,parameters:{...first.parameters,
+      return {segment:{...segment,text:turns.map(turn=>turn.text).join('\n'),turns},connection:first.connection,parameters:{...first.parameters,
         ...(segment.dialogue && first.connection?{turns:turns.map(({speaker,voice,text,style})=>({speaker,voice,text,style})),voice_direction:''}:{})}};
     }
     const route=segment.route || scope(snapshot),actor=actorFor(segment,snapshot);
@@ -3808,9 +4775,10 @@ export async function setup(ctx) {
       if(Array.isArray(allowed) && !allowed.includes(actor.accent))throw new Error(`Accent ${actor.accent} is not supported by ${connection.name}. Supported accents: ${allowed.join(', ')}.`);
       parameters.accent=actor.accent;
     }
-    const instructions=[snapshot.useStyle?segment.style:'',actor?.pronunciation,actor?.accent && !supported.accent?`Accent: ${actor.accent}`:''].filter(Boolean).join('. ');
+    const legacyMapping=actor && namePronunciation({speaker:actor.speaker,pronunciation:actor.pronunciation});
+    const instructions=[snapshot.useStyle?segment.style:'',legacyMapping?'':actor?.pronunciation,actor?.accent && !supported.accent?`Accent: ${actor.accent}`:''].filter(Boolean).join('. ');
     if(styleParam && instructions)parameters[styleParam]=instructions;
-    return {segment:{...segment,route,style:openRouterStyle?instructions:family==='fish_audio' && snapshot.useStyle?segment.style:''},connection,parameters};
+    return {segment:{...segment,text:respellNames(segment.text,pronunciationActors(snapshot)),route,style:openRouterStyle?instructions:family==='fish_audio' && snapshot.useStyle?segment.style:''},connection,parameters};
   }
   function unisonLevels(segment){return speechMembers(segment).map(member=>[member.speaker,mixerVolume(1,member.speaker,mixerState.channels),speakerExcluded(member.speaker)]);}
   function cacheKey(segment,snapshot){
@@ -3830,17 +4798,17 @@ export async function setup(ctx) {
         const delivery=[request.segment.style,...Object.values(request.parameters).filter(value=>typeof value==='string')].join('\n');
         return {...limit,maxChars:limit.maxChars-(detectProvider(route)==='fish_audio'?delivery.length+4:0),maxBytes:limit.maxBytes?limit.maxBytes-new TextEncoder().encode(delivery).length:Infinity};
       });
-      return {maxChars:Math.min(...limits.map(limit=>limit.maxChars)),maxBytes:Math.min(...limits.map(limit=>limit.maxBytes ?? Infinity))};
+      return {...speechTextOptions(snapshot),maxChars:Math.min(...limits.map(limit=>limit.maxChars)),maxBytes:Math.min(...limits.map(limit=>limit.maxBytes ?? Infinity))};
     }
     const request=synthesisSettings(segment,snapshot),connection=request.connection;
     const provider=nativeProviders.find(item=>item.id===connection?.provider);
     const family=detectProvider(route),limits=speechRequestLimits(connection?.provider,connection?.model);
     const prebuilt=GEMINI_VOICES.some(voice=>voice.id===segment.voice);
-    const maxSpeakers=family==='fish_audio' || family==='gemini' && prebuilt || provider?.capabilities.staticVoices?.some(voice=>voice.id===segment.voice)?nativeSpeakerLimit(connection):0;
+    const maxSpeakers=voiceGapSetting()>0?0:family==='fish_audio' || family==='gemini' && prebuilt || provider?.capabilities.staticVoices?.some(voice=>voice.id===segment.voice)?nativeSpeakerLimit(connection):0;
     const parameters={...request.parameters};
     if(maxSpeakers && (family==='gemini' || connection?.provider==='openrouter_tts')){delete parameters.speech_style;delete parameters.instructions;}
     const level=mixerVolume(1,segment.speaker,mixerState.channels);
-    return {...limits,maxSpeakers,group:JSON.stringify([parameters,level,maxSpeakers]),
+    return {...limits,...speechTextOptions(snapshot),maxSpeakers,group:JSON.stringify([parameters,level,maxSpeakers,playbackRateFor(segment.speaker)]),
       measure:turns=>{
         const styled=turns.map(turn=>synthesisSettings(turn,snapshot).segment);
         const text=styled.map((turn,index)=>family==='fish_audio'
@@ -3883,7 +4851,7 @@ export async function setup(ctx) {
         if(limits.maxBytes<80)throw new Error('Shorten the Gemini delivery instructions to leave room for speech text.');
       }
       if(detectProvider(route)==='fish_audio' && snapshot.useStyle && segment.style && !segment.text.startsWith('['))limits.maxChars-=segment.style.trim().length+(segment.style.trim().startsWith('[')?1:3);
-      return limits;
+      return {...limits,...speechTextOptions(snapshot)};
     });
   }
   const SFX_PLACEMENT_VERSION=1;
@@ -3954,8 +4922,8 @@ export async function setup(ctx) {
     const request=synthesisSettings(segment,snapshot),route=segment.route || scope(snapshot);
     const connection=request.connection;
     if(!connection)throw new Error(`TTS connection for ${segment.speaker} is no longer available. Choose another connection and plan again.`);
-    const text=detectProvider(route)==='fish_audio' && connection.provider!=='openrouter_tts' && snapshot.useStyle && segment.style && !segment.text.startsWith('[')
-      ? (segment.style.trim().startsWith('[')?`${segment.style.trim()} ${segment.text}`:`[${segment.style.trim()}] ${segment.text}`):segment.text;
+    const text=detectProvider(route)==='fish_audio' && connection.provider!=='openrouter_tts' && snapshot.useStyle && segment.style && !request.segment.text.startsWith('[')
+      ? (segment.style.trim().startsWith('[')?`${segment.style.trim()} ${request.segment.text}`:`[${segment.style.trim()}] ${request.segment.text}`):request.segment.text;
     return nativeSpeech(connection,{voice:segment.voice,text,parameters:request.parameters},signal,segment.speaker);
   }
   async function synthesizeUnisonBlob(segment,snapshot,signal,loadMember){
@@ -3995,15 +4963,15 @@ export async function setup(ctx) {
       while(next<segments.length && (segments[next].passageIndex ?? next)===passage)next++;
       for(let index=playIdx;index<next;index++)skipped.add(index);
       if(direction<0){const start=blockStart(playIdx);next=start>0?blockStart(start-1):0;while(next>0 && speakerExcluded(segments[next].speaker))next=blockStart(next-1);if(speakerExcluded(segments[next]?.speaker))next=blockStart(playIdx);for(let index=next;index<segments.length && (segments[index].passageIndex ?? index)===(segments[next].passageIndex ?? next);index++)skipped.delete(index);}
-      failed=[...failures].some(index=>!skipped.has(index) && !speakerExcluded(segments[index].speaker));jumpTo=next;pauseNext=Boolean(currentAudio?.paused);skipAudio();
+      failed=[...failures].some(index=>!skipped.has(index) && !speakerExcluded(segments[index].speaker));jumpTo=next;pauseNext=heldPaused();skipAudio();
     };
-    generationPolicyChanged=()=>{failed=[...failures].some(index=>!skipped.has(index) && !playbackExcluded(segments[index]));if(currentSpeaker==='SFX' && config?.enableSfx===false){pauseNext=Boolean(currentAudio?.paused);skipAudio?.();}nextToSynthesize=Math.min(nextToSynthesize,playIdx);wakePolicy?.({policy:true});pump();};
+    generationPolicyChanged=()=>{failed=[...failures].some(index=>!skipped.has(index) && !playbackExcluded(segments[index]));if(currentSpeaker==='SFX' && config?.enableSfx===false){pauseNext=heldPaused();skipAudio?.();}nextToSynthesize=Math.min(nextToSynthesize,playIdx);wakePolicy?.({policy:true});pump();};
     const passages={...(cached?.passages || {})};
     const inflight=new Map();
     // Upgrade old complete recordings without discarding their audio.
-    if(!cached?.passages)for(const [index,segment] of (cached?.segments || []).entries())if(cached.blobs?.[index] && (!segment.turns || segment.turns.length===1))passages[cacheKey(segment,snapshot)]=cached.blobs[index];
+    if(!cached?.passages)for(const [index,segment] of (cached?.segments || []).entries())if(cached.blobs?.[index] && (!segment.turns || segment.turns.length===1) && recordedSpeechMatches(cached,index,snapshot))passages[cacheKey(segment,snapshot)]=cached.blobs[index];
     const persist=()=>{
-      const value={content:source.content,transcript:source.transcript,segments:[...segments],blobs:[...blobs],passages:{...passages},sfxPlacement:SFX_PLACEMENT_VERSION,retention:snapshot.retention};
+      const value={content:source.content,transcript:source.transcript,segments:[...segments],blobs:[...blobs],speechTexts:segments.map(segment=>recordingSpeechText(segment,snapshot)),passages:{...passages},sfxPlacement:SFX_PLACEMENT_VERSION,retention:snapshot.retention};
       saveQueue=saveQueue.then(()=>recordingStore('put',recordingKey(source.chatId,source.messageId),value)).catch(error=>{saveError=error.message;});
       return saveQueue;
     };
@@ -4120,7 +5088,7 @@ export async function setup(ctx) {
         const offset=resumePending && source.resume.passage===activePlayback.passage && source.resume.chunk===activePlayback.chunk?source.resume.seconds:0;resumePending=false;
         const paused=pauseNext;pauseNext=false;
         for(const kind in beds){const marker=bedIndex(segments,playIdx,kind);followBed(segments[marker]?.[kind],()=>loadBed(marker),kind,()=>{delete passages[cacheKey(segments[marker],snapshot)];blobs[marker]=undefined;void persist();});}
-        try{await playBlob(blob,ctrl.signal,seg.speaker,offset,snapshot.normalizeLoudness,paused,{messageId:source.messageId,items:segments,index:playIdx});}
+        try{await playBlob(blob,ctrl.signal,seg.speaker,offset,snapshot.normalizeLoudness,paused,{messageId:source.messageId,items:segments,index:playIdx,gapMs:gapBefore(segments,playIdx)});}
         catch(error){
           if(seg.kind!=='sfx' || ctrl.signal.aborted || token!==revision)throw error;
           warnFoley(error);delete passages[cacheKey(seg,snapshot)];blobs[playIdx]=undefined;foleyCache.delete(foleyKey(seg.sfx));await persist();
@@ -4197,7 +5165,7 @@ export async function setup(ctx) {
       const {blobs,warnings}=await player.playbackPromise;
       {
         if(token!==revision || ctrl.signal.aborted)throw abortError();
-        try{const partial=await recordingStore('get',key);await recordingStore('put',key,{...partial,content:source.content,transcript:source.transcript,signature,segments,blobs,sfxPlacement:SFX_PLACEMENT_VERSION,retention:snapshot.retention});storageError='';}
+        try{const partial=await recordingStore('get',key);await recordingStore('put',key,{...partial,content:source.content,transcript:source.transcript,signature,segments,blobs,speechTexts:segments.map(segment=>recordingSpeechText(segment,snapshot)),sfxPlacement:SFX_PLACEMENT_VERSION,retention:snapshot.retention});storageError='';}
         catch(error){storageError=error.message;}
       }
       if(token===revision){renderMessages();status((storageError?`Playback finished. Audio could not be saved: ${storageError}`:snapshot.retention==='session'?'Playback finished. Audio kept for this session; Replay is available beside the message.':'Playback finished. Audio saved on this device; Replay is available beside the message.')+foleyWarning(warnings));}
@@ -4219,13 +5187,23 @@ export async function setup(ctx) {
         if(await restoreSavedPlan(messageId)){await play();return;}
         throw new Error('Saved sound-effect timing needs updating. Plan and play this reply to place effects between phrases.');
       }
-      if(recording.segments.some(segment=>segment.unison && (JSON.stringify(segment.mixLevels)!==JSON.stringify(unisonLevels(segment)) || segment.mixNormalize!==config.normalizeLoudness) || segment.dialogue && (!config.batchSpeech || segment.turns.some(turn=>speakerExcluded(turn.speaker) || mixerVolume(1,turn.speaker,mixerState.channels)!==mixerVolume(1,segment.turns[0].speaker,mixerState.channels))))){
+      if(recording.segments.some(segment=>segment.unison && (JSON.stringify(segment.mixLevels)!==JSON.stringify(unisonLevels(segment)) || segment.mixNormalize!==config.normalizeLoudness) || segment.dialogue && (!config.batchSpeech || voiceGapSetting()>0 || segment.turns.some(turn=>speakerExcluded(turn.speaker) || mixerVolume(1,turn.speaker,mixerState.channels)!==mixerVolume(1,segment.turns[0].speaker,mixerState.channels) || playbackRateFor(turn.speaker)!==playbackRateFor(segment.turns[0].speaker))))){
         if(await restoreSavedPlan(messageId)){await play();return;}
         throw new Error('Speaker controls changed. Plan and play this reply to rebuild its grouped audio.');
       }
+      const snapshot=structuredClone(capture());
+      if(recording.segments.some((_,index)=>!recordedSpeechMatches(recording,index,snapshot))){
+        status('Updating pronunciation in saved speech…');
+        const source={chatId:targetChat,messageId,content:recording.content,transcript:recording.transcript};
+        const player=createStreamingPlayer(snapshot,source,recording,ctrl,token);
+        player.push(recording.segments,recording.segments.length);player.finish();
+        const {warnings}=await player.playbackPromise;
+        if(token===revision)status('Playback finished. Name pronunciation updated.'+foleyWarning(warnings));
+        return;
+      }
       mixerPlaybackSegments=recording.segments;renderMixer();
       let pauseNext=false;
-      generationPolicyChanged=()=>{if(currentSpeaker==='SFX' && config?.enableSfx===false){pauseNext=Boolean(currentAudio?.paused);skipAudio?.();}};
+      generationPolicyChanged=()=>{if(currentSpeaker==='SFX' && config?.enableSfx===false){pauseNext=heldPaused();skipAudio?.();}};
       for(let index=0;index<recording.blobs.length;) {
         const blob=recording.blobs[index];
         if(!blob || speakerExcluded(recording.segments[index].speaker) || recording.segments[index].kind==='sfx' && config.enableSfx===false || isBed(recording.segments[index])){index++;continue;}
@@ -4233,10 +5211,10 @@ export async function setup(ctx) {
         status(`Replaying ${index+1}/${recording.blobs.length}: ${recording.segments[index].speaker}`);
         const segment=recording.segments[index];
         let nextIndex=index+1;
-        advancePlayback=(direction=1)=>{if(!skipAudio || ctrl.signal.aborted || token!==revision)return;const passage=segment.passageIndex ?? index;if(direction<0){let start=index;while(start>0 && (recording.segments[start-1].passageIndex ?? start-1)===passage)start--;nextIndex=Math.max(0,start-1);const previous=recording.segments[nextIndex].passageIndex ?? nextIndex;while(nextIndex>0 && (recording.segments[nextIndex-1].passageIndex ?? nextIndex-1)===previous)nextIndex--;}else while(nextIndex<recording.segments.length && (recording.segments[nextIndex].passageIndex ?? nextIndex)===passage)nextIndex++;pauseNext=Boolean(currentAudio?.paused);skipAudio();};
+        advancePlayback=(direction=1)=>{if(!skipAudio || ctrl.signal.aborted || token!==revision)return;const passage=segment.passageIndex ?? index;if(direction<0){let start=index;while(start>0 && (recording.segments[start-1].passageIndex ?? start-1)===passage)start--;nextIndex=Math.max(0,start-1);const previous=recording.segments[nextIndex].passageIndex ?? nextIndex;while(nextIndex>0 && (recording.segments[nextIndex-1].passageIndex ?? nextIndex-1)===previous)nextIndex--;}else while(nextIndex<recording.segments.length && (recording.segments[nextIndex].passageIndex ?? nextIndex)===passage)nextIndex++;pauseNext=heldPaused();skipAudio();};
         activePlayback={chatId:targetChat,messageId,content:recording.content,passage:segment.passageIndex ?? index,chunk:segment.chunkIndex ?? 0};
         for(const kind in beds){const marker=bedIndex(recording.segments,index,kind),bedBlob=bedEnabled(kind) && recording.blobs[marker];const entry=recording.segments[marker]?.[kind];followBed(entry?.stop?entry:bedBlob && entry,async()=>bedBlob,kind);}
-        const paused=pauseNext;pauseNext=false;await playBlob(blob,ctrl.signal,recording.segments[index].speaker,0,config.normalizeLoudness,paused,{messageId,items:recording.segments,index});
+        const paused=pauseNext;pauseNext=false;await playBlob(blob,ctrl.signal,recording.segments[index].speaker,0,config.normalizeLoudness,paused,{messageId,items:recording.segments,index,gapMs:gapBefore(recording.segments,index)});
         index=nextIndex;const next=recording.segments[index];activePlayback={...activePlayback,passage:next?.passageIndex ?? (activePlayback.passage+1),chunk:next?.chunkIndex ?? 0,complete:index===recording.blobs.length};savePosition(0);activePlayback=null;
       }
       if(token===revision)status('Replay finished.');
@@ -4462,6 +5440,11 @@ export async function setup(ctx) {
     await prepare(latest.id,false,undefined,Boolean(alreadyPlanned));
   }
   $('latest').onclick=()=>run(planLatest);
+  $('previewReading').onclick=()=>{
+    const latest=latestReply(),preview=$('readingPreview');
+    preview.textContent=latest?transcriptFromMessage(ctx.messages.getContent(latest.id),$('ignoredTags').value) || 'No readable story text remains.':'Open a chat with an assistant reply to preview reading.';
+    preview.hidden=false;
+  };
   $('add').onclick=()=>{castRows.push(makeRow({speaker:`Character ${castRows.length}`,voice:'',style:''},$('fixed'),false,true));scheduleSettingsSave();renderMixer();};
   $('reset').onclick=()=>{config=capture();config.casts[scope(config)]=[];renderCast();clearPlan();scheduleSettingsSave();status('NPC cast cleared.');};
         const doSearchVoices = () => {
@@ -4501,7 +5484,7 @@ export async function setup(ctx) {
   $('exportCast').onclick=()=>{$('castJson').value=JSON.stringify(castExport(capture()),null,2);status('Cast exported below. Copy this JSON to transfer it. Credentials are excluded.');};
   $('importCast').onclick=()=>run(async()=>{
     if(!chatId)throw new Error('Open a chat first.');
-    const imported=castImport(retireGeminiRoute(JSON.parse($('castJson').value))),candidate={...capture(),...imported};
+    const imported=castImport(normalizeSavedSettings(JSON.parse($('castJson').value))),candidate={...capture(),...imported};
     const routes=new Set([scope(candidate),...candidate.fixed.map(actor=>actor.route || scope(candidate)),...Object.keys(candidate.casts),...Object.keys(candidate.singleVoices || {}),...Object.values(candidate.casts).flat().map(actor=>actor.route).filter(Boolean)]);
     for(const route of routes)await ensureCatalogue(route);
     for(const [route,choices] of Object.entries(candidate.singleVoices || {}))for(const voice of Object.values(choices))if(voice && !voiceCatalogues.get(route)?.some(v=>v.id===voice))throw new Error(`Imported voice ${voice} is unavailable on ${route}.`);
@@ -4863,7 +5846,7 @@ const paragraphAudioCache = new Map();
             if (ctrl.signal.aborted || signal?.aborted) throw abortError();
             if(playbackExcluded(batch))continue;
             onStatus?.({ kind: 'playing', speaker: batch.speaker });
-            await playBlob(blob,ctrl.signal,batch.speaker,0,snapshot.normalizeLoudness,false,{messageId,items:batches,index:i});
+            await playBlob(blob,ctrl.signal,batch.speaker,0,snapshot.normalizeLoudness,false,{messageId,items:batches,index:i,gapMs:gapBefore(batches,i)});
             played++;
           }catch(error){
             if(batch.kind!=='sfx' || ctrl.signal.aborted || signal?.aborted)throw error;
@@ -4911,6 +5894,7 @@ const paragraphAudioCache = new Map();
   mixer.addEventListener('choir:replace',cleanup,{once:true});unsubs.push(()=>mixer.removeEventListener('choir:replace',cleanup));
   await run(switchChat);
   if(disposed)return cleanup;
+  if(!setupAutoStarted){setupAutoStarted=true;void setupWizard.start();}
   // Branch metadata is optional UI information; it must not delay startup.
   const branchLookup=new AbortController();unsubs.push(()=>branchLookup.abort());
   void (async()=>{

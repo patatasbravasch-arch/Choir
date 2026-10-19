@@ -92,9 +92,46 @@ function normalizeName(value) {
   return String(value || '').normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
+const escapePattern = value => value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+
+// Preserve older free-form instructions. Only unambiguous name mappings and
+// hyphenated respellings are interpreted as pronunciation rules.
+function namePronunciation(actor) {
+  if(Object.hasOwn(actor,'sayAs'))return typeof actor.sayAs==='string'?actor.sayAs.trim():'';
+  const legacy=actor.pronunciation?.trim() || '';
+  const name=escapePattern(actor.speaker || '');
+  const explicit=name && legacy.match(new RegExp(`^(?:pronounce\\s+)?${name}\\s*(?::|=|is pronounced as|is pronounced|as)\\s*["“']?(.+?)["”']?\\.?$`,'iu'));
+  const spelling=(explicit?.[1] || (/^[\p{L}\p{M}]+(?:[-‐‑][\p{L}\p{M}]+)+$/u.test(legacy)?legacy:'')).trim();
+  return spelling.length<=120 && !/[<>\[\]\r\n]/u.test(spelling)?spelling:'';
+}
+
+function namePronunciations(actors=[]) {
+  const rules=new Map();
+  for(const actor of actors){
+    const name=actor.speaker?.trim(),sayAs=namePronunciation(actor);
+    if(name && normalizeName(name)!=='narrator' && sayAs && sayAs!==name)rules.set(normalizeName(name),{name,sayAs});
+  }
+  return [...rules.values()].sort((a,b)=>b.name.length-a.name.length || a.name.localeCompare(b.name));
+}
+
+function wholeNamePattern(names) {
+  return names.length?new RegExp(`(?<![\\p{L}\\p{M}\\p{N}_-])(?:${names.map(escapePattern).join('|')})(?![\\p{L}\\p{M}\\p{N}_-])`,'giu'):null;
+}
+
+function respellNames(text,actors=[]) {
+  const rules=namePronunciations(actors),pattern=wholeNamePattern(rules.map(rule=>rule.name));
+  const spellings=new Map(rules.map(rule=>[normalizeName(rule.name),rule.sayAs]));
+  // One pass prevents rules from rewriting each other's replacement text.
+  return pattern?text.replace(pattern,name=>spellings.get(normalizeName(name))):text;
+}
+
 // Multi-character cards commonly give each person a top-level heading or named XML section.
 // Require those explicit profiles before splitting a title: "War and Peace" is not a cast list.
 function characterCardRoles(card={}) {return characterCardRoleDiscovery(card).roles;}
+
+// These labels describe card structure or authoring rules, not a person's
+// identity. A mention of "main character" inside them is not profile evidence.
+const cardSectionName=value=>/^(?:speech|personality|appearance|background|history|relationships|likes|dislikes|behavio[u]?r|notes|details|voice|goals|traits|scenario|instructions?|guidelines?|rules?|examples?|example\s*dialogue|(?:narrative|narration|story|storytelling|writing|roleplay|role\s*play|response|dialogue|system|character|formatting|output)\s*(?:guidelines?|rules?|instructions?|requirements?|constraints?|style|format))$/i.test(String(value || '').replace(/[*_`]/g,'').replace(/[-:：]+/g,' ').trim());
 
 // Check all card fields and keep each profile inside its own section.
 function characterCardRoleDiscovery(card={}) {
@@ -104,6 +141,7 @@ function characterCardRoleDiscovery(card={}) {
   const titleNames=title.split(/\s+and\s+|\s*[&+]\s*|,\s*/i).map(name=>name.trim()).filter(Boolean);
   const nameFields=text=>[...text.matchAll(/^\s*(?:[-*]\s*)?(?:\*\*)?(?:Character\s+)?Name(?:\*\*)?\s*:\s*([^\n\r]+)/gim)].map(match=>clean(match[1]));
   const profiles=[];let needsAnalysis=false;
+  const secondary=value=>/^(?:NPCs?|supporting (?:cast|characters?)|secondary (?:cast|characters?)|side characters?|incidental characters?)$/i.test(String(value || '').trim());
   const add=(name,aliases,description,start)=>profiles.push({name,aliases,description:description.trim().slice(0,8000),__start:start});
   for(const field of ['description','personality','scenario','first_mes']){
   const fieldStart=profiles.length;
@@ -113,22 +151,26 @@ function characterCardRoleDiscovery(card={}) {
     const data=JSON.parse(description.replace(/^\s*```(?:json)?\s*|\s*```\s*$/g,''));
     const entries=Array.isArray(data)?data:data.characters || data.cast || data.profiles;
     if(Array.isArray(entries) && entries.length){
-      profiles.push(...validateCardRoles(entries.map(entry=>({name:entry.name,aliases:entry.aliases || [],description:typeof entry.description==='string'?entry.description:JSON.stringify(entry)}))));
+      profiles.push(...validateCardRoles(entries.filter(entry=>!secondary(entry.role || entry.category || entry.type)).map(entry=>({name:entry.name,aliases:entry.aliases || [],description:typeof entry.description==='string'?entry.description:JSON.stringify(entry)}))));
       continue;
     }
   }catch{}
   const headings=[...description.matchAll(/^(#{1,6})[ \t]+([^#\n\r]{1,100})[ \t]*$/gm)].map(match=>({name:clean(match[2]),level:match[1].length,start:match.index,end:match.index+match[0].length}));
   const sections=[...description.matchAll(/(?=<([\w-]+)\b[^>]*>([\s\S]*?)<\/\1\s*>)/g)].map(match=>({tag:match[1],text:match[2],start:match.index})).sort((a,b)=>a.text.length-b.text.length);
+  const excludedSpans=[...headings.filter(heading=>secondary(heading.name) || cardSectionName(heading.name)).map(heading=>[heading.start,headings.find(next=>next.start>heading.start && next.level<=heading.level)?.start ?? description.length]),...sections.filter(section=>secondary(section.tag.replace(/[_-]/g,' ')) || cardSectionName(section.tag)).map(section=>[section.start,section.start+section.text.length+section.tag.length*2+5])];
+  const excludedProfile=(start,text)=>excludedSpans.some(([from,to])=>start>=from && start<to) || /^\s*(?:[-*]\s*)?(?:role|category|type)\s*:\s*(?:NPC|supporting character|secondary character)\b/im.test(text);
   const candidates=headings.flatMap((heading,index)=>{
     const next=headings[index+1];
     const block=description.slice(heading.end,next?.start),names=nameFields(block);
+    if(excludedProfile(heading.start,block))return [];
     const inTitle=titleNames.some(name=>normalizeName(name)===normalizeName(heading.name));
     const namedSection=sections.some(section=>normalizeName(section.tag.replace(/[_-]/g,' '))===normalizeName(heading.name));
-    const explicitLead=!/^(?:speech|personality|appearance|background|history|relationships|likes|dislikes|behavio[u]?r|notes|details|voice|goals|traits|scenario)$/i.test(heading.name) && /\b(?:lead|primary character|main character|playable character)\b/i.test(block);
+    const explicitLead=/\b(?:lead|primary character|main character|playable character)\b/i.test(block);
     return names.length===1 || inTitle || namedSection || explicitLead?[{...heading,fullName:names.length===1?names[0]:undefined}]:[];
   });
   const spans=[],seenSections=new Set();
   for(const section of sections){
+    if(excludedProfile(section.start,section.text))continue;
     const names=nameFields(section.text);
     const heading=candidates.find(item=>item.start>=section.start && item.start<section.start+section.text.length && (normalizeName(item.name)===normalizeName(section.tag.replace(/[_-]/g,' ')) || names.some(name=>normalizeName(name)===normalizeName(item.fullName))));
     const sectionTitle=titleNames.find(name=>normalizeName(name)===normalizeName(section.tag.replace(/[_-]/g,' ')));
@@ -172,7 +214,7 @@ function characterCardRoleDiscovery(card={}) {
 function validateCardRoles(roles) {
   if(!Array.isArray(roles) || roles.length>20)throw new Error('Card analysis must return at most 20 lead characters.');
   const names=new Set();
-  const result=roles.map(role=>{
+  const result=roles.filter(role=>!cardSectionName(role?.name)).map(role=>{
     const name=typeof role?.name==='string'?role.name.trim():'';
     if(!name || name.length>100 || ['narrator','persona','user','{{user}}','{{char}}'].includes(normalizeName(name)) || names.has(normalizeName(name)))throw new Error('Card analysis returned invalid or duplicate character names.');
     names.add(normalizeName(name));
@@ -183,6 +225,31 @@ function validateCardRoles(roles) {
   const aliasCounts=new Map();for(const role of result)for(const alias of new Set(role.aliases.map(normalizeName)))aliasCounts.set(alias,(aliasCounts.get(alias) || 0)+1);
   for(const role of result)role.aliases=[...new Set(role.aliases)].filter(alias=>!names.has(normalizeName(alias)) && aliasCounts.get(normalizeName(alias))===1);
   return result;
+}
+
+// Evidence must still occur in one card field. Normalize presentation only;
+// paraphrases and invented excerpts are not evidence for a new lead.
+function cardAnalysisRoles(rawRoles,card={}) {
+  const candidates=validateCardRoles(rawRoles);
+  const normalize=value=>String(value || '')
+    .replace(/<\/?(?:p|div|li|h[1-6]|br|section|article|blockquote)\b[^>]*>/gi,' ').replace(/<[^>]*>/g,'')
+    .replace(/&(quot|apos|nbsp|amp|lt|gt|#\d+|#x[a-f0-9]+);/gi,(entity,name)=>{
+      const known={quot:'"',apos:"'",nbsp:' ',amp:'&',lt:'<',gt:'>'},key=name.toLowerCase();
+      if(Object.hasOwn(known,key))return known[key];
+      const point=key.startsWith('#x')?parseInt(key.slice(2),16):Number(key.slice(1));
+      return Number.isInteger(point) && point>0 && point<=0x10ffff?String.fromCodePoint(point):entity;
+    })
+    .normalize('NFKC').replace(/[\u2018\u2019]/g,"'").replace(/[\u201c\u201d]/g,'"')
+    .replace(/(\*{1,3}|_{1,3}|`{1,3})([^\n]*?)\1/g,'$2').replace(/\s+/gu,' ').trim().toLowerCase();
+  const sources=['name','description','personality','scenario','first_mes'].map(field=>normalize(card[field]));
+  const rawByName=new Map(rawRoles.map(role=>[normalizeName(role?.name),role]));
+  const verified=new Set(candidates.flatMap(role=>{
+    const quote=rawByName.get(normalizeName(role.name))?.evidence;
+    if(typeof quote!=='string' || !quote.trim() || quote.length>600)return [];
+    const evidence=normalize(quote);
+    return evidence && sources.some(source=>source.includes(evidence))?[normalizeName(role.name)]:[];
+  }));
+  return validateCardRoles(rawRoles.filter(role=>verified.has(normalizeName(role?.name))));
 }
 
 // A decorated single-character card title is another name for an existing lead,
@@ -379,14 +446,15 @@ function parsePlanJson(value) {
 }
 
 function validateCastConfig(config) {
-  if (!config || !Array.isArray(config.voices) || !config.voices.length || config.voices.length > 1000) throw new Error('Load an available voice list first.');
+  const communityRoute=route=>['community','both'].includes(config?.communityRoutes?.[route || config?.defaultRoute || '']);
+  if (!config || !Array.isArray(config.voices) || !config.voices.length && !Object.values(config.communityRoutes || {}).some(source=>['community','both'].includes(source)) || config.voices.length > 1000) throw new Error('Load an available voice list first.');
   const voices = new Set(config.voices.map(v => v.id));
   const available=(actor)=>config.voices.some(v=>v.id===actor.voice && (v.route || '')===(actor.route || config.defaultRoute || ''));
   if ([...voices].some(id => typeof id !== 'string' || !id || id.length > 200)) throw new Error('Invalid voice catalogue.');
   if (!Array.isArray(config.fixed) || !config.fixed.length || config.fixed.length > 50) throw new Error('Configure narrator, persona and main characters.');
   const names = new Set();
   for (const entry of config.fixed) {
-    if(!config.voices.some(v=>(v.route || '')===(entry.route || config.defaultRoute || '')))throw new Error(`Load the voice catalogue for ${entry.speaker}'s TTS connection.`);
+    if(!config.voices.some(v=>(v.route || '')===(entry.route || config.defaultRoute || '')) && !(communityRoute(entry.route) && entry.voice===''))throw new Error(`Load the voice catalogue for ${entry.speaker}'s TTS connection.`);
     if(entry.gender !== undefined && !['auto','female','male','neutral'].includes(entry.gender))throw new Error('Invalid voice gender preference.');
     const name = normalizeName(entry.speaker);
     if (!name || name.length > 100 || names.has(name)) throw new Error('Every fixed speaker must have a unique name.');
@@ -404,7 +472,7 @@ function validateCastConfig(config) {
   }
   if (!Array.isArray(config.npcs) || config.npcs.length > 500) throw new Error('Invalid NPC cast.');
   for (const npc of config.npcs) {
-    if(!config.voices.some(v=>(v.route || '')===(npc.route || config.defaultRoute || '')))throw new Error(`Load the voice catalogue for ${npc.speaker}'s TTS connection.`);
+    if(!config.voices.some(v=>(v.route || '')===(npc.route || config.defaultRoute || '')) && !(communityRoute(npc.route) && npc.voice===''))throw new Error(`Load the voice catalogue for ${npc.speaker}'s TTS connection.`);
     if(npc.gender !== undefined && !['auto','female','male','neutral'].includes(npc.gender))throw new Error('Invalid NPC voice gender preference.');
     const name = normalizeName(npc.speaker);
     if (!name || names.has(name) || (npc.voice !== '' && !available(npc))) throw new Error(`Invalid or conflicting NPC assignment: ${npc.speaker}`);
@@ -422,6 +490,7 @@ function validateCastConfig(config) {
       names.add(key);own.add(key);
     }
     for(const field of ['pronunciation','accent'])if(actor[field] !== undefined && (typeof actor[field]!=='string' || actor[field].length>300))throw new Error(`Invalid ${field} preference.`);
+    if(actor.sayAs!==undefined && (typeof actor.sayAs!=='string' || actor.sayAs.length>120 || /[<>\[\]\r\n]/u.test(actor.sayAs)))throw new Error('Say name as must be plain pronunciation spelling, up to 120 characters.');
     if(actor.excluded !== undefined && typeof actor.excluded!=='boolean')throw new Error('Invalid character exclusion.');
   }
   return config;
@@ -621,6 +690,41 @@ function mixerVolume(master, speaker, channels) {
   return Math.max(0,Math.min(1,Number(master ?? 1)))*Math.max(0,Math.min(MAX_CHANNEL_VOLUME,Number(channel.volume ?? 1)))*(channel.mute || (solo && !channel.solo)?0:1);
 }
 
+// Playback speed and the pause between spoken blocks. Stored values are clamped and snapped to these steps.
+// Speed can be typed or stepped from 0.07 to 16 times, the browser maximum. The mixer slider shows the practical part, 0.25 to 4.
+const PLAYBACK_RATE_LIMITS={min:0.07,max:16,step:0.01,fallback:1};
+const VOICE_GAP_LIMITS={min:0,max:3000,step:50,fallback:0};
+function snapToLimits(value,{min,max,step,fallback}){
+  if(value===undefined || value===null || value==='' || typeof value==='boolean')return fallback;
+  const number=Number(value);
+  if(!Number.isFinite(number))return fallback;
+  const clamped=Math.min(max,Math.max(min,number));
+  return Number((min+Math.round((clamped-min)/step)*step).toFixed(2));
+}
+const normalizePlaybackRate=value=>snapToLimits(value,PLAYBACK_RATE_LIMITS);
+const normalizeVoiceGap=value=>snapToLimits(value,VOICE_GAP_LIMITS);
+// The user's top end for the speed sliders. Typed speeds still reach the full PLAYBACK_RATE_LIMITS range.
+const SPEED_SLIDER_MAX_LIMITS={min:1,max:16,step:0.25,fallback:4};
+const normalizeSpeedSliderMax=value=>snapToLimits(value,SPEED_SLIDER_MAX_LIMITS);
+// A speaker's own speed lives beside its volume in the mixer state (channels[speaker].speed). It replaces the playback speed for that speaker. Null means no own speed: the speaker follows the playback speed.
+function speakerPlaybackRate(channels, speaker) {
+  const channel=channels && Object.hasOwn(channels,speaker)?channels[speaker]:{};
+  const value=channel?.speed;
+  if(value===undefined || value===null || value==='' || typeof value==='boolean' || !Number.isFinite(Number(value)))return null;
+  return normalizePlaybackRate(value);
+}
+// A speaker's own speed replaces the playback speed for that speaker. Without one, the playback speed applies.
+function effectivePlaybackRate(globalRate, channels, speaker) {
+  return speakerPlaybackRate(channels,speaker) ?? normalizePlaybackRate(globalRate);
+}
+// Browsers play only inside their own range. A value outside it moves to the nearest end they accept.
+const BROWSER_PLAYBACK_RATE_LIMITS={min:0.0625,max:16};
+function browserPlaybackRate(rate) {
+  const number=Number(rate);
+  if(!Number.isFinite(number))return 1;
+  return Math.min(BROWSER_PLAYBACK_RATE_LIMITS.max,Math.max(BROWSER_PLAYBACK_RATE_LIMITS.min,number));
+}
+
 function loudnessGain(channels, target=0.12) {
   let squares=0,peak=0,count=0;
   for(const samples of channels)for(const sample of samples){squares+=sample*sample;peak=Math.max(peak,Math.abs(sample));count++;}
@@ -676,7 +780,8 @@ function castImport(raw) {
   }
   const clean=actor=>{
     if(!actor || typeof actor.speaker!=='string' || typeof actor.voice!=='string' || typeof actor.style!=='string')throw new Error('Invalid imported cast row.');
-    return Object.fromEntries(['speaker','voice','style','route','gender','aliases','pronunciation','accent','excluded'].filter(key=>actor[key]!==undefined).map(key=>[key,structuredClone(actor[key])]));
+    if(actor.sayAs!==undefined && (typeof actor.sayAs!=='string' || actor.sayAs.length>120 || /[<>\[\]\r\n]/u.test(actor.sayAs)))throw new Error('Invalid imported name pronunciation.');
+    return Object.fromEntries(['speaker','voice','style','route','gender','aliases','pronunciation','sayAs','accent','excluded'].filter(key=>actor[key]!==undefined).map(key=>[key,structuredClone(actor[key])]));
   };
   return {...routing,fixed:raw.fixed.map(clean),casts:Object.fromEntries(Object.entries(raw.casts).map(([route,actors])=>{
     if(!Array.isArray(actors) || actors.length>500 || !/^native:[\w.-]+$/.test(route))throw new Error('Invalid imported cast provider.');
@@ -757,23 +862,35 @@ function speechRequestLimits(provider = '', model = '') {
   return {maxChars:2000};
 }
 
-function splitSegment(segment, maxChars = 350, maxBytes = Infinity) {
+function splitSegment(segment, maxChars = 350, maxBytes = Infinity, {transform=text=>text,atomic=[]}={}) {
   if (!Number.isInteger(maxChars) || maxChars < 80 || maxChars > MAX_SPEECH_CHARS) throw new Error('Chunk size must be 80–10000 characters.');
   if(maxBytes!==Infinity && (!Number.isInteger(maxBytes) || maxBytes<80))throw new Error('Speech byte budget must be at least 80.');
   const bytes=text=>maxBytes===Infinity?0:new TextEncoder().encode(text).length;
+  const fits=text=>{const speech=transform(text);return speech.length<=maxChars && bytes(speech)<=maxBytes;};
+  const names=wholeNamePattern(atomic);
   const out = [];
   let text = segment.text;
-  while (text.length > maxChars || bytes(text)>maxBytes) {
+  while (!fits(text)) {
     let limit=Math.min(text.length,maxChars);
-    if(bytes(text.slice(0,limit))>maxBytes){
-      let low=0,high=limit;
-      while(low<high){const mid=Math.ceil((low+high)/2);if(bytes(text.slice(0,mid))<=maxBytes)low=mid;else high=mid-1;}
-      limit=low;
-    }
+    if(transform(text)===text){
+      // Most passages need no respelling. Preserve the fast byte-budget search.
+      if(bytes(text.slice(0,limit))>maxBytes){
+        let low=0,high=limit;
+        while(low<high){const mid=Math.ceil((low+high)/2);if(bytes(text.slice(0,mid))<=maxBytes)low=mid;else high=mid-1;}
+        limit=low;
+      }
+    }else while(limit>0 && !fits(text.slice(0,limit)))limit--;
+    if(!limit)throw new Error('A pronunciation is too long for this speech request. Shorten its Say name as spelling.');
     const head = text.slice(0, limit);
     const sentence = [...head.matchAll(/[.!?…]["'”’]?\s+/g)].at(-1);
     let end = sentence && sentence.index > limit/3 ? sentence.index + sentence[0].length : head.lastIndexOf(' ');
     if (end < limit/3) end = limit;
+    // Keep a mapped name intact even when its original spelling spans words.
+    if(names)for(const match of text.matchAll(names))if(match.index<end && match.index+match[0].length>end){
+      end=match.index || match[0].length;
+      if(!fits(text.slice(0,end)))throw new Error('A name pronunciation exceeds the speech request limit. Shorten its Say name as spelling or raise Max characters per request.');
+      break;
+    }
     // Do not split a UTF-16 surrogate pair.
     if (/[\uD800-\uDBFF]/.test(text[end-1]) && /[\uDC00-\uDFFF]/.test(text[end])) end--;
     out.push({...segment, text:text.slice(0,end).trim()});
@@ -788,10 +905,11 @@ function speechBatches(segments,maxChars,defaultRoute,limitsForSegment=()=>({}))
   for(const source of segments) {
     const limits=limitsForSegment(source,source.route || defaultRoute);
     const charLimit=Math.min(maxChars,limits.maxChars || maxChars),byteLimit=limits.maxBytes ?? Infinity;
-    for(const segment of splitSegment(source,charLimit,byteLimit)) {
+    for(const segment of splitSegment(source,charLimit,byteLimit,{transform:limits.speechText,atomic:limits.atomicWords})) {
     const route=segment.route || defaultRoute,previous=batches.at(-1);
     const joined=previous?previous.text+'\n'+segment.text:'';
-    const fits=previous && joined.length<=charLimit && (byteLimit===Infinity || new TextEncoder().encode(joined).length<=byteLimit);
+    const spokenJoined=limits.speechText?limits.speechText(joined):joined;
+    const fits=previous && spokenJoined.length<=charLimit && (byteLimit===Infinity || new TextEncoder().encode(spokenJoined).length<=byteLimit);
     if(segment.unison){batches.push({...segment,route});continue;}
     if(previous && !previous.unison && !previous.kind && !segment.kind && previous.route===route && previous.voice===segment.voice && previous.speaker===segment.speaker && previous.style===segment.style && fits)previous.text+='\n'+segment.text;
     else batches.push({...segment,route});
@@ -812,7 +930,7 @@ function groupedSpeechBatches(segments,maxChars,defaultRoute,limitsForSegment,{s
     if(source.kind){flush();batches.push({...source,route});continue;}
     if(source.unison){
       flush();const limits=limitsForSegment(source,route);
-      batches.push(...splitSegment({...source,route},Math.min(maxChars,limits.maxChars || maxChars),limits.maxBytes ?? Infinity));first=false;continue;
+      batches.push(...splitSegment({...source,route},Math.min(maxChars,limits.maxChars || maxChars),limits.maxBytes ?? Infinity,{transform:limits.speechText,atomic:limits.atomicWords}));first=false;continue;
     }
     const limits=limitsForSegment(source,route),opening=sfx?900:1200;
     // Keep a moderate passage intact. A long opening turn still starts with a
@@ -830,7 +948,7 @@ function groupedSpeechBatches(segments,maxChars,defaultRoute,limitsForSegment,{s
     if(current && (size.chars>cap || size.bytes>(limits.maxBytes ?? Infinity))){flush();queue.unshift(source);continue;}
     if(size.chars>cap || size.bytes>(limits.maxBytes ?? Infinity)){
       const overhead=measure([{...source,text:''}]);
-      const pieces=splitSegment(source,Math.max(80,cap-overhead.chars),limits.maxBytes?limits.maxBytes-overhead.bytes:Infinity);
+      const pieces=splitSegment(source,Math.max(80,cap-overhead.chars),limits.maxBytes?limits.maxBytes-overhead.bytes:Infinity,{transform:limits.speechText,atomic:limits.atomicWords});
       if(pieces.length<2)throw new Error('Delivery instructions leave too little room for grouped speech.');
       queue.unshift(...pieces);continue;
     }
@@ -1388,7 +1506,7 @@ segment is the index of the numbered segment where the sound happens. trigger co
 For sound effects, keep each spoken phrase intact. Anchor at a sentence start, after clause punctuation (comma, semicolon, colon or dash), or at a conjunction that begins a complete action group, such as "and slid" or "as the glass shattered". Include the subject with its action; never insert an effect between a name/pronoun and its verb, inside a noun phrase, or inside a quoted utterance. For "Once she took the bite, Kellin set the plate back on the walnut edge and slid his hand beneath the hoodie", use "Kellin set the plate" or "and slid his hand", never "set the plate" after Kellin. If the action has no nearby clean break, use the start of its sentence.
 Return at most ${soundCueLimit(segments)} cues in story order, at most one per sentence. Prefer fewer, clearly audible moments.
 ambience entries follow the same segment, trigger and query rules but start a quiet looping background bed for a sustained environment the scene clearly stays in, such as "rain", "tavern crowd", "forest birds", "wind" or "fire crackle". A bed starts right before its trigger words and lasts until the next ambience entry or the end of the text; an entry with "stop":true instead of a query ends it when the scene moves somewhere quiet. Return at most ${AMBIENCE_LIMIT} ambience entries in story order, none for brief sounds.${music?`
-music entries follow the same segment and trigger rules but start instrumental background music that sits quietly under the narration and suits the mood and setting. feels lists 1 to 3 of: ${MUSIC_FEELS.join(', ')}. genres lists 1 or 2 of: ${Object.values(MUSIC_GENRES).join(', ')}. keywords lists 2 to 5 English words naming fitting instruments or the setting, such as "piano", "lute", "tavern" or "space". Music lasts until the next music entry or the end of the text; an entry with "stop":true instead ends it. Return at most ${MUSIC_LIMIT} music entries in story order, usually one at the start, and change music only when the mood clearly shifts.${playing?` Music ${playing} is already playing from the previous text and carries on: return a music entry only when this text clearly changes the mood or setting, otherwise return no music entries.`:''}`:''}
+music entries follow the same segment and trigger rules but start instrumental background music that sits quietly under the narration and suits the mood and setting. feels lists 1 to 3 of: ${MUSIC_FEELS.join(', ')}. genres lists 1 or 2 of: ${Object.values(MUSIC_GENRES).join(', ')}. keywords lists 2 to 5 English words naming fitting instruments, mood or setting, such as "piano", "romantic", "lute", "tavern" or "space". Music lasts until the next music entry or the end of the text; an entry with "stop":true instead ends it. Read the entire text as a mood timeline before choosing cues. Return at most ${MUSIC_LIMIT} music entries in story order: one for the opening mood when needed, then one at each clear sustained mood change, including changes within the SAME segment or message. Do not let the opening mood decide the soundtrack for the whole message. For example, if a frightening encounter gives way to a tender romantic scene, start with Eerie/Suspenseful music, then use Calming/Relaxed music with romantic piano or strings at the exact words where tenderness begins. Use different feels and keywords for distinct moods. Keep one track through minor emotional beats and brief dialogue; use stop:true when silence fits better.${playing?` Music ${playing} is already playing from the previous text and carries on: return a music entry only when this text clearly changes the mood or setting, otherwise return no music entries. Check later parts of this text too; the opening may match the current music even when the ending needs a replacement.`:''}`:''}
 Return {"cues":[],"ambience":[]${music?',"music":[]':''}} when nothing fits.`},
     {role:'user',content:JSON.stringify({segments:segments.map((segment, index) => ({index, speaker:segment.speaker, text:segment.text}))})}
   ];
@@ -1903,7 +2021,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
   (async () => {
     const input = message.input || {};
     if (message.action === 'ping') {
-      send({result:{version:'1.1.6-staging.29',ready:true}});return;
+      send({result:{version:"1.1.6-staging.30",ready:true,decisionsAvailable:typeof spindle.decisions?.evaluate==='function'}});return;
     }
     if(message.action==='cardCast'){
       const card=input.card;
@@ -1919,9 +2037,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
         ...textGenerationOptions(connection,{max_tokens:8192,...jsonResponseParameters(connection)}),signal:controller.signal});
       if(controller.signal.aborted)return;
       const raw=parsePlanJson(result.content);
-      const roles=validateCardRoles(raw.roles);
-      if(raw.roles.some(role=>typeof role.evidence!=='string' || !role.evidence.trim() || role.evidence.length>600 || !source.includes(role.evidence.trim())))throw new Error('Card analysis did not provide valid source evidence for every lead.');
-      send({result:{roles}});return;
+      send({result:{roles:cardAnalysisRoles(raw.roles,fields)}});return;
     }
     if(message.action==='testPlanner') {
       const mode=resolvePlannerMode(input);

@@ -213,8 +213,14 @@ test('generic card analysis reads freeform profiles and requires source evidence
  const card={name:'Closing Time',description:'Adrian is the captain, with a low voice. Ethan is his teammate, with a brighter voice.',scenario:'They run the station together.'};
  const h=await harness(async input=>{calls++;request=input;return {content:JSON.stringify({roles:[{name:'Adrian',description:'A low-voiced captain.',evidence:'Adrian is the captain'},{name:'Ethan',description:'A brighter-voiced teammate.',evidence:'Ethan is his teammate'}]})};});
  h.send('cardCast',{card,connectionId:'llm-a'});const result=(await h.result()).message;assert.equal(result.error,undefined);assert.deepEqual([...result.result.roles.map(role=>role.name)],['Adrian','Ethan']);assert.equal(calls,1);assert.match(request.messages[0].content,/regardless of formatting or title/);assert.match(request.messages[0].content,/untrusted data/);assert.equal(JSON.parse(request.messages[1].content).description,card.description);assert.equal(request.userId,'user-a');
- const bad=await harness(async()=>({content:JSON.stringify({roles:[{name:'Invented',description:'A stranger.',evidence:'Not present in the card.'}]})}));bad.send('cardCast',{card});assert.match((await bad.result()).message.error,/source evidence/);
+ const bad=await harness(async()=>({content:JSON.stringify({roles:[{name:'Invented',description:'A stranger.',evidence:'Not present in the card.'}]})}));bad.send('cardCast',{card});const rejected=(await bad.result()).message;assert.equal(rejected.error,undefined);assert.deepEqual([...rejected.result.roles],[]);
 });
+test('card analysis discards narrative guideline headings returned as lead names',async()=>{
+ const card={name:'Eliza',description:'Eliza is the main character.\n# NARRATIVE GUIDELINES\nKeep the main character consistent.'};
+ const h=await harness(async()=>({content:JSON.stringify({roles:[{name:'Eliza',evidence:'Eliza is the main character.'},{name:'NARRATIVE GUIDELINES'}]})}));
+ h.send('cardCast',{card});const message=(await h.result()).message;assert.equal(message.error,undefined);assert.deepEqual([...message.result.roles.map(role=>role.name)],['Eliza']);
+});
+
 test('missing lines get one follow-up request, and a reply without casting rows fails with guidance',async()=>{
   const requests=[];const h=await harness(async input=>{requests.push(input);return {content:requests.length===1?'D0|Mira|':'D2|Narrator|'};});
   h.send('plan',{transcript:'"Hi." "Hey." "Bye."',config:castConfig});
@@ -903,6 +909,14 @@ const communityCast={voices:[{id:'own-1',route:'native:fish'},{id:'used-1',route
   fixed:[{speaker:'Narrator',voice:'own-1',style:'',route:'native:fish'},{speaker:'Mira',voice:'',style:'',route:'native:fish'}],npcs:[{speaker:'Guard',voice:'used-1',style:'',route:'native:fish'}]};
 const describedPlan='D1|Mira|soft\nNPC|Mira|female|young; soft, bright\nLANG|pt-BR';
 const fishSearch=(urls,pages)=>async url=>{urls.push(new URL(url));const items=pages[urls.length-1];return items?{status:200,body:JSON.stringify({total:items.length,items})}:{status:500,body:'Down'};};
+
+test('a first Fish narration resolves an automatic voice from an empty relay catalogue',async()=>{
+  const urls=[],cast={...communityCast,voices:[],fixed:[{speaker:'Narrator',voice:'',style:'',route:'native:fish'}],npcs:[]};
+  const h=await harness(async()=>({content:'NPC|Narrator|neutral|middle-aged; calm\nLANG|en'}),fishSearch(urls,[[fishItem('narrator-first','Narrator',['neutral','middle-aged','calm'])]]));
+  h.send('plan',{transcript:'The room grew quiet.',config:cast});const message=(await h.result()).message;
+  assert.equal(message.error,undefined);assert.equal(message.result.segments[0].voice,'narrator-first');assert.equal(urls.length,1);
+  assert.equal(message.result.communityVoices[0].route,'native:fish');
+});
 
 test('a described voice is searched in the Fish community library with relaxed tags, without duplicates or voices already cast, and picked by the Decision model',async()=>{
   const urls=[];let prompt,evaluated;

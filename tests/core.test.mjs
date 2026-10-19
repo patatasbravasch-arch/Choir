@@ -4,7 +4,39 @@ import {createHash} from 'node:crypto';
 import {speechPanel} from './fixtures/speech-panel.mjs';
 import {phoneWidget} from './fixtures/phone-widget.mjs';
 import {sfxCueOffset} from '../src/core.js';
-import {randomUuid,sha256Hex,ignoredTagNames,characterCardRoles,reconcileCardCast} from '../src/core.js';
+import {randomUuid,sha256Hex,ignoredTagNames,characterCardRoles,validateCardRoles,cardAnalysisRoles,reconcileCardCast} from '../src/core.js';
+import {normalizePlaybackRate,normalizeVoiceGap,speakerPlaybackRate,effectivePlaybackRate,browserPlaybackRate,PLAYBACK_RATE_LIMITS,VOICE_GAP_LIMITS,BROWSER_PLAYBACK_RATE_LIMITS} from '../src/core.js';
+
+test('playback speed and voice gap clamp and round stored values and fall back to the defaults for missing or invalid input',()=>{
+  assert.deepEqual(PLAYBACK_RATE_LIMITS,{min:0.07,max:16,step:0.01,fallback:1});
+  assert.deepEqual(VOICE_GAP_LIMITS,{min:0,max:3000,step:50,fallback:0});
+  for(const value of [undefined,null,'',true,false,'fast',NaN,Infinity])assert.equal(normalizePlaybackRate(value),1);
+  assert.equal(normalizePlaybackRate(0.01),0.07);assert.equal(normalizePlaybackRate(9),9);assert.equal(normalizePlaybackRate(20),16);assert.equal(normalizePlaybackRate('1.5'),1.5);
+  assert.equal(normalizePlaybackRate(1.234),1.23);assert.equal(normalizePlaybackRate(1.237),1.24);assert.equal(normalizePlaybackRate(0.07),0.07);assert.equal(normalizePlaybackRate(16),16);assert.equal(normalizePlaybackRate(3.37),3.37);
+  for(const value of [undefined,null,'',true,'slow',NaN,Infinity])assert.equal(normalizeVoiceGap(value),0);
+  assert.equal(normalizeVoiceGap(-40),0);assert.equal(normalizeVoiceGap(9999),3000);assert.equal(normalizeVoiceGap('275'),300);assert.equal(normalizeVoiceGap(1200),1200);
+});
+
+test('a speaker speed replaces the playback speed, a missing or null speaker speed follows it and browsers get the nearest rate they accept',()=>{
+  const channels={Mira:{volume:1,speed:2.5},Guard:{volume:1},Narrator:{speed:0.5},Rare:{speed:null}};
+  assert.equal(speakerPlaybackRate(channels,'Mira'),2.5);assert.equal(speakerPlaybackRate(channels,'Guard'),null);assert.equal(speakerPlaybackRate(channels,'Unknown'),null);assert.equal(speakerPlaybackRate(channels,'Rare'),null);assert.equal(speakerPlaybackRate(undefined,'Mira'),null);
+  assert.equal(speakerPlaybackRate({Mira:{speed:'fast'}},'Mira'),null);assert.equal(speakerPlaybackRate({constructor:{speed:3}},'constructor'),3);assert.equal(speakerPlaybackRate({},'constructor'),null);
+  assert.equal(speakerPlaybackRate({Mira:{speed:9}},'Mira'),9);assert.equal(speakerPlaybackRate({Mira:{speed:40}},'Mira'),16);
+  // A character's speed replaces the playback speed rather than multiplying it.
+  assert.equal(effectivePlaybackRate(2,channels,'Mira'),2.5);
+  assert.equal(effectivePlaybackRate(1.5,channels,'Mira'),2.5);
+  assert.equal(effectivePlaybackRate(1.5,channels,'Guard'),1.5);
+  assert.equal(effectivePlaybackRate(3,channels,'Narrator'),0.5);
+  assert.equal(effectivePlaybackRate(0.25,channels,'Narrator'),0.5);
+  assert.equal(effectivePlaybackRate(1.2,{Mira:{speed:1.1}},'Mira'),1.1);
+  assert.equal(effectivePlaybackRate(undefined,channels,'Guard'),1);
+  assert.equal(effectivePlaybackRate(16,{Mira:{speed:0.07}},'Mira'),0.07);
+  assert.equal(effectivePlaybackRate(16,{},'Mira'),16);
+});
+test('speeds above 4 times pass through the speed model and browsers accept only their own playback range',()=>{
+  assert.deepEqual(BROWSER_PLAYBACK_RATE_LIMITS,{min:0.0625,max:16});
+  assert.equal(browserPlaybackRate(16),16);assert.equal(browserPlaybackRate(40),16);assert.equal(browserPlaybackRate(0.01),0.0625);assert.equal(browserPlaybackRate(0.07),0.07);assert.equal(browserPlaybackRate(NaN),1);assert.equal(browserPlaybackRate(undefined),1);
+});
 import {validatePlan, validateCastConfig, splitSegment, speechBatches, speechRequestLimits, audioBytes, transcriptFromMessage, parsePlanJson, normalizeVoiceCatalogue, speechSourceUnits, resolvePlanReferences, castingPrompt, parseCastRows, castReply, stripAudioTags, fastClassifyPlan, resolvePlannerMode, soundCuePrompt, parseSoundCues, applySoundCues, rankMusic, cueOffset, transcriptLines, skipCheckPrompt, parseSkipRows, skippedLines, withoutLines, readableText, readAlongIndex, locatePassages, spokenLength, attributionPlan, restoreAttribution, apiErrorMessage} from '../src/core.js';
 
 test('ignored tags skip nested, attributed, mixed-case and unfinished blocks without dropping ordinary story markup',()=>{
@@ -75,6 +107,45 @@ test('styled story layouts, literal UI descriptions and incomplete tab markup ar
   const mixed=speechPanel.replace('  <style>','Phone screen description. <style>');
   const surrounding=`<div style="background: navy"><p>Story before.</p>${mixed}<p>Story after.</p></div>`;
   assert.ok(transcriptFromMessage(surrounding).includes('Story before.'));assert.ok(transcriptFromMessage(surrounding).includes('Story after.'));
+});
+
+test('card evidence tolerates presentation differences but rejects paraphrases and invented excerpts',()=>{
+  const card={name:'Eliza',description:'<p>Eliza is the <b>captain</b> &amp; leader.</p><p>She’s\n  calm, with a **warm** voice.</p>',personality:'Caf\u00e9 owner.'};
+  const roles=[{name:'Eliza',evidence:'Eliza is the captain & leader.'},{name:'Captain',evidence:"She's calm, with a warm voice."},{name:'Owner',evidence:'Cafe\u0301 owner.'},{name:'NARRATIVE GUIDELINES'}];
+  assert.deepEqual(cardAnalysisRoles(roles,card).map(role=>role.name),['Eliza','Captain','Owner']);
+  for(const evidence of ['',null,'Eliza commands the ship.','A person not in this card.','x'.repeat(601)]){
+    assert.deepEqual(cardAnalysisRoles([{name:'Eliza',evidence}],card),[]);
+  }
+  assert.deepEqual(cardAnalysisRoles([{name:'Eliza',evidence:'Eliza is the captain & leader.'},{name:'Invented',evidence:'Another person entirely.'}],card).map(role=>role.name),['Eliza']);
+  assert.deepEqual(cardAnalysisRoles([{name:'Merged',evidence:'Eliza The captain.'}],{name:'Eliza',description:'The captain.'}),[],'evidence cannot span unrelated fields');
+  assert.deepEqual(cardAnalysisRoles([{name:'Eliza',aliases:['Captain'],evidence:'Eliza is the captain & leader.'},{name:'Captain',evidence:'Not in the card.'}],card)[0].aliases,['Captain']);
+});
+
+test('card instructions stay out of character discovery even when they mention the main character',()=>{
+  const guidelines='Always portray the main character consistently. Keep narration in third person.';
+  for(const label of ['NARRATIVE GUIDELINES','Writing Instructions','Output Format','Personality']){
+    const card={name:'Eliza',description:`# Eliza\nName: Eliza\nA warm lead.\n# ${label}\n${guidelines}`};
+    assert.deepEqual(characterCardRoles(card).map(role=>role.name),['Eliza']);
+  }
+  assert.deepEqual(characterCardRoles({name:'Eliza',description:'<Eliza>Name: Eliza\nA warm lead.</Eliza><narrative_guidelines>Name: Authoring rules\n'+guidelines+'</narrative_guidelines>'}).map(role=>role.name),['Eliza']);
+  assert.deepEqual(characterCardRoles({name:'Eliza',description:JSON.stringify({characters:[{name:'Eliza'},{name:'NARRATIVE GUIDELINES',description:guidelines}]})}).map(role=>role.name),['Eliza']);
+  assert.deepEqual(validateCardRoles([{name:'Eliza'},{name:'NARRATIVE GUIDELINES',description:guidelines}]).map(role=>role.name),['Eliza']);
+  assert.deepEqual(validateCardRoles([{name:'Guideline Keeper',description:'An actual named person.'}]).map(role=>role.name),['Guideline Keeper']);
+});
+
+test('card discovery keeps explicitly supporting profiles out of the lead cast',()=>{
+  const card={name:'Mira',description:'# Mira\nName: Mira\nA warm lead.\n# NPCs\n## Guard\nName: Guard\nA stern guard.\n## Clerk\nName: Clerk\nHelpful.'};
+  assert.deepEqual(characterCardRoles(card).map(role=>role.name),['Mira']);
+  assert.deepEqual(characterCardRoles({name:'Mira',description:JSON.stringify({characters:[{name:'Mira',role:'main character'},{name:'Guard',role:'NPC'}]})}).map(role=>role.name),['Mira']);
+  assert.deepEqual(characterCardRoles({name:'Mira',description:'<Mira>Name: Mira\nA warm lead.</Mira><NPCs><Guard>Name: Guard\nA stern guard.</Guard></NPCs>'}).map(role=>role.name),['Mira']);
+});
+
+test('an empty Fish catalogue can defer automatic voices to the community but never accepts invalid explicit assignments',()=>{
+  const config={fixed:[{speaker:'Narrator',voice:'',style:''}],npcs:[],voices:[],defaultRoute:'native:fish',communityRoutes:{'native:fish':'community'}};
+  assert.doesNotThrow(()=>validateCastConfig(config));
+  assert.throws(()=>validateCastConfig({...config,communityRoutes:{}}),/voice list/);
+  assert.throws(()=>validateCastConfig({...config,fixed:[{...config.fixed[0],voice:'Puck'}]}),/voice catalogue/);
+  assert.throws(()=>validateCastConfig({...config,fixed:[{...config.fixed[0],route:'native:other'}]}),/voice catalogue/);
 });
 
 test('multiple card characters keep separate profiles even when the second begins beyond the description budget',()=>{

@@ -25,12 +25,15 @@ async function harness(mixerPreferences,mobile=false){
     fixed:[{speaker:'Narrator',voice:'n',style:'Calm'},{speaker:'You',voice:'y',style:''},{speaker:'Mira',voice:'m',route:'native:b',style:'',aliases:['Captain'],pronunciation:'Mira: mee-rah',accent:'Irish'}],
     casts:{'native:a':[{speaker:'Guard',voice:'g',style:''}]}});
   class FakeAudio{
-    constructor(src){this.src=src;this.paused=true;this.currentTime=0;this.duration=20;audios.push(this);}
+    constructor(src){this.src=src;this.paused=true;this.currentTime=0;this.duration=20;this.rates=[];this._rate=1;this.preservesPitch=false;audios.push(this);this.playbackRate=1;}
+    // A browser plays only inside its own range. state.audioLimits narrows that range for a test that needs a refusal.
+    get playbackRate(){return this._rate;}
+    set playbackRate(value){const limit=state.audioLimits||{min:0.0625,max:16};if(!(value>=limit.min && value<=limit.max))throw new RangeError(`playbackRate ${value} is not supported`);this._rate=value;this.rates.push(value);}
     play(){
       if(this.loop && state.bedPlayError)return Promise.reject(Object.assign(new Error('Playback requires a user gesture'),{name:'NotAllowedError'}));
-      this.paused=false;this.onloadedmetadata?.();
+      this.paused=false;this.playedAt=Date.now();this.onloadedmetadata?.();
       if(this.loop && state.bedDecodeError)setTimeout(()=>{this.paused=true;this.onerror?.();},2);
-      if(!state.blockAudio)setTimeout(()=>{this.currentTime=20;this.onended?.();},2);return Promise.resolve();
+      if(!state.blockAudio)setTimeout(()=>{this.currentTime=20;this.endedAt=Date.now();this.onended?.();},2);return Promise.resolve();
     }
     pause(){this.paused=true;}
     removeAttribute(name){delete this[name];}
@@ -116,7 +119,7 @@ async function harness(mixerPreferences,mobile=false){
         }
         else if(request.action==='music'){
           if(state.musicError){backend({namespace:'choir',id:request.id,error:state.musicError});return;}
-          const title=state.musicTitle || 'Crypto',reply=()=>backend?.({namespace:'choir',id:request.id,result:{title,url:`https://incompetech.com/music/royalty-free/mp3-royaltyfree/${title}.mp3`}});
+          const title=state.musicTitles?.[request.input.feels?.[0]] || state.musicTitle || 'Crypto',reply=()=>backend?.({namespace:'choir',id:request.id,result:{title,url:`https://incompetech.com/music/royalty-free/mp3-royaltyfree/${title}.mp3`}});
           if(state.holdMusic){state.releaseMusic=reply;return;}result={title,url:`https://incompetech.com/music/royalty-free/mp3-royaltyfree/${title}.mp3`};
         }
         else if(request.action==='searchVoices')result={results:state.voiceSearchResults || [{id:'community_fish_voice',name:'Community narrator',description:'A warm, steady storyteller.'}]};
@@ -149,7 +152,7 @@ async function harness(mixerPreferences,mobile=false){
           })},request.input.transcript,cast);
         }
         else if(request.action==='plan')result=validatePlan({segments:speechSourceUnits(request.input.transcript).map(unit=>({
-          text:unit.text,speaker:unit.kind==='narration'?'Narrator':unit.text.includes('Wait')?'Guard':'Mira',voice:unit.kind==='narration'?'n':unit.text.includes('Wait')?'g':'m',style:unit.kind==='dialogue'?'Warm':''
+          text:unit.text,speaker:unit.kind==='narration'?'Narrator':unit.text.includes('Wait')?'Guard':state.leadSpeaker || 'Mira',voice:unit.kind==='narration'?'n':unit.text.includes('Wait')?'g':'m',style:unit.kind==='dialogue'?'Warm':''
         }))},request.input.transcript,request.input.config);
         backend({namespace:'choir',id:request.id,result});
       },2);
@@ -165,6 +168,81 @@ async function harness(mixerPreferences,mobile=false){
     releaseHeld(){for(const request of heldPlans.splice(0))backend?.({namespace:'choir',id:request.id,result:{segments:[{speaker:'Narrator',voice:'n',text:request.input.transcript,style:''}]}});},
     async close(){cleanup();await tick();URL.createObjectURL=createObjectURL;Object.assign(globalThis,original);dom.window.close();}};
 }
+
+async function elizaFixture(h,{sayAs='',grouped=false}={}){
+  h.state.character={name:'Eliza'};h.state.leadSpeaker='Eliza';h.message.name='Eliza';
+  h.message.content='Eliza arrived. "Hello, Eliza." "Wait, Eliza." The gate closed.';
+  for(const connection of h.connections){connection.provider='fish_audio';connection.model='s2.1-pro';}
+  h.state.providers=[{id:'fish_audio',capabilities:{parameters:{},multiSpeaker:{maxSpeakers:5}}}];
+  const saved=h.store.get('chat:chat-a');
+  Object.assign(saved,{useStyle:false,skipMeta:false,enableSfx:false,enableAmbience:false,batchSpeech:grouped,connectionMode:grouped?'one':'several'});
+  saved.fixed[2]={...saved.fixed[2],speaker:'Eliza',aliases:[],pronunciation:'',accent:'',sayAs};h.store.set('chat:chat-a',saved);await h.reload();
+}
+async function editNamePronunciation(h,value){
+  const input=h.$('fixed').querySelectorAll('[data-choir-say-as]')[2];assert.ok(input);input.value=value;input.dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));
+  await until(()=>h.$('saveState').textContent==='Saved automatically');
+}
+
+test('name pronunciation reaches every native Fish voice and editing it regenerates only affected speech',async()=>{
+  const h=await harness();try{
+    await elizaFixture(h);const legacy=h.store.get('chat:chat-a');legacy.fixed[2].pronunciation='Eliza: Eh-Lee-Zah';delete legacy.fixed[2].sayAs;h.store.set('chat:chat-a',legacy);await h.reload();
+    assert.equal(h.$('fixed').querySelectorAll('[data-choir-say-as]')[2].value,'Eh-Lee-Zah');const original=h.message.content;
+    await h.plan();await h.play();assert.equal(h.synthesis.length,4);
+    for(const voice of ['n','m','g']){const input=h.synthesis.find(input=>input.voice===voice);assert.match(input.text,/Eh-Lee-Zah/);assert.doesNotMatch(input.text,/Eliza/);}
+    assert.equal(h.message.content,original);assert.equal(h.requests.find(request=>request.action==='plan').input.transcript,original);
+    assert.match(h.$('planJson').value,/Eliza/);assert.doesNotMatch(h.$('planJson').value,/Eh-Lee-Zah/);
+    await editNamePronunciation(h,'Eh Lee Zah');await h.play();assert.equal(h.synthesis.length,7);assert.ok(h.synthesis.slice(4).every(input=>input.text.includes('Eh Lee Zah')));
+    assert.equal(h.requests.filter(request=>request.action==='plan').length,1);
+    await h.reload();await h.play();assert.equal(h.synthesis.length,7);
+    await editNamePronunciation(h,'');await h.play();assert.equal(h.synthesis.length,10);assert.ok(h.synthesis.slice(7).every(input=>input.text.includes('Eliza')));
+    h.state.active='chat-b';h.subscriptions.get('chat.active')();await until(()=>h.$('saveState').textContent==='Connection preferences restored');
+    assert.equal(h.$('fixed').querySelectorAll('[data-choir-say-as]')[2].value,'');
+  }finally{await h.close();}
+});
+
+test('name pronunciation reaches grouped Fish turns and the actual-name audition',async()=>{
+  const h=await harness();try{
+    await elizaFixture(h,{sayAs:'Eh-Lee-Zah',grouped:true});await h.plan();await h.play();
+    const grouped=h.synthesis.find(input=>input.parameters.turns?.length>1);assert.ok(grouped);
+    assert.ok(grouped.parameters.turns.filter(turn=>turn.text.includes('Eh-Lee-Zah')).length>=3);
+    assert.ok(h.synthesis.every(input=>!input.text.includes('Eliza')));
+    const test=h.$('fixed').querySelector('[aria-label="Test pronunciation of Eliza"]');test.click();await until(()=>h.$('status').textContent==='Audition finished.');
+    assert.match(h.synthesis.at(-1).text,/Eh-Lee-Zah opened the door/);assert.equal(h.requests.filter(request=>request.action==='plan').length,1);
+  }finally{await h.close();}
+});
+
+test('name pronunciation applies in companion narration and dialogue and updates its audio cache',async()=>{
+  const h=await harness();try{
+    await elizaFixture(h,{sayAs:'Eh-Lee-Zah'});const text='Eliza smiled. "Hello, Eliza."';
+    await globalThis.__CHOIR_API__.playParagraph({text,speaker:'Eliza'});assert.equal(h.synthesis.length,2);assert.ok(h.synthesis.every(input=>input.text.includes('Eh-Lee-Zah')));
+    await globalThis.__CHOIR_API__.playParagraph({text,speaker:'Eliza'});assert.equal(h.synthesis.length,2);
+    await editNamePronunciation(h,'Eh Lee Zah');await globalThis.__CHOIR_API__.playParagraph({text,speaker:'Eliza'});assert.equal(h.synthesis.length,4);assert.ok(h.synthesis.slice(2).every(input=>input.text.includes('Eh Lee Zah')));
+    assert.equal(h.requests.filter(request=>request.action==='plan').length,0);
+  }finally{await h.close();}
+});
+
+test('name pronunciation updates legacy Replay without seeding stale audio under new cache keys or calling a planner',async()=>{
+  const h=await harness();try{
+    await elizaFixture(h);await h.plan();await h.play();assert.equal(h.synthesis.length,4);
+    const db=await new Promise((resolve,reject)=>{const request=indexedDB.open('choir-recordings',1);request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);});
+    await new Promise((resolve,reject)=>{const transaction=db.transaction('recordings','readwrite'),cursor=transaction.objectStore('recordings').openCursor();cursor.onsuccess=()=>{const row=cursor.result;if(row){const value=row.value;delete value.speechTexts;delete value.passages;row.update(value);row.continue();}};transaction.oncomplete=resolve;transaction.onerror=()=>reject(transaction.error);});db.close();
+    await editNamePronunciation(h,'Eh-Lee-Zah');
+    [...h.$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay').click();await until(()=>h.$('status').textContent.includes('Name pronunciation updated'));
+    assert.equal(h.synthesis.length,7);assert.ok(h.synthesis.slice(4).every(input=>input.text.includes('Eh-Lee-Zah')));assert.equal(h.requests.filter(request=>request.action==='plan').length,1);
+    [...h.$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay').click();await until(()=>h.$('status').textContent==='Replay finished.');assert.equal(h.synthesis.length,7);
+  }finally{await h.close();}
+});
+
+test('reading skip preview uses visible custom rules while preserving story text and making no planner or speech call',async()=>{
+  const h=await harness();try{
+    h.message.content='<p>Eliza arrived.</p><aside class="skip-this">Hidden tracker.</aside><p>The story continues.</p>';
+    assert.equal(h.$('ignoredTags').closest('label').hidden,false);
+    h.$('ignoredTags').value='.skip-this';h.$('ignoredTags').dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));
+    h.$('previewReading').click();assert.equal(h.$('readingPreview').hidden,false);assert.match(h.$('readingPreview').textContent,/Eliza arrived/);assert.match(h.$('readingPreview').textContent,/story continues/);assert.doesNotMatch(h.$('readingPreview').textContent,/Hidden tracker/);
+    assert.match(h.message.content,/Hidden tracker/);assert.equal(h.synthesis.length,0);assert.equal(h.requests.filter(request=>['plan','skipCheck','sfx'].includes(request.action)).length,0);
+    await until(()=>h.$('saveState').textContent==='Saved automatically');await h.reload();assert.equal(h.$('ignoredTags').value,'.skip-this');
+  }finally{await h.close();}
+});
 
 test('HTTP hosts without secure crypto APIs keep the drawer, mixer, RPC, saved plans and cached replay working',async()=>{
   const descriptor=Object.getOwnPropertyDescriptor(globalThis,'crypto'),nativeCrypto=globalThis.crypto;
@@ -233,6 +311,35 @@ const configureFoley=async(h,key='test-freesound-key')=>{h.$('freesoundApiKey').
 const playedFoley=async h=>(await Promise.all(h.audioBlobs.map(blob=>blob.text()))).filter(text=>text==='FREESOUND_PREVIEW').length;
 
 const captureDefault=h=>{h.$('captureDefaults').click();const dialog=()=>document.querySelector('[role="dialog"][aria-label="Set default"]');[...dialog().querySelectorAll('button')].find(button=>button.textContent==='Use current chat settings').click();[...dialog().querySelectorAll('button')].find(button=>button.textContent==='Save default').click();};
+
+test('legacy voice styles are bounded across saved leads and NPC connections before planning and playback',async()=>{
+ const h=await harness();try{
+  const saved=h.store.get('chat:chat-a'),longStyle='Warm and measured. '.repeat(50),bounded=longStyle.slice(0,600);
+  saved.fixed[0].style=longStyle;saved.fixed[2].style=longStyle;
+  saved.casts['native:a'][0].style=longStyle;saved.casts['native:b']=[{speaker:'Other guard',voice:'g',style:longStyle}];
+  await h.reload();await h.plan();await h.play();
+  const cast=h.requests.filter(request=>request.action==='plan').at(-1).input.config;
+  assert.equal(cast.fixed[0].style,bounded);assert.equal(cast.fixed[2].style,bounded);assert.equal(cast.npcs[0].style,bounded);
+  const persisted=h.store.get('chat:chat-a');assert.equal(persisted.casts['native:b'][0].style,bounded);
+  assert.equal(persisted.fixed[1].style,'');assert.equal(persisted.fixed[2].pronunciation,'Mira: mee-rah');assert.equal(persisted.fixed[2].voice,'m');
+  assert.equal(h.synthesis.length,4);assert.equal(h.message.content,'At dawn. "Hello." "Wait." The gate closed.');
+ }finally{await h.close();}
+});
+
+test('legacy default voice styles can be saved and applied without clearing omitted styles',async()=>{
+ const h=await harness();try{
+  const saved=h.store.get('chat:chat-a'),longStyle='Clear narration. '.repeat(50),exactStyle='s'.repeat(600);
+  saved.fixed[2].style='Independent character style';
+  h.store.set('settings:captured-defaults',{version:2,leadVoices:saved.fixed.map((actor,index)=>({voice:actor.voice,route:actor.route || '',...(index===0?{style:longStyle}:index===1?{style:exactStyle}:{})}))});
+  await h.reload();h.$('captureDefaults').click();
+  const dialog=document.querySelector('[role="dialog"][aria-label="Set default"]');[...dialog.querySelectorAll('button')].find(button=>button.textContent==='Save default').click();
+  await until(()=>h.$('defaultStatus').textContent.startsWith('Default saved.'));
+  assert.equal(h.store.get('settings:captured-defaults').leadVoices[0].style,longStyle.slice(0,600));
+  h.$('applyDefaults').click();await until(()=>h.$('defaultStatus').textContent.startsWith('Default applied'));
+  const applied=h.store.get('chat:chat-a');assert.equal(applied.fixed[0].style,longStyle.slice(0,600));assert.equal(applied.fixed[1].style,exactStyle);assert.equal(applied.fixed[2].style,'Independent character style');
+  await h.plan();await h.play();assert.equal(h.synthesis.length,4);
+ }finally{await h.close();}
+});
 
 test('cast defaults contain only lead and NPC choices; cancel and navigation discard drafts',async()=>{
  const h=await harness();try{
@@ -639,12 +746,56 @@ test('late message decorators wait for catalogues before restoring saved grouped
  }finally{release?.();cleanupExtra?.();await h.close();}
 });
 
+test('catalogue outages keep the saved lead and NPC editors and cannot erase their voices on autosave',async()=>{
+ const h=await harness();try{
+  const saved=h.store.get('chat:chat-a');saved.connection='b';saved.casts['native:b']=saved.casts['native:a'];delete saved.casts['native:a'];h.store.set('chat:chat-a',saved);h.store.set('settings:global',{connection:'b'});h.state.failCatalogue=true;
+  await h.reload();assert.match(h.$('status').textContent,/catalogue unavailable/);
+  assert.deepEqual([...h.$('fixed').querySelectorAll('.et-cast-header strong')].map(node=>node.textContent),['Narrator','You','Mira']);
+  assert.match(h.$('npcs').textContent,/Guard/);h.$('skipMeta').checked=false;h.$('skipMeta').dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));
+  await until(()=>h.$('saveState').textContent==='Saved automatically');assert.deepEqual(h.store.get('chat:chat-a').fixed.map(actor=>actor.voice),['n','y','m']);
+  h.state.failCatalogue=false;await h.reload();assert.equal(h.$('fixed').children.length,3);
+ }finally{await h.close();}
+});
+
+test('a character moved to NPC keeps its voice and pronunciation and stays there after card discovery and reload',async()=>{
+ const h=await harness();try{
+  h.state.character={name:'Mira',description:'# Mira\nName: Mira\nA warm lead character.'};const saved=h.store.get('chat:chat-a');saved.fixed[2].sayAs='Mee Rah';h.store.set('chat:chat-a',saved);await h.reload();
+  const move=h.$('fixed').querySelector('[aria-label="Move Mira to NPC cast"]');assert.ok(move);move.click();
+  await until(()=>h.$('saveState').textContent==='Saved automatically');assert.equal(h.$('fixed').children.length,2);assert.match(h.$('npcs').textContent,/Mira/);
+  const actor=h.store.get('chat:chat-a').casts['native:a'].find(actor=>actor.speaker==='Mira');assert.equal(actor.voice,'m');assert.equal(actor.sayAs,'Mee Rah');
+  await h.reload();await h.plan();assert.equal(h.$('fixed').children.length,2);assert.match(h.$('npcs').textContent,/Mira/);
+  h.$('npcs').querySelector('[aria-label="Move Mira to lead cast"]').click();await until(()=>h.$('saveState').textContent==='Saved automatically');
+  await h.reload();assert.equal(h.$('fixed').children.length,3);assert.equal(h.store.get('chat:chat-a').fixed[2].sayAs,'Mee Rah');
+ }finally{await h.close();}
+});
+
+test('narrative guideline headings are never added as leads and removing an old cached false lead stays removed',async()=>{
+ const h=await harness();try{
+  h.state.character={name:'Mira',description:'# Mira\nName: Mira\nA warm lead.\n# NARRATIVE GUIDELINES\nKeep the main character consistent.'};
+  h.state.cardRoles=[{name:'Mira',description:'A warm lead.'},{name:'NARRATIVE GUIDELINES',description:'Keep the main character consistent.'}];await h.reload();await h.plan();
+  const names=()=>[...h.$('fixed').querySelectorAll('.et-cast-header strong')].map(node=>node.textContent);assert.deepEqual(names(),['Narrator','You','Mira']);
+  const saved=h.store.get('chat:chat-a');saved.cardCastAnalysis.roles.push({name:'NARRATIVE GUIDELINES',aliases:[],description:'Old cached mistake.'});saved.fixed.push({speaker:'NARRATIVE GUIDELINES',voice:'new',style:''});h.store.set('chat:chat-a',saved);await h.reload();
+  const row=[...h.$('fixed').children].find(row=>row.querySelector('.et-cast-header strong')?.textContent==='NARRATIVE GUIDELINES');assert.ok(row);row.querySelector('[aria-label="Remove character"]').click();
+  await until(()=>h.$('saveState').textContent==='Saved automatically');await h.reload();await h.plan();assert.deepEqual(names(),['Narrator','You','Mira']);assert.equal(h.requests.filter(request=>request.action==='cardCast').length,1);
+ }finally{await h.close();}
+});
+
 test('cast capture retains voices when the host returns different parent wrappers and repairs a missing narrator',async()=>{
  const h=await harness();try{
   for(const row of h.$('fixed').children)Object.defineProperty(row,'parentElement',{configurable:true,get:()=>Object.create(h.$('fixed'))});
   await h.plan();assert.deepEqual(h.store.get('chat:chat-a').fixed.map(actor=>actor.speaker),['Narrator','You','Mira']);assert.equal(h.store.get('chat:chat-a').fixed[2].voice,'m');
   const saved=structuredClone(h.store.get('chat:chat-a'));saved.fixed=[{speaker:'Levi',voice:'m',style:'',route:'native:b'},{speaker:'Cole',voice:'new',style:'',route:'native:b'}];h.store.set('chat:chat-a',saved);h.state.character={name:'Levi & Cole'};await h.reload();
   const repaired=h.store.get('chat:chat-a').fixed;assert.deepEqual(repaired.map(actor=>actor.speaker),['Narrator','Persona','Levi','Cole']);assert.deepEqual(repaired.slice(2).map(actor=>actor.voice),['m','new']);
+ }finally{await h.close();}
+});
+
+test('no verified card suggestions keeps the existing cast and does not block playback or repeat analysis on reload',async()=>{
+ const h=await harness();try{
+  h.state.character={name:'Mira',description:'Mira is the captain, with a warm voice. No formatted profiles.'};h.state.cardRoles=[];
+  await h.reload();await h.plan();await h.play();
+  assert.deepEqual(h.store.get('chat:chat-a').fixed.map(actor=>[actor.speaker,actor.voice]),[['Narrator','n'],['You','y'],['Mira','m']]);
+  await h.reload();h.message.content='At dusk. "Hello." "Wait." The gate opened.';await h.plan();await h.play();
+  assert.equal(h.requests.filter(request=>request.action==='cardCast').length,1);assert.equal(h.store.get('chat:chat-a').fixed[2].voice,'m');
  }finally{await h.close();}
 });
 
@@ -1096,6 +1247,19 @@ test('Ambience slider sets bed level live without touching speech and persists a
   await until(()=>h.store.get('ui:mixer')?.ambience===0.4);h.$('stop').click();await h.reload();
   assert.equal(document.querySelector('[aria-label="Ambience volume"]').value,'0.4');
   h.$('play').click();await until(()=>beds(h).length===2 && beds(h)[1].volume>0);assert.ok(beds(h)[1].volume<=0.1+0.000001);
+ }finally{await h.close();}
+});
+
+test('music changes from scary to romantic at a later cue within one narrated message',async()=>{
+ const h=await harness();try{
+  await toggle(h,'enableMusic',true);h.message.content='A shadow crept along the wall; then she held his hand with a tender smile.';
+  h.state.soundCues={cues:[],ambience:[],music:[{segment:0,trigger:'A shadow crept',feels:['Eerie'],genres:['Horror'],keywords:['dark','strings']},{segment:0,trigger:'then she held',feels:['Calming'],genres:['Classical'],keywords:['romantic','piano']}]};
+  h.state.musicTitles={Eerie:'Crypto',Calming:'Tender'};await h.plan();h.state.blockAudio=true;h.$('play').click();
+  await until(()=>voices(h).length===1 && beds(h).length===1 && !beds(h)[0].paused);assert.match(beds(h)[0].src,/Crypto/);assert.equal(h.synthesis[0].text,'A shadow crept along the wall;');
+  voices(h)[0].onended();await until(()=>voices(h).length===2 && beds(h).length===2 && !beds(h)[1].paused);
+  assert.match(beds(h)[1].src,/Tender/);assert.match(h.synthesis[1].text,/^then she held/);assert.equal(globalThis.__CHOIR_API__.getMusic().title,'Tender');
+  const selection=h.requests.filter(request=>request.action==='music');assert.equal(selection.length,2);assert.deepEqual(selection[1].input.keywords,['romantic','piano']);assert.match(selection[1].input.moment,/tender smile/);
+  h.state.blockAudio=false;voices(h)[1].onended();await until(()=>h.$('status').textContent.includes('Playback finished'));
  }finally{await h.close();}
 });
 
@@ -1688,6 +1852,19 @@ async function openRouterGroupingHarness(family='fish_audio',patched=true){
  h.store.set('chat:chat-a',saved);await h.reload();return h;
 }
 
+test('OpenRouter Fish restores assigned voices without an extra catalogue and lets a new cast add its first voice',async()=>{
+ const h=await openRouterGroupingHarness('fish_audio',false);try{
+  const saved=h.store.get('chat:chat-a');delete saved.extraVoices;delete saved.extraVoiceRoutes;h.store.set('chat:chat-a',saved);
+  await h.reload();assert.equal(h.$('fixed').children.length,3);assert.doesNotMatch(h.$('status').textContent,/returned no voices/);
+  await h.plan();await h.play();assert.equal(h.synthesis.length,4);assert.ok(h.synthesis.every(input=>/^[a-f0-9]{32}$/i.test(input.voice)));
+  for(const actor of saved.fixed)actor.voice='';saved.casts={};h.store.set('chat:chat-a',saved);await h.reload();
+  assert.equal(h.$('fixed').children.length,3);assert.ok(h.$('fixed').querySelector('[aria-label="Paste Fish Audio voice ID for Narrator"]'));
+  assert.ok(![...h.$('fixed').querySelector('[data-choir-voice]').options].some(option=>['alloy','Puck'].includes(option.value)));
+  const narrator=h.$('fixed').firstElementChild;narrator.querySelector('[data-choir-voice-id]').click();narrator.querySelector('[data-choir-voice-id-input]').value='5'.repeat(32);narrator.querySelector('[data-choir-apply-voice-id]').click();
+  await until(()=>h.$('saveState').textContent==='Saved automatically');assert.equal(h.store.get('chat:chat-a').singleVoices['native:a'].Narrator,'5'.repeat(32));
+ }finally{await h.close();}
+});
+
 test('OpenRouter Fish grouping uses Fish voice IDs and exposes Fish catalogue tools without Gemini or GPT voices',async()=>{
  const h=await openRouterGroupingHarness();try{
   const options=[...h.$('fixed').querySelector('[data-choir-voice]').options].map(option=>option.value);
@@ -1965,11 +2142,12 @@ test('drawer Stop cancels in-flight speech and paused audio without opening the 
 
 test('reload and chat navigation restore plans; recasting and edited text regenerate only affected passages',async()=>{
   const h=await harness();try{
+    h.message.content='At dawn. "Hello, Mira." "Wait." The gate closed.';
     assert.equal(h.footer.querySelector('button').title,'Play Choir · click again to stop'); // New ctx.ui decorator API.
     await h.plan();await h.play();assert.equal(h.synthesis.length,4);
     assert.equal(h.requests.filter(r=>r.action==='plan').length,1);
     assert.equal(h.synthesis.find(r=>r.voice==='m').parameters.accent,'Irish');
-    assert.match(h.synthesis.find(r=>r.voice==='m').parameters.instructions,/mee-rah/);
+    assert.match(h.synthesis.find(r=>r.voice==='m').text,/mee-rah/);
     await h.reload();assert.equal(h.$('preview').querySelectorAll('.et-card').length,4);
     await until(()=>h.$('preview').textContent.includes('Cached'));
     await h.play();assert.equal(h.synthesis.length,4);
@@ -2002,10 +2180,10 @@ test('connection speed and format changes regenerate only affected saved speech'
 
 test('companion speech applies actor pronunciation and accent just like the main player',async()=>{
   const h=await harness();try{
-    await globalThis.__CHOIR_API__.playParagraph({text:'"A companion-only line."',speaker:'Mira'});
+    await globalThis.__CHOIR_API__.playParagraph({text:'"A companion-only line for Mira."',speaker:'Mira'});
     assert.equal(h.synthesis.length,1);assert.equal(h.synthesis[0].connectionId,'b');
-    assert.equal(h.synthesis[0].parameters.accent,'Irish');assert.match(h.synthesis[0].parameters.instructions,/mee-rah/);
-    await globalThis.__CHOIR_API__.playParagraph({text:'"A companion-only line."',speaker:'Mira'});assert.equal(h.synthesis.length,1);
+    assert.equal(h.synthesis[0].parameters.accent,'Irish');assert.match(h.synthesis[0].text,/mee-rah/);
+    await globalThis.__CHOIR_API__.playParagraph({text:'"A companion-only line for Mira."',speaker:'Mira'});assert.equal(h.synthesis.length,1);
   }finally{await h.close();}
 });
 
@@ -2833,5 +3011,386 @@ test('Local heuristic mode and the Skip non-story blocks toggle make no check re
   await h.reload();assert.equal(h.$('skipMeta').checked,false);
   h.$('skipMeta').checked=true;h.$('plannerMode').value='heuristic';h.$('plannerMode').dispatchEvent(new h.dom.window.Event('change'));
   h.message.content='The room fell quiet.';await h.plan();assert.equal(skipChecks(h).length,0);
+ }finally{await h.close();}
+});
+
+const speedInput=()=>document.querySelector('[aria-label="Playback speed in settings"]');
+const gapInput=()=>document.querySelector('[aria-label="Gap between voices in settings"]');
+const speedEntry=()=>document.querySelector('[aria-label="Playback speed in settings value"]');
+const gapEntry=()=>document.querySelector('[aria-label="Gap between voices in settings value"]');
+const speedPreset=rate=>document.querySelector(`.cm-speed-options [data-playback-rate="${rate}"]`);
+const setRange=(h,input,value)=>{input.value=value;input.dispatchEvent(new h.dom.window.Event('input'));input.dispatchEvent(new h.dom.window.Event('change'));};
+const typeValue=(h,input,value)=>{input.value=value;input.dispatchEvent(new h.dom.window.Event('input'));};
+const commitValue=(h,input,value)=>{typeValue(h,input,value);input.dispatchEvent(new h.dom.window.Event('blur'));};
+const savedMixer=h=>h.store.get('ui:mixer');
+const resetOf=(h,slot)=>h.$(slot).querySelector('.et-tuning-reset');
+
+test('Abyssal mixer checkbox applies immediately and saves its choice independently of chat settings',async()=>{
+ const h=await harness({enabled:true,playbackRate:1.5,channels:{Mira:{volume:0.6,speed:1.25}}});try{
+  const mixer=()=>document.querySelector('[data-choir-mixer]'),toggle=()=>h.$('abyssalMixerTheme'),chat=structuredClone(h.store.get('chat:chat-a'));
+  assert.equal(toggle().checked,false);assert.equal(mixer().dataset.abyssalTheme,'false');
+  toggle().checked=true;toggle().dispatchEvent(new h.dom.window.Event('change'));
+  assert.equal(mixer().dataset.abyssalTheme,'true');await until(()=>savedMixer(h)?.abyssalTheme===true);
+  assert.deepEqual(h.store.get('chat:chat-a'),chat);await h.reload();assert.equal(toggle().checked,true);assert.equal(mixer().dataset.abyssalTheme,'true');
+  toggle().checked=false;toggle().dispatchEvent(new h.dom.window.Event('change'));assert.equal(mixer().dataset.abyssalTheme,'false');
+  await until(()=>savedMixer(h)?.abyssalTheme===false);await h.reload();assert.equal(toggle().checked,false);
+  assert.equal(savedMixer(h).playbackRate,1.5);assert.equal(savedMixer(h).channels.Mira.volume,0.6);assert.equal(savedMixer(h).channels.Mira.speed,1.25);
+ }finally{await h.close();}
+});
+
+test('mixer offers Normal, Fast and Very fast buttons while gap stays in settings and choices survive reload',async()=>{
+ const h=await harness();try{
+  const master=document.querySelector('[data-choir-mixer] .cm-master');
+  assert.deepEqual([...master.nextElementSibling.querySelectorAll('button')].map(button=>button.textContent),['Normal','Fast','Very fast']);
+  assert.equal(master.nextElementSibling.querySelector('input'),null);assert.equal(document.querySelector('[data-choir-mixer] [aria-label*="Gap"]'),null);
+  assert.equal(speedPreset(1).getAttribute('aria-pressed'),'true');
+  assert.equal(speedInput().value,'1');assert.equal(gapInput().value,'0');assert.equal(h.$('playbackRate').value,'1');assert.equal(h.$('voiceGapMs').value,'0');
+  speedPreset(2).click();assert.equal(speedEntry().value,'2.00');assert.equal(speedPreset(2).getAttribute('aria-pressed'),'true');
+  speedPreset(1).click();assert.equal(speedEntry().value,'1.00');
+  speedPreset(1.5).click();assert.equal(h.$('playbackRate').value,'1.5');assert.equal(speedEntry().value,'1.50');assert.equal(h.$('playbackRateEntry').value,'1.50');
+  assert.equal(speedPreset(1.5).getAttribute('aria-pressed'),'true');assert.equal(speedPreset(1).getAttribute('aria-pressed'),'false');
+  setRange(h,gapInput(),'250');assert.equal(h.$('voiceGapMs').value,'250');assert.equal(gapEntry().value,'250');assert.equal(h.$('voiceGapMsEntry').value,'250');
+  await until(()=>savedMixer(h)?.playbackRate===1.5 && savedMixer(h)?.voiceGapMs===250);
+  assert.equal(h.store.get('chat:chat-a').playbackRate,undefined,'speed is no longer written into the chat');
+  await h.reload();
+  assert.equal(speedPreset(1.5).getAttribute('aria-pressed'),'true');
+  assert.equal(speedInput().value,'1.5');assert.equal(h.$('playbackRate').value,'1.5');assert.equal(gapInput().value,'250');assert.equal(h.$('voiceGapMs').value,'250');
+  await h.plan();h.state.blockAudio=true;h.$('play').click();await until(()=>voices(h).length>=1 && !voices(h)[0].paused);
+  const calls=h.synthesis.length;speedPreset(2).click();assert.equal(voices(h)[0].playbackRate,2);assert.equal(h.synthesis.length,calls);h.$('stop').click();
+ }finally{await h.close();}
+});
+
+test('saved speed and gap outside their ranges are clamped on load, and chat-level speed values from before are not read',async()=>{
+ let h=await harness({enabled:true,playbackRate:40,voiceGapMs:-40});try{
+  assert.equal(speedInput().value,'4');assert.equal(h.$('playbackRate').value,'4');assert.equal(speedEntry().value,'16.00');assert.equal(gapInput().value,'0');assert.equal(h.$('voiceGapMs').value,'0');
+  await h.close();h=await harness();h.store.set('chat:chat-a',{...h.store.get('chat:chat-a'),playbackRate:2,voiceGapMs:900});await h.reload();
+  assert.equal(speedInput().value,'1');assert.equal(h.$('playbackRate').value,'1');assert.equal(gapInput().value,'0');assert.equal(h.$('voiceGapMs').value,'0');
+ }finally{await h.close();}
+});
+
+test('typed speed accepts 0.07 to 16 times, expands the slider maximum, is saved, and reaches the playing block',async()=>{
+ const h=await harness();try{
+  await h.plan();
+  commitValue(h,speedEntry(),'3.37');
+  assert.equal(speedInput().value,'3.37');assert.equal(h.$('playbackRate').value,'3.37');assert.equal(h.$('playbackRate').getAttribute('aria-valuetext'),'3.37×');assert.equal(h.$('playbackRateEntry').value,'3.37');
+  await until(()=>savedMixer(h)?.playbackRate===3.37);
+  commitValue(h,speedEntry(),'9');assert.equal(speedInput().value,'9');assert.equal(speedInput().max,'9','typing a higher speed expands the slider');assert.equal(speedEntry().value,'9.00');assert.equal(h.$('playbackRate').getAttribute('aria-valuetext'),'9.00×','the readout shows the true value');assert.equal(h.$('playbackRateEntry').value,'9.00');
+  await until(()=>savedMixer(h)?.playbackRate===9);
+  commitValue(h,speedEntry(),'40');assert.equal(speedEntry().value,'16.00');assert.equal(h.$('playbackRate').getAttribute('aria-valuetext'),'16.00×');
+  await until(()=>savedMixer(h)?.playbackRate===16);
+  commitValue(h,speedEntry(),'0.01');assert.equal(speedEntry().value,'0.07');assert.equal(speedInput().value,'0.25','the slider pins at its 0.25x end');assert.equal(h.$('playbackRate').getAttribute('aria-valuetext'),'0.07×');
+  await until(()=>savedMixer(h)?.playbackRate===0.07);
+  commitValue(h,speedEntry(),'0.1');assert.equal(speedEntry().value,'0.10');assert.equal(h.$('playbackRate').getAttribute('aria-valuetext'),'0.10×');
+  commitValue(h,speedEntry(),'1.237');assert.equal(speedInput().value,'1.24');assert.equal(speedEntry().value,'1.24');
+  commitValue(h,speedEntry(),'3.37');
+  h.state.blockAudio=true;h.$('play').click();await until(()=>voices(h).length>=1 && !voices(h)[0].paused);
+  assert.equal(voices(h)[0].playbackRate,3.37);assert.equal(voices(h)[0].preservesPitch,true);
+  h.$('stop').click();
+ }finally{await h.close();}
+});
+
+test('each character speed replaces the playback speed for that character, follows the playback speed when unset and changes the playing block live',async()=>{
+ const h=await harness();try{
+  await h.plan();
+  const speedOf=name=>document.querySelector(`[aria-label="${name} speed"]`);
+  const speedRow=speedOf('Mira').closest('.et-character-speed'),editor=speedRow.closest('[data-choir-cast-editor]');
+  assert.ok(editor,'Mira has a speed control inside her character editor');assert.equal(editor.hidden,true);
+  editor.closest('.et-cast-row').querySelector('[data-choir-edit]').click();assert.equal(editor.hidden,false);
+  assert.equal(document.querySelector('[data-choir-mixer] [aria-label="Mira speed"]'),null,'character speed controls are absent from the mixer');
+  assert.equal(speedOf('Mira').value,'1');assert.equal(document.querySelector('[aria-label="Mira speed value"]').value,'1.00');
+  assert.ok(speedOf('Mira').closest('.cm-volume').classList.contains('cm-inherited'),'a character without its own speed is dimmed');
+  assert.match(speedOf('Mira').closest('.cm-volume').title,/Follows master speed/);
+  setRange(h,speedOf('Narrator'),'2');assert.equal(document.querySelector('[aria-label="Narrator speed value"]').value,'2.00');
+  assert.equal(speedOf('Narrator').closest('.cm-volume').classList.contains('cm-inherited'),false,'a character with its own speed is not dimmed');
+  await until(()=>savedMixer(h)?.channels?.Narrator?.speed===2);
+  h.state.blockAudio=true;h.$('play').click();await until(()=>voices(h).length>=1 && !voices(h)[0].paused);
+  assert.equal(voices(h)[0].playbackRate,2,'narration plays at its own 2x with the playback speed at 1x');
+  setRange(h,speedOf('Narrator'),'0.5');assert.equal(voices(h)[0].playbackRate,0.5,'a live change reaches the block that is playing');
+  typeValue(h,speedEntry(),'2');assert.equal(voices(h)[0].playbackRate,0.5,'narration keeps its own 0.5x rather than multiplying the playback speed');
+  assert.equal(savedMixer(h).channels.Narrator.speed,0.5);
+  setRange(h,speedOf('Mira'),'2.5');assert.equal(voices(h)[0].playbackRate,0.5,'Mira does not change the narration');
+  assert.equal(document.querySelector('[aria-label="Mira speed value"]').value,'2.50');
+  voices(h)[0].onended();
+  await until(()=>voices(h).length>=2 && !voices(h)[1].paused);
+  assert.equal(voices(h)[1].playbackRate,2.5,'Mira speaks at her own 2.5x, not the playback speed times 2.5');
+  h.$('stop').click();
+ }finally{await h.close();}
+});
+
+test('character and NPC speeds are available before planning and preserve mixer volume edits after a speed change',async()=>{
+ const h=await harness();try{
+  const guardSpeed=()=>document.querySelector('[aria-label="Guard speed"]');
+  assert.ok(document.querySelector('[aria-label="Mira speed"]'));assert.ok(guardSpeed().closest('[data-choir-cast-editor]').hidden);
+  setRange(h,guardSpeed(),'1.25');await until(()=>savedMixer(h)?.channels?.Guard?.speed===1.25);
+  await h.plan();setRange(h,guardSpeed(),'1.75');
+  commitValue(h,document.querySelector('[aria-label="Guard volume percent"]'),'50');
+  await until(()=>savedMixer(h)?.channels?.Guard?.speed===1.75 && savedMixer(h)?.channels?.Guard?.volume===0.5);
+  await h.reload();assert.equal(guardSpeed().value,'1.75');assert.equal(document.querySelector('[data-choir-mixer] [aria-label="Guard speed"]'),null);
+ }finally{await h.close();}
+});
+
+test('a character without its own speed follows the playback speed live, and double-click or its reset button clears the saved speed',async()=>{
+ const h=await harness();try{
+  await h.plan();
+  const miraSlider=()=>document.querySelector('[aria-label="Mira speed"]');
+  const miraRow=()=>miraSlider().closest('.cm-volume');
+  const miraEntry=()=>document.querySelector('[aria-label="Mira speed value"]');
+  const miraReset=()=>document.querySelector('[aria-label="Follow playback speed for Mira"]');
+  assert.equal(miraReset().hidden,true,'the reset button is hidden while Mira follows the playback speed');
+  setRange(h,speedInput(),'1.5');
+  assert.equal(miraEntry().value,'1.50','the dimmed row follows the playback speed live');assert.equal(miraRow().classList.contains('cm-inherited'),true);
+  setRange(h,miraSlider(),'3');
+  await until(()=>savedMixer(h)?.channels?.Mira?.speed===3);
+  assert.equal(miraRow().classList.contains('cm-inherited'),false,'an own speed is not dimmed');
+  assert.equal(miraReset().hidden,false,'an own speed shows the reset button');
+  setRange(h,speedInput(),'2');assert.equal(miraEntry().value,'3.00','Mira keeps 3x when the playback speed changes');
+  await h.reload();
+  assert.equal(miraSlider().value,'3');assert.equal(miraRow().classList.contains('cm-inherited'),false,'Mira keeps her own speed after reload');
+  miraSlider().dispatchEvent(new h.dom.window.Event('dblclick'));
+  assert.equal(miraEntry().value,'2.00','double-click returns Mira to the playback speed');
+  assert.equal(miraRow().classList.contains('cm-inherited'),true);assert.equal(miraReset().hidden,true);
+  await until(()=>savedMixer(h)?.channels?.Mira && !('speed' in savedMixer(h).channels.Mira));
+  setRange(h,miraSlider(),'1.25');await until(()=>savedMixer(h)?.channels?.Mira?.speed===1.25);
+  miraReset().click();
+  assert.equal(miraEntry().value,'2.00','the reset button follows the playback speed again');
+  await until(()=>savedMixer(h)?.channels?.Mira && !('speed' in savedMixer(h).channels.Mira));
+  assert.equal(speedInput().value,'2');
+ }finally{await h.close();}
+});
+
+test('a browser that refuses a speed plays the block at normal speed, and a speed it accepts later reaches the playing block',async()=>{
+ const h=await harness({enabled:true,playbackRate:12});try{
+  h.state.audioLimits={min:0.0625,max:8};
+  await h.plan();h.state.blockAudio=true;h.$('play').click();await until(()=>voices(h).length>=1 && !voices(h)[0].paused);
+  assert.equal(voices(h)[0].playbackRate,1,'the refused 12x falls back to normal speed instead of stopping playback');
+  assert.equal(speedEntry().value,'12.00','the saved speed is unchanged');
+  typeValue(h,speedEntry(),'6');assert.equal(voices(h)[0].playbackRate,6,'a speed the browser accepts reaches the playing block');
+  h.$('stop').click();
+ }finally{await h.close();}
+});
+
+test('saved playback speed sets a pitch-preserving speech rate and a slider change applies to the block that is playing',async()=>{
+ const h=await harness({enabled:true,playbackRate:1.5});try{
+  await h.plan();h.state.blockAudio=true;h.$('play').click();await until(()=>voices(h).length>=1 && !voices(h)[0].paused);
+  assert.equal(voices(h)[0].playbackRate,1.5);assert.equal(voices(h)[0].preservesPitch,true);
+  setRange(h,speedInput(),'0.75');
+  assert.equal(voices(h)[0].playbackRate,0.75);assert.equal(speedEntry().value,'0.75');
+  h.$('stop').click();
+ }finally{await h.close();}
+});
+
+test('ambience beds keep normal speed while the spoken block plays at the saved speed',async()=>{
+ const h=await harness({enabled:true,playbackRate:1.5});try{
+  await configureFoley(h);h.message.content=scene;await h.plan();
+  h.state.blockAudio=true;h.$('play').click();
+  await until(()=>voices(h).length===1 && !voices(h)[0].paused);assert.equal(voices(h)[0].playbackRate,1.5);voices(h)[0].onended();
+  await until(()=>beds(h).length===1 && !beds(h)[0].paused && voices(h).length===2);
+  assert.equal(beds(h)[0].playbackRate,1);assert.equal(voices(h)[1].playbackRate,1.5);
+  h.$('stop').click();
+ }finally{await h.close();}
+});
+
+test('excluded opening dialogue adds no voice gap before the first audible speaker',async()=>{
+ const h=await harness({enabled:true,voiceGapMs:1500});try{
+  h.message.content='"Hello." "Wait."';await h.plan();document.querySelector('[aria-label="Mira no voice"]').click();await tick();h.state.blockAudio=true;
+  const began=Date.now();h.$('play').click();await until(()=>voices(h).length && !voices(h)[0].paused);
+  assert.ok(voices(h)[0].playedAt-began<700,`first audible voice waited ${voices(h)[0].playedAt-began}ms with no earlier speech`);
+  assert.equal(h.synthesis[0].voice,'g');
+ }finally{await h.close();}
+});
+
+test('different character speeds split Fish dialogue and rebuild cached Replay without another planner request',async()=>{
+ const h=await fishGroupingHarness({enabled:true});try{
+  await h.plan();await h.play();assert.equal(h.synthesis.length,1);assert.ok(h.synthesis[0].parameters.turns.length>1);
+  setRange(h,document.querySelector('[aria-label="Mira speed"]'),'0.25');await until(()=>savedMixer(h)?.channels.Mira.speed===0.25);
+  const replay=()=>[...h.$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay').click();
+  const start=voices(h).length;replay();await until(()=>h.$('status').textContent.includes('Playback finished'));
+  assert.deepEqual(voices(h).slice(start).map(audio=>audio.playbackRate),[1,0.25,1]);
+  assert.equal(h.requests.filter(request=>request.action==='plan').length,1);assert.equal(h.synthesis.length,4);
+  assert.ok(h.synthesis.slice(1).every(input=>!input.parameters.turns?.some(turn=>turn.speaker==='Mira') || input.parameters.turns.every(turn=>turn.speaker==='Mira')));
+  const calls=h.synthesis.length;replay();await until(()=>h.$('status').textContent==='Replay finished.');assert.equal(h.synthesis.length,calls);
+  await h.reload();replay();await until(()=>h.$('status').textContent==='Replay finished.');assert.equal(h.synthesis.length,calls);
+ }finally{await h.close();}
+});
+
+test('a voice gap separates grouped Fish speakers and repairs an older shared recording on Replay',async()=>{
+ const h=await fishGroupingHarness({enabled:true});try{
+  await h.plan();await h.play();assert.equal(h.synthesis.length,1);
+  setRange(h,gapInput(),'400');await until(()=>savedMixer(h)?.voiceGapMs===400);
+  const start=voices(h).length;[...h.$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay').click();await until(()=>h.$('status').textContent.includes('Playback finished'));
+  const clips=voices(h).slice(start);assert.equal(clips.length,4);assert.ok(h.synthesis.slice(1).every(input=>!input.parameters.turns));
+  for(let i=1;i<clips.length;i++)assert.ok(clips[i].playedAt-clips[i-1].endedAt>=380);
+  assert.equal(h.requests.filter(request=>request.action==='plan').length,1);
+ }finally{await h.close();}
+});
+
+test('Next and Stop cancel a pending voice gap without late audio starting',async()=>{
+ const h=await harness({enabled:true,voiceGapMs:400});try{
+  await h.plan();h.state.blockAudio=true;h.$('play').click();await until(()=>voices(h).length===1 && !voices(h)[0].paused);voices(h)[0].onended();
+  await until(()=>voices(h).length===2 && !h.$('next').disabled);const skipped=voices(h)[1];assert.equal(skipped.playedAt,undefined);h.$('next').click();
+  await until(()=>voices(h).length===3 && !h.$('next').disabled);const stopped=voices(h)[2];h.$('stop').click();await new Promise(resolve=>setTimeout(resolve,500));
+  assert.equal(skipped.playedAt,undefined);assert.equal(stopped.playedAt,undefined);assert.ok(voices(h).every(audio=>audio.paused));
+ }finally{await h.close();}
+});
+
+test('voice gap leaves at least the saved silence between consecutive spoken blocks',async()=>{
+ const h=await harness({enabled:true,voiceGapMs:400});try{
+  await h.plan();
+  h.$('play').click();await until(()=>h.$('status').textContent.includes('Playback finished'));
+  const clips=voices(h);assert.ok(clips.length>=3,`expected several spoken blocks, got ${clips.length}`);
+  for(let i=1;i<clips.length;i++)assert.ok(clips[i].playedAt-clips[i-1].endedAt>=380,`gap before block ${i+1} was ${clips[i].playedAt-clips[i-1].endedAt}ms`);
+ }finally{await h.close();}
+});
+
+test('Mixer Play holds the silence before the next voice and Resume finishes the wait before that voice starts',async()=>{
+ const h=await harness({enabled:true,voiceGapMs:400});try{
+  await h.plan();
+  h.$('play').click();
+  await until(()=>voices(h).length>=2 && h.$('play').getAttribute('aria-label')==='Pause Choir audio');
+  const first=voices(h)[0],held=voices(h)[1];assert.equal(held.playedAt,undefined);
+  h.$('play').click();await tick();assert.equal(h.$('play').getAttribute('aria-label'),'Resume Choir audio');
+  await new Promise(resolve=>setTimeout(resolve,700));assert.equal(held.playedAt,undefined,'the held voice must not start while playback is paused');
+  h.$('play').click();await until(()=>held.playedAt);
+  assert.ok(held.playedAt-first.endedAt>=900,`resumed gap ended ${held.playedAt-first.endedAt}ms after the first voice`);
+  await until(()=>h.$('status').textContent.includes('Playback finished'));
+ }finally{await h.close();}
+});
+
+test('drawer speed and gap show their values, reset from their Reset buttons and from double-click, and keep the reset value after reload',async()=>{
+ const h=await harness();try{
+  setRange(h,h.$('playbackRate'),'3.2');
+  assert.equal(h.$('playbackRate').getAttribute('aria-valuetext'),'3.20×');assert.equal(h.$('playbackRateEntry').value,'3.20');assert.equal(speedInput().value,'3.2');
+  resetOf(h,'playbackSpeedSlot').click();
+  assert.equal(h.$('playbackRate').value,'1');assert.equal(h.$('playbackRate').getAttribute('aria-valuetext'),'1.00×');assert.equal(h.$('playbackRateEntry').value,'1.00');assert.equal(speedInput().value,'1');
+  await until(()=>savedMixer(h)?.playbackRate===1);
+  setRange(h,h.$('playbackRate'),'2.5');h.$('playbackRate').dispatchEvent(new h.dom.window.Event('dblclick'));
+  assert.equal(h.$('playbackRate').value,'1');assert.equal(speedInput().value,'1');
+  setRange(h,h.$('voiceGapMs'),'750');assert.equal(h.$('voiceGapMs').getAttribute('aria-valuetext'),'750 ms');assert.equal(h.$('voiceGapMsEntry').value,'750');assert.equal(gapInput().value,'750');
+  resetOf(h,'voiceGapSlot').click();assert.equal(h.$('voiceGapMs').value,'0');assert.equal(gapInput().value,'0');
+  await until(()=>savedMixer(h)?.voiceGapMs===0);
+  setRange(h,h.$('playbackRate'),'1.75');await until(()=>savedMixer(h)?.playbackRate===1.75);
+  await h.reload();
+  assert.equal(h.$('playbackRate').value,'1.75');assert.equal(h.$('playbackRate').getAttribute('aria-valuetext'),'1.75×');assert.equal(speedInput().value,'1.75');
+  assert.equal(h.$('voiceGapMs').value,'0');assert.equal(h.$('voiceGapMs').getAttribute('aria-valuetext'),'0 ms');
+ }finally{await h.close();}
+});
+
+test('REGRESSION drawer speed slider moves freely, its readout follows the thumb, and the value persists and reloads',async()=>{
+ const h=await harness();try{
+  setRange(h,h.$('playbackRate'),'1.4');
+  assert.equal(h.$('playbackRate').getAttribute('aria-valuetext'),'1.40×');assert.equal(speedInput().value,'1.4');
+  await until(()=>savedMixer(h)?.playbackRate===1.4);
+  setRange(h,h.$('playbackRate'),'0.6');assert.equal(h.$('playbackRate').getAttribute('aria-valuetext'),'0.60×');assert.equal(h.$('playbackRateEntry').value,'0.60');
+  await until(()=>savedMixer(h)?.playbackRate===0.6);
+  await h.reload();
+  assert.equal(h.$('playbackRate').value,'0.6');assert.equal(h.$('playbackRate').getAttribute('aria-valuetext'),'0.60×');assert.equal(speedInput().value,'0.6');
+  setRange(h,h.$('playbackRate'),'1');await until(()=>savedMixer(h)?.playbackRate===1);await h.reload();
+  assert.equal(h.$('playbackRate').value,'1');assert.equal(h.$('playbackRate').getAttribute('aria-valuetext'),'1.00×');assert.equal(speedInput().value,'1');
+ }finally{await h.close();}
+});
+
+test('REGRESSION speed can be pushed to the 4x maximum and back to 0.25x from either control, before and after reload',async()=>{
+ const h=await harness();try{
+  setRange(h,speedInput(),'4');assert.equal(h.$('playbackRate').value,'4');assert.equal(h.$('playbackRate').getAttribute('aria-valuetext'),'4.00×');assert.equal(h.$('playbackRateEntry').value,'4.00');
+  await until(()=>savedMixer(h)?.playbackRate===4);
+  setRange(h,h.$('playbackRate'),'0.25');assert.equal(speedInput().value,'0.25');assert.equal(speedEntry().value,'0.25');
+  await until(()=>savedMixer(h)?.playbackRate===0.25);
+  await h.reload();assert.equal(speedInput().value,'0.25');assert.equal(h.$('playbackRate').getAttribute('aria-valuetext'),'0.25×');
+  setRange(h,speedInput(),'2');await until(()=>savedMixer(h)?.playbackRate===2);await h.reload();
+  assert.equal(h.$('playbackRate').value,'2');assert.equal(h.$('playbackRate').getAttribute('aria-valuetext'),'2.00×');
+  setRange(h,speedInput(),'1.2');assert.equal(h.$('playbackRate').getAttribute('aria-valuetext'),'1.20×');
+  await until(()=>savedMixer(h)?.playbackRate===1.2);
+ }finally{await h.close();}
+});
+
+test('the slider maximum set in settings moves the top end of the speed sliders, is clamped to 1 to 16, saved, and survives reload',async()=>{
+ const h=await harness();try{
+  const field=()=>h.$('speedSliderMax');
+  assert.equal(field().value,'4');assert.equal(speedInput().max,'4');assert.equal(h.$('playbackRate').max,'4');
+  field().value='8';field().dispatchEvent(new h.dom.window.Event('change'));
+  assert.equal(speedInput().max,'8');assert.equal(h.$('playbackRate').max,'8');
+  setRange(h,h.$('playbackRate'),'7.5');assert.equal(h.$('playbackRate').value,'7.5');assert.equal(h.$('playbackRateEntry').value,'7.50');
+  await until(()=>savedMixer(h)?.speedSliderMax===8 && savedMixer(h)?.playbackRate===7.5);
+  await h.reload();assert.equal(field().value,'8');assert.equal(speedInput().max,'8');assert.equal(h.$('playbackRate').value,'7.5');
+  field().value='40';field().dispatchEvent(new h.dom.window.Event('change'));assert.equal(field().value,'16');assert.equal(speedInput().max,'16');
+  field().value='0.2';field().dispatchEvent(new h.dom.window.Event('change'));assert.equal(field().value,'1');assert.equal(speedInput().max,'1');
+  await until(()=>savedMixer(h)?.speedSliderMax===1);
+ }finally{await h.close();}
+});
+
+test('REGRESSION typing 12 stretches the speed slider to 12, so dragging left goes to 11 instead of jumping back to 4',async()=>{
+ const h=await harness();try{
+  const entry=h.$('playbackRateEntry');entry.value='12';entry.dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));
+  assert.equal(h.$('playbackRate').max,'12');assert.equal(speedInput().max,'12');assert.equal(h.$('speedSliderMax').value,'12');assert.equal(h.$('playbackRate').value,'12');
+  setRange(h,h.$('playbackRate'),'11');assert.equal(h.$('playbackRateEntry').value,'11.00');
+  await until(()=>savedMixer(h)?.speedSliderMax===12 && savedMixer(h)?.playbackRate===11);
+  await h.reload();assert.equal(h.$('playbackRate').max,'12');assert.equal(h.$('playbackRate').value,'11');
+ }finally{await h.close();}
+});
+
+test('REGRESSION speed saved at 2 stays editable with no chat open: the mixer row is not locked and the drawer readout follows the thumb',async()=>{
+ const h=await harness();try{
+  setRange(h,speedInput(),'2');await until(()=>savedMixer(h)?.playbackRate===2);
+  h.state.active=null;h.subscriptions.get('chat.active')();await until(()=>h.$('plan-latest').disabled===true);
+  assert.equal(speedInput().disabled,false,'the global speed must not be locked while no chat is open');
+  assert.equal(speedInput().value,'2');assert.equal(h.$('playbackRate').getAttribute('aria-valuetext'),'2.00×');
+  setRange(h,h.$('playbackRate'),'0.6');assert.equal(h.$('playbackRate').getAttribute('aria-valuetext'),'0.60×');assert.equal(speedInput().value,'0.6');
+  await until(()=>savedMixer(h)?.playbackRate===0.6);
+  h.state.active='chat-a';h.subscriptions.get('chat.active')();await until(()=>h.$('plan-latest').disabled===false);
+  assert.equal(h.$('playbackRate').getAttribute('aria-valuetext'),'0.60×');assert.equal(speedInput().value,'0.6');
+ }finally{await h.close();}
+});
+
+test('mixer speed buttons follow settings and leave custom speeds unselected across navigation and reload',async()=>{
+ const h=await harness();try{
+  speedPreset(1.5).click();
+  assert.equal(h.$('playbackRate').getAttribute('aria-valuetext'),'1.50×');assert.equal(h.$('playbackRateEntry').value,'1.50');
+  setRange(h,h.$('playbackRate'),'2');assert.equal(speedPreset(2).getAttribute('aria-pressed'),'true');
+  setRange(h,h.$('playbackRate'),'2.36');
+  assert.equal(speedInput().value,'2.36');assert.equal(speedEntry().value,'2.36');assert.equal(speedInput().getAttribute('aria-valuetext'),'2.36×');
+  assert.ok([...document.querySelectorAll('.cm-speed-options button')].every(button=>button.getAttribute('aria-pressed')==='false'));
+  h.subscriptions.get('chat.active')();await tick();
+  assert.equal(h.$('playbackRate').getAttribute('aria-valuetext'),'2.36×','the drawer still shows the shared value after a chat switch');
+  assert.equal(speedInput().value,'2.36');
+  await until(()=>savedMixer(h)?.playbackRate===2.36);
+  await h.reload();
+  assert.equal(h.$('playbackRate').getAttribute('aria-valuetext'),'2.36×');assert.equal(h.$('playbackRateEntry').value,'2.36');assert.equal(speedInput().value,'2.36');
+  assert.ok([...document.querySelectorAll('.cm-speed-options button')].every(button=>button.getAttribute('aria-pressed')==='false'));
+ }finally{await h.close();}
+});
+
+test('REGRESSION after a host remount the live drawer and the mixer stay in step in both directions',async()=>{
+ const h=await harness();try{
+  const drawers=()=>[...h.root.querySelectorAll('[data-et="playbackRate"]')];
+  await h.remount();
+  assert.equal(drawers().length,1,'remount disposes the earlier drawer, so exactly one live drawer remains');
+  assert.equal(document.querySelectorAll('.cm-speed-options button').length,3);
+  speedPreset(1.5).click();
+  assert.equal(drawers()[0].getAttribute('aria-valuetext'),'1.50×','the live drawer follows the mixer');
+  setRange(h,drawers()[0],'2');
+  assert.equal(speedPreset(2).getAttribute('aria-pressed'),'true','the mixer follows the drawer');
+  assert.equal(drawers()[0].getAttribute('aria-valuetext'),'2.00×','the drawer shows the value it set');
+  await until(()=>savedMixer(h)?.playbackRate===2);
+ }finally{await h.close();}
+});
+
+test('a mixer speed button updates a focused typed speed field without restoring the previous value on blur',async()=>{
+ const h=await harness();try{
+  speedEntry().focus();typeValue(h,speedEntry(),'2.36');
+  speedPreset(1.5).click();assert.equal(speedEntry().value,'1.50');assert.equal(speedInput().value,'1.5');
+  speedEntry().blur();assert.equal(speedEntry().value,'1.50');
+  await until(()=>savedMixer(h)?.playbackRate===1.5);
+ }finally{await h.close();}
+});
+
+test('the reported case: a master speed of 4 times with a character at 0.25 times plays that character at 0.25 times',async()=>{
+ const h=await harness();try{
+  await h.plan();
+  setRange(h,speedInput(),'4');
+  setRange(h,document.querySelector('[aria-label="Narrator speed"]'),'0.25');
+  assert.equal(document.querySelector('[aria-label="Narrator speed value"]').value,'0.25');
+  h.state.blockAudio=true;h.$('play').click();await until(()=>voices(h).length>=1 && !voices(h)[0].paused);
+  assert.equal(voices(h)[0].playbackRate,0.25,'the character speed replaces the master 4x instead of multiplying it');
+  h.$('stop').click();
  }finally{await h.close();}
 });
