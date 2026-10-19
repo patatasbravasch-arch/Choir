@@ -136,7 +136,7 @@ try{
   await boostPage.goto(`http://127.0.0.1:${server.address().port}`);await boostPage.waitForFunction(()=>window.ready);
   await boostPage.getByText('Advanced Settings',{exact:true}).click();await boostPage.locator('[data-et="normalizeLoudness"]').uncheck();await boostPage.locator('[data-et="freesoundApiKey"]').fill('fixture-key');
   await boostPage.waitForFunction(()=>window.fixtureStore.get('chat:fixture').normalizeLoudness===false && window.fixtureStore.get('chat:fixture').freesoundApiKey==='fixture-key');
-  await boostPage.evaluate(()=>{window.fixtureMessage.content='The page snapped under her thumb. "Welcome."';window.boostDecodes=0;const decode=AudioContext.prototype.decodeAudioData;AudioContext.prototype.decodeAudioData=function(...args){window.boostDecodes++;return decode.apply(this,args);};});
+  await boostPage.evaluate(()=>{window.fixtureMessage.content='A quiet morning. The page snapped under her thumb. "Welcome."';window.boostDecodes=0;const decode=AudioContext.prototype.decodeAudioData;AudioContext.prototype.decodeAudioData=function(...args){window.boostDecodes++;return decode.apply(this,args);};});
   await boostPage.getByRole('button',{name:'Open Choir voice mixer',exact:true}).press('Enter');await boostPage.getByRole('button',{name:'Plan latest reply',exact:true}).click();await boostPage.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Ready:'));
   await boostPage.getByRole('button',{name:'Channel levels',exact:true}).click();
   for(const name of ['Narrator','Mira','SFX','Ambience']){await boostPage.getByRole('tab',{name:['SFX','Ambience'].includes(name)?'Scene audio':'Main cast',exact:true}).click();const entry=boostPage.getByRole('spinbutton',{name:`${name} volume percent`,exact:true,includeHidden:true});assert.equal(await entry.inputValue(),'100');assert.equal(await entry.getAttribute('max'),'300');await boostPage.getByRole('slider',{name:`${name} volume`,exact:true}).press('End');assert.equal(await entry.inputValue(),'300');}
@@ -312,7 +312,7 @@ try{
   await page.getByText('Advanced Settings',{exact:true}).click();
   await page.locator('[data-et="freesoundApiKey"]').fill('fixture-freesound-key');
   await page.getByText('Advanced Settings',{exact:true}).click();
-  await page.evaluate(()=>{window.__CHOIR_API__.setNarratorMuted(false);window.fixtureMessage.content='The page snapped under her thumb.';});
+  await page.evaluate(()=>{window.__CHOIR_API__.setNarratorMuted(false);window.fixtureMessage.content='A quiet morning. The page snapped under her thumb.';});
   await page.locator('[data-et="latest"]').click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Ready:'));
   if(await mixer.getByRole('button',{name:'Narrator silent',exact:true}).getAttribute('aria-pressed')==='true')await mixer.getByRole('button',{name:'Narrator silent',exact:true}).click();
   assert.deepEqual(await page.locator('.cm-channel[data-kind="voice"]').evaluateAll(nodes=>nodes.map(node=>node.dataset.speaker)),['Narrator']);
@@ -335,7 +335,7 @@ try{
   await page.evaluate(()=>{window.fixtureMessage.content='Night fell. Rain drummed on the roof. The page snapped beside the open window. "Welcome." The lamps dimmed.';window.holdSpeechText='page snapped beside';});
   await page.locator('[data-et="latest"]').click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Ready:'));
   const sfxStart=await page.evaluate(()=>window.audios.length);await page.locator('[data-choir-action="playback"]').click();
-  await page.waitForFunction(start=>window.releaseSpeech && window.audios.slice(start).filter(audio=>!audio.loop).length>=4 && window.audios.filter(audio=>!audio.loop).at(-1).ended,sfxStart);
+  await page.waitForFunction(start=>window.releaseSpeech && window.audios.slice(start).filter(audio=>!audio.loop).length>=3 && window.audios.filter(audio=>!audio.loop).at(-1).ended,sfxStart);
   assert.match(await page.locator('[data-et="status"]').innerText(),/Synthesizing \d+\/\d+: Narrator/);
   assert.equal(await mixer.getAttribute('data-play-state'),'loading');assert.equal(await drawerStop.isEnabled(),true);
   await page.evaluate(()=>{window.holdSpeechText='';window.releaseSpeech();window.releaseSpeech=null;});

@@ -92,6 +92,39 @@ function normalizeName(value) {
   return String(value || '').normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
+const escapePattern = value => value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+
+// Preserve older free-form instructions. Only unambiguous name mappings and
+// hyphenated respellings are interpreted as pronunciation rules.
+function namePronunciation(actor) {
+  if(Object.hasOwn(actor,'sayAs'))return typeof actor.sayAs==='string'?actor.sayAs.trim():'';
+  const legacy=actor.pronunciation?.trim() || '';
+  const name=escapePattern(actor.speaker || '');
+  const explicit=name && legacy.match(new RegExp(`^(?:pronounce\\s+)?${name}\\s*(?::|=|is pronounced as|is pronounced|as)\\s*["“']?(.+?)["”']?\\.?$`,'iu'));
+  const spelling=(explicit?.[1] || (/^[\p{L}\p{M}]+(?:[-‐‑][\p{L}\p{M}]+)+$/u.test(legacy)?legacy:'')).trim();
+  return spelling.length<=120 && !/[<>\[\]\r\n]/u.test(spelling)?spelling:'';
+}
+
+function namePronunciations(actors=[]) {
+  const rules=new Map();
+  for(const actor of actors){
+    const name=actor.speaker?.trim(),sayAs=namePronunciation(actor);
+    if(name && normalizeName(name)!=='narrator' && sayAs && sayAs!==name)rules.set(normalizeName(name),{name,sayAs});
+  }
+  return [...rules.values()].sort((a,b)=>b.name.length-a.name.length || a.name.localeCompare(b.name));
+}
+
+function wholeNamePattern(names) {
+  return names.length?new RegExp(`(?<![\\p{L}\\p{M}\\p{N}_-])(?:${names.map(escapePattern).join('|')})(?![\\p{L}\\p{M}\\p{N}_-])`,'giu'):null;
+}
+
+function respellNames(text,actors=[]) {
+  const rules=namePronunciations(actors),pattern=wholeNamePattern(rules.map(rule=>rule.name));
+  const spellings=new Map(rules.map(rule=>[normalizeName(rule.name),rule.sayAs]));
+  // One pass prevents rules from rewriting each other's replacement text.
+  return pattern?text.replace(pattern,name=>spellings.get(normalizeName(name))):text;
+}
+
 // Multi-character cards commonly give each person a top-level heading or named XML section.
 // Require those explicit profiles before splitting a title: "War and Peace" is not a cast list.
 function characterCardRoles(card={}) {return characterCardRoleDiscovery(card).roles;}
@@ -422,6 +455,7 @@ function validateCastConfig(config) {
       names.add(key);own.add(key);
     }
     for(const field of ['pronunciation','accent'])if(actor[field] !== undefined && (typeof actor[field]!=='string' || actor[field].length>300))throw new Error(`Invalid ${field} preference.`);
+    if(actor.sayAs!==undefined && (typeof actor.sayAs!=='string' || actor.sayAs.length>120 || /[<>\[\]\r\n]/u.test(actor.sayAs)))throw new Error('Say name as must be plain pronunciation spelling, up to 120 characters.');
     if(actor.excluded !== undefined && typeof actor.excluded!=='boolean')throw new Error('Invalid character exclusion.');
   }
   return config;
@@ -676,7 +710,8 @@ function castImport(raw) {
   }
   const clean=actor=>{
     if(!actor || typeof actor.speaker!=='string' || typeof actor.voice!=='string' || typeof actor.style!=='string')throw new Error('Invalid imported cast row.');
-    return Object.fromEntries(['speaker','voice','style','route','gender','aliases','pronunciation','accent','excluded'].filter(key=>actor[key]!==undefined).map(key=>[key,structuredClone(actor[key])]));
+    if(actor.sayAs!==undefined && (typeof actor.sayAs!=='string' || actor.sayAs.length>120 || /[<>\[\]\r\n]/u.test(actor.sayAs)))throw new Error('Invalid imported name pronunciation.');
+    return Object.fromEntries(['speaker','voice','style','route','gender','aliases','pronunciation','sayAs','accent','excluded'].filter(key=>actor[key]!==undefined).map(key=>[key,structuredClone(actor[key])]));
   };
   return {...routing,fixed:raw.fixed.map(clean),casts:Object.fromEntries(Object.entries(raw.casts).map(([route,actors])=>{
     if(!Array.isArray(actors) || actors.length>500 || !/^native:[\w.-]+$/.test(route))throw new Error('Invalid imported cast provider.');
@@ -757,23 +792,35 @@ function speechRequestLimits(provider = '', model = '') {
   return {maxChars:2000};
 }
 
-function splitSegment(segment, maxChars = 350, maxBytes = Infinity) {
+function splitSegment(segment, maxChars = 350, maxBytes = Infinity, {transform=text=>text,atomic=[]}={}) {
   if (!Number.isInteger(maxChars) || maxChars < 80 || maxChars > MAX_SPEECH_CHARS) throw new Error('Chunk size must be 80–10000 characters.');
   if(maxBytes!==Infinity && (!Number.isInteger(maxBytes) || maxBytes<80))throw new Error('Speech byte budget must be at least 80.');
   const bytes=text=>maxBytes===Infinity?0:new TextEncoder().encode(text).length;
+  const fits=text=>{const speech=transform(text);return speech.length<=maxChars && bytes(speech)<=maxBytes;};
+  const names=wholeNamePattern(atomic);
   const out = [];
   let text = segment.text;
-  while (text.length > maxChars || bytes(text)>maxBytes) {
+  while (!fits(text)) {
     let limit=Math.min(text.length,maxChars);
-    if(bytes(text.slice(0,limit))>maxBytes){
-      let low=0,high=limit;
-      while(low<high){const mid=Math.ceil((low+high)/2);if(bytes(text.slice(0,mid))<=maxBytes)low=mid;else high=mid-1;}
-      limit=low;
-    }
+    if(transform(text)===text){
+      // Most passages need no respelling. Preserve the fast byte-budget search.
+      if(bytes(text.slice(0,limit))>maxBytes){
+        let low=0,high=limit;
+        while(low<high){const mid=Math.ceil((low+high)/2);if(bytes(text.slice(0,mid))<=maxBytes)low=mid;else high=mid-1;}
+        limit=low;
+      }
+    }else while(limit>0 && !fits(text.slice(0,limit)))limit--;
+    if(!limit)throw new Error('A pronunciation is too long for this speech request. Shorten its Say name as spelling.');
     const head = text.slice(0, limit);
     const sentence = [...head.matchAll(/[.!?…]["'”’]?\s+/g)].at(-1);
     let end = sentence && sentence.index > limit/3 ? sentence.index + sentence[0].length : head.lastIndexOf(' ');
     if (end < limit/3) end = limit;
+    // Keep a mapped name intact even when its original spelling spans words.
+    if(names)for(const match of text.matchAll(names))if(match.index<end && match.index+match[0].length>end){
+      end=match.index || match[0].length;
+      if(!fits(text.slice(0,end)))throw new Error('A name pronunciation exceeds the speech request limit. Shorten its Say name as spelling or raise Max characters per request.');
+      break;
+    }
     // Do not split a UTF-16 surrogate pair.
     if (/[\uD800-\uDBFF]/.test(text[end-1]) && /[\uDC00-\uDFFF]/.test(text[end])) end--;
     out.push({...segment, text:text.slice(0,end).trim()});
@@ -788,10 +835,11 @@ function speechBatches(segments,maxChars,defaultRoute,limitsForSegment=()=>({}))
   for(const source of segments) {
     const limits=limitsForSegment(source,source.route || defaultRoute);
     const charLimit=Math.min(maxChars,limits.maxChars || maxChars),byteLimit=limits.maxBytes ?? Infinity;
-    for(const segment of splitSegment(source,charLimit,byteLimit)) {
+    for(const segment of splitSegment(source,charLimit,byteLimit,{transform:limits.speechText,atomic:limits.atomicWords})) {
     const route=segment.route || defaultRoute,previous=batches.at(-1);
     const joined=previous?previous.text+'\n'+segment.text:'';
-    const fits=previous && joined.length<=charLimit && (byteLimit===Infinity || new TextEncoder().encode(joined).length<=byteLimit);
+    const spokenJoined=limits.speechText?limits.speechText(joined):joined;
+    const fits=previous && spokenJoined.length<=charLimit && (byteLimit===Infinity || new TextEncoder().encode(spokenJoined).length<=byteLimit);
     if(segment.unison){batches.push({...segment,route});continue;}
     if(previous && !previous.unison && !previous.kind && !segment.kind && previous.route===route && previous.voice===segment.voice && previous.speaker===segment.speaker && previous.style===segment.style && fits)previous.text+='\n'+segment.text;
     else batches.push({...segment,route});
@@ -812,7 +860,7 @@ function groupedSpeechBatches(segments,maxChars,defaultRoute,limitsForSegment,{s
     if(source.kind){flush();batches.push({...source,route});continue;}
     if(source.unison){
       flush();const limits=limitsForSegment(source,route);
-      batches.push(...splitSegment({...source,route},Math.min(maxChars,limits.maxChars || maxChars),limits.maxBytes ?? Infinity));first=false;continue;
+      batches.push(...splitSegment({...source,route},Math.min(maxChars,limits.maxChars || maxChars),limits.maxBytes ?? Infinity,{transform:limits.speechText,atomic:limits.atomicWords}));first=false;continue;
     }
     const limits=limitsForSegment(source,route),opening=sfx?900:1200;
     // Keep a moderate passage intact. A long opening turn still starts with a
@@ -830,7 +878,7 @@ function groupedSpeechBatches(segments,maxChars,defaultRoute,limitsForSegment,{s
     if(current && (size.chars>cap || size.bytes>(limits.maxBytes ?? Infinity))){flush();queue.unshift(source);continue;}
     if(size.chars>cap || size.bytes>(limits.maxBytes ?? Infinity)){
       const overhead=measure([{...source,text:''}]);
-      const pieces=splitSegment(source,Math.max(80,cap-overhead.chars),limits.maxBytes?limits.maxBytes-overhead.bytes:Infinity);
+      const pieces=splitSegment(source,Math.max(80,cap-overhead.chars),limits.maxBytes?limits.maxBytes-overhead.bytes:Infinity,{transform:limits.speechText,atomic:limits.atomicWords});
       if(pieces.length<2)throw new Error('Delivery instructions leave too little room for grouped speech.');
       queue.unshift(...pieces);continue;
     }
@@ -1903,7 +1951,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
   (async () => {
     const input = message.input || {};
     if (message.action === 'ping') {
-      send({result:{version:'1.1.6-staging.29',ready:true}});return;
+      send({result:{version:'1.1.6-lunch-test.1',ready:true,decisionsAvailable:typeof spindle.decisions?.evaluate==='function'}});return;
     }
     if(message.action==='cardCast'){
       const card=input.card;

@@ -149,7 +149,7 @@ async function harness(mixerPreferences,mobile=false){
           })},request.input.transcript,cast);
         }
         else if(request.action==='plan')result=validatePlan({segments:speechSourceUnits(request.input.transcript).map(unit=>({
-          text:unit.text,speaker:unit.kind==='narration'?'Narrator':unit.text.includes('Wait')?'Guard':'Mira',voice:unit.kind==='narration'?'n':unit.text.includes('Wait')?'g':'m',style:unit.kind==='dialogue'?'Warm':''
+          text:unit.text,speaker:unit.kind==='narration'?'Narrator':unit.text.includes('Wait')?'Guard':state.leadSpeaker || 'Mira',voice:unit.kind==='narration'?'n':unit.text.includes('Wait')?'g':'m',style:unit.kind==='dialogue'?'Warm':''
         }))},request.input.transcript,request.input.config);
         backend({namespace:'choir',id:request.id,result});
       },2);
@@ -165,6 +165,81 @@ async function harness(mixerPreferences,mobile=false){
     releaseHeld(){for(const request of heldPlans.splice(0))backend?.({namespace:'choir',id:request.id,result:{segments:[{speaker:'Narrator',voice:'n',text:request.input.transcript,style:''}]}});},
     async close(){cleanup();await tick();URL.createObjectURL=createObjectURL;Object.assign(globalThis,original);dom.window.close();}};
 }
+
+async function elizaFixture(h,{sayAs='',grouped=false}={}){
+  h.state.character={name:'Eliza'};h.state.leadSpeaker='Eliza';h.message.name='Eliza';
+  h.message.content='Eliza arrived. "Hello, Eliza." "Wait, Eliza." The gate closed.';
+  for(const connection of h.connections){connection.provider='fish_audio';connection.model='s2.1-pro';}
+  h.state.providers=[{id:'fish_audio',capabilities:{parameters:{},multiSpeaker:{maxSpeakers:5}}}];
+  const saved=h.store.get('chat:chat-a');
+  Object.assign(saved,{useStyle:false,skipMeta:false,enableSfx:false,enableAmbience:false,batchSpeech:grouped,connectionMode:grouped?'one':'several'});
+  saved.fixed[2]={...saved.fixed[2],speaker:'Eliza',aliases:[],pronunciation:'',accent:'',sayAs};h.store.set('chat:chat-a',saved);await h.reload();
+}
+async function editNamePronunciation(h,value){
+  const input=h.$('fixed').querySelectorAll('[data-choir-say-as]')[2];assert.ok(input);input.value=value;input.dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));
+  await until(()=>h.$('saveState').textContent==='Saved automatically');
+}
+
+test('name pronunciation reaches every native Fish voice and editing it regenerates only affected speech',async()=>{
+  const h=await harness();try{
+    await elizaFixture(h);const legacy=h.store.get('chat:chat-a');legacy.fixed[2].pronunciation='Eliza: Eh-Lee-Zah';delete legacy.fixed[2].sayAs;h.store.set('chat:chat-a',legacy);await h.reload();
+    assert.equal(h.$('fixed').querySelectorAll('[data-choir-say-as]')[2].value,'Eh-Lee-Zah');const original=h.message.content;
+    await h.plan();await h.play();assert.equal(h.synthesis.length,4);
+    for(const voice of ['n','m','g']){const input=h.synthesis.find(input=>input.voice===voice);assert.match(input.text,/Eh-Lee-Zah/);assert.doesNotMatch(input.text,/Eliza/);}
+    assert.equal(h.message.content,original);assert.equal(h.requests.find(request=>request.action==='plan').input.transcript,original);
+    assert.match(h.$('planJson').value,/Eliza/);assert.doesNotMatch(h.$('planJson').value,/Eh-Lee-Zah/);
+    await editNamePronunciation(h,'Eh Lee Zah');await h.play();assert.equal(h.synthesis.length,7);assert.ok(h.synthesis.slice(4).every(input=>input.text.includes('Eh Lee Zah')));
+    assert.equal(h.requests.filter(request=>request.action==='plan').length,1);
+    await h.reload();await h.play();assert.equal(h.synthesis.length,7);
+    await editNamePronunciation(h,'');await h.play();assert.equal(h.synthesis.length,10);assert.ok(h.synthesis.slice(7).every(input=>input.text.includes('Eliza')));
+    h.state.active='chat-b';h.subscriptions.get('chat.active')();await until(()=>h.$('saveState').textContent==='Connection preferences restored');
+    assert.equal(h.$('fixed').querySelectorAll('[data-choir-say-as]')[2].value,'');
+  }finally{await h.close();}
+});
+
+test('name pronunciation reaches grouped Fish turns and the actual-name audition',async()=>{
+  const h=await harness();try{
+    await elizaFixture(h,{sayAs:'Eh-Lee-Zah',grouped:true});await h.plan();await h.play();
+    const grouped=h.synthesis.find(input=>input.parameters.turns?.length>1);assert.ok(grouped);
+    assert.ok(grouped.parameters.turns.filter(turn=>turn.text.includes('Eh-Lee-Zah')).length>=3);
+    assert.ok(h.synthesis.every(input=>!input.text.includes('Eliza')));
+    const test=h.$('fixed').querySelector('[aria-label="Test pronunciation of Eliza"]');test.click();await until(()=>h.$('status').textContent==='Audition finished.');
+    assert.match(h.synthesis.at(-1).text,/Eh-Lee-Zah opened the door/);assert.equal(h.requests.filter(request=>request.action==='plan').length,1);
+  }finally{await h.close();}
+});
+
+test('name pronunciation applies in companion narration and dialogue and updates its audio cache',async()=>{
+  const h=await harness();try{
+    await elizaFixture(h,{sayAs:'Eh-Lee-Zah'});const text='Eliza smiled. "Hello, Eliza."';
+    await globalThis.__CHOIR_API__.playParagraph({text,speaker:'Eliza'});assert.equal(h.synthesis.length,2);assert.ok(h.synthesis.every(input=>input.text.includes('Eh-Lee-Zah')));
+    await globalThis.__CHOIR_API__.playParagraph({text,speaker:'Eliza'});assert.equal(h.synthesis.length,2);
+    await editNamePronunciation(h,'Eh Lee Zah');await globalThis.__CHOIR_API__.playParagraph({text,speaker:'Eliza'});assert.equal(h.synthesis.length,4);assert.ok(h.synthesis.slice(2).every(input=>input.text.includes('Eh Lee Zah')));
+    assert.equal(h.requests.filter(request=>request.action==='plan').length,0);
+  }finally{await h.close();}
+});
+
+test('name pronunciation updates legacy Replay without seeding stale audio under new cache keys or calling a planner',async()=>{
+  const h=await harness();try{
+    await elizaFixture(h);await h.plan();await h.play();assert.equal(h.synthesis.length,4);
+    const db=await new Promise((resolve,reject)=>{const request=indexedDB.open('choir-recordings',1);request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);});
+    await new Promise((resolve,reject)=>{const transaction=db.transaction('recordings','readwrite'),cursor=transaction.objectStore('recordings').openCursor();cursor.onsuccess=()=>{const row=cursor.result;if(row){const value=row.value;delete value.speechTexts;delete value.passages;row.update(value);row.continue();}};transaction.oncomplete=resolve;transaction.onerror=()=>reject(transaction.error);});db.close();
+    await editNamePronunciation(h,'Eh-Lee-Zah');
+    [...h.$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay').click();await until(()=>h.$('status').textContent.includes('Name pronunciation updated'));
+    assert.equal(h.synthesis.length,7);assert.ok(h.synthesis.slice(4).every(input=>input.text.includes('Eh-Lee-Zah')));assert.equal(h.requests.filter(request=>request.action==='plan').length,1);
+    [...h.$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay').click();await until(()=>h.$('status').textContent==='Replay finished.');assert.equal(h.synthesis.length,7);
+  }finally{await h.close();}
+});
+
+test('reading skip preview uses visible custom rules while preserving story text and making no planner or speech call',async()=>{
+  const h=await harness();try{
+    h.message.content='<p>Eliza arrived.</p><aside class="skip-this">Hidden tracker.</aside><p>The story continues.</p>';
+    assert.equal(h.$('ignoredTags').closest('label').hidden,false);
+    h.$('ignoredTags').value='.skip-this';h.$('ignoredTags').dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));
+    h.$('previewReading').click();assert.equal(h.$('readingPreview').hidden,false);assert.match(h.$('readingPreview').textContent,/Eliza arrived/);assert.match(h.$('readingPreview').textContent,/story continues/);assert.doesNotMatch(h.$('readingPreview').textContent,/Hidden tracker/);
+    assert.match(h.message.content,/Hidden tracker/);assert.equal(h.synthesis.length,0);assert.equal(h.requests.filter(request=>['plan','skipCheck','sfx'].includes(request.action)).length,0);
+    await until(()=>h.$('saveState').textContent==='Saved automatically');await h.reload();assert.equal(h.$('ignoredTags').value,'.skip-this');
+  }finally{await h.close();}
+});
 
 test('HTTP hosts without secure crypto APIs keep the drawer, mixer, RPC, saved plans and cached replay working',async()=>{
   const descriptor=Object.getOwnPropertyDescriptor(globalThis,'crypto'),nativeCrypto=globalThis.crypto;
@@ -1965,11 +2040,12 @@ test('drawer Stop cancels in-flight speech and paused audio without opening the 
 
 test('reload and chat navigation restore plans; recasting and edited text regenerate only affected passages',async()=>{
   const h=await harness();try{
+    h.message.content='At dawn. "Hello, Mira." "Wait." The gate closed.';
     assert.equal(h.footer.querySelector('button').title,'Play Choir · click again to stop'); // New ctx.ui decorator API.
     await h.plan();await h.play();assert.equal(h.synthesis.length,4);
     assert.equal(h.requests.filter(r=>r.action==='plan').length,1);
     assert.equal(h.synthesis.find(r=>r.voice==='m').parameters.accent,'Irish');
-    assert.match(h.synthesis.find(r=>r.voice==='m').parameters.instructions,/mee-rah/);
+    assert.match(h.synthesis.find(r=>r.voice==='m').text,/mee-rah/);
     await h.reload();assert.equal(h.$('preview').querySelectorAll('.et-card').length,4);
     await until(()=>h.$('preview').textContent.includes('Cached'));
     await h.play();assert.equal(h.synthesis.length,4);
@@ -2002,10 +2078,10 @@ test('connection speed and format changes regenerate only affected saved speech'
 
 test('companion speech applies actor pronunciation and accent just like the main player',async()=>{
   const h=await harness();try{
-    await globalThis.__CHOIR_API__.playParagraph({text:'"A companion-only line."',speaker:'Mira'});
+    await globalThis.__CHOIR_API__.playParagraph({text:'"A companion-only line for Mira."',speaker:'Mira'});
     assert.equal(h.synthesis.length,1);assert.equal(h.synthesis[0].connectionId,'b');
-    assert.equal(h.synthesis[0].parameters.accent,'Irish');assert.match(h.synthesis[0].parameters.instructions,/mee-rah/);
-    await globalThis.__CHOIR_API__.playParagraph({text:'"A companion-only line."',speaker:'Mira'});assert.equal(h.synthesis.length,1);
+    assert.equal(h.synthesis[0].parameters.accent,'Irish');assert.match(h.synthesis[0].text,/mee-rah/);
+    await globalThis.__CHOIR_API__.playParagraph({text:'"A companion-only line for Mira."',speaker:'Mira'});assert.equal(h.synthesis.length,1);
   }finally{await h.close();}
 });
 
