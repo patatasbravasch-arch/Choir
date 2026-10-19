@@ -2117,14 +2117,14 @@ export async function setup(ctx) {
     .choir-mixer .cm-seek span{white-space:nowrap}
     .choir-mixer .cm-master{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:6px;margin:0;padding:5px 10px;color:var(--cm-text);font-size:10px;border-bottom:1px solid var(--cm-line);flex-shrink:0}
     .choir-mixer .cm-master .cm-percent,.choir-mixer .cm-channel-head .cm-percent{display:none}
-    .choir-mixer .cm-tuning{display:grid;grid-template-columns:3.6em minmax(0,1fr);align-items:center;gap:6px;margin:0;padding:4px 10px;color:var(--cm-text);font-size:10px;border-bottom:1px solid var(--cm-line);flex-shrink:0}
     .choir-mixer .cm-playback-tuning{display:flex;flex-direction:column;flex-shrink:0;min-width:0}
-    .choir-mixer .cm-tuning>span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-    .choir-mixer .cm-channel-speed{display:grid;grid-template-columns:3.6em minmax(0,1fr) auto;align-items:center;gap:6px;margin-top:3px;color:var(--cm-muted);font-size:10px}
-    .choir-mixer .cm-channel-speed>span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-    .choir-mixer .cm-speed-reset{min-width:24px;padding:0 4px;font-size:12px;line-height:1.4;border:1px solid var(--cm-muted);border-radius:4px;background:transparent;color:inherit;cursor:pointer}
-    .choir-mixer .cm-speed-reset[hidden]{display:none}
-    .choir-mixer .cm-volume.cm-inherited{opacity:.5}
+    .choir-mixer .cm-speed-options{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:5px;padding:6px 10px;border-bottom:1px solid var(--cm-line)}
+    .choir-mixer .cm-speed-options button{display:flex;flex-direction:column;gap:2px;min-width:0;min-height:36px;padding:4px 2px;border:1px solid var(--cm-border-hover);border-radius:5px;background:var(--cm-fill);font-size:10px}
+    .choir-mixer .cm-speed-options button small{font-size:9px;color:var(--cm-muted)}
+    .choir-mixer .cm-speed-options button[aria-pressed="true"]{background:var(--cm-accent);border-color:var(--cm-accent);color:var(--cm-accent-contrast)}
+    .choir-mixer .cm-speed-options button[aria-pressed="true"] small{color:inherit}
+    .ensemble-tts .et-character-speed{grid-column:1/-1}
+    .ensemble-tts .et-character-speed .cm-inherited>input,.ensemble-tts .et-character-speed .cm-inherited .cm-volume-entry{opacity:.55}
     .ensemble-tts .et-tuning-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,250px),1fr));gap:10px;margin:4px 0 6px}
     .ensemble-tts .et-tuning{--cm-accent:var(--lumiverse-primary,#c4b5fd);--cm-accent-contrast:var(--lumiverse-primary-contrast,#1a142a);--cm-text:var(--lumiverse-text,#f1f3fa);--cm-muted:var(--lumiverse-text-muted,#a6afc2);--cm-line:var(--lumiverse-border,#ffffff12);--cm-border-hover:var(--lumiverse-border-hover,#ffffff25);--cm-hover:var(--lumiverse-bg-hover,#ffffff10);--cm-fill:var(--lumiverse-fill-subtle,#ffffff04);display:flex;flex-direction:column;gap:7px;min-width:0;margin:0;padding:10px 12px;border:1px solid var(--cm-line);border-radius:8px;background:var(--cm-fill)}
     .ensemble-tts .et-tuning-head{display:flex;flex-direction:column;gap:2px;min-width:0}
@@ -2210,7 +2210,7 @@ export async function setup(ctx) {
     @media(prefers-reduced-motion:reduce){.choir-mixer .cm-activity i{animation:none!important}.choir-mixer button{transition:none}}
     @media(pointer:coarse){.choir-mixer .cm-transport{height:44px;gap:6px;padding:0}.choir-mixer .cm-transport button,.choir-mixer .cm-transport button[data-choir-action]{position:static;min-width:44px;min-height:44px}.choir-mixer .cm-auto-plan button,.choir-mixer .cm-channels-title,.choir-mixer .cm-channel-tab{min-width:44px;min-height:44px}}
     @media(pointer:coarse),(max-width:600px){.choir-mixer{max-height:calc(100dvh - 24px)}.choir-mixer .cm-header{padding:7px 12px}.choir-mixer .cm-player{padding:6px 12px}.choir-mixer .cm-now{margin-bottom:4px}.choir-mixer .cm-master,.choir-mixer .cm-tuning{padding:6px 12px}.choir-mixer .cm-auto-plan{gap:3px;padding:6px}.choir-mixer .cm-auto-plan button{padding:4px 3px}.choir-mixer .cm-channels-title{padding:8px 12px}.choir-mixer .cm-volume{grid-template-columns:minmax(0,1fr)}.choir-mixer .cm-volume>input[type="range"]{display:none}.choir-mixer .cm-volume-steps{grid-template-columns:44px minmax(0,1fr) 44px}.choir-mixer .cm-volume-steps>button{display:inline-flex}.choir-mixer .cm-volume-entry{height:44px}.choir-mixer .cm-volume-entry input{font-size:16px}.choir-mixer .cm-channel-head{gap:5px}.choir-mixer .cm-toggle{width:44px;height:44px}.choir-mixer .cm-toggle svg{width:19px;height:19px}}
-    @media(pointer:coarse),(max-width:600px){.choir-mixer .cm-playback-tuning{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}.choir-mixer .cm-tuning{padding:4px 6px}.choir-mixer .cm-tuning .cm-volume-steps{grid-template-columns:minmax(0,1fr)}.choir-mixer .cm-tuning .cm-volume-steps>button{display:none}}
+    @media(pointer:coarse),(max-width:600px){.choir-mixer .cm-speed-options button{min-height:44px}}
     @media(max-height:480px){.choir-mixer .cm-header{padding:4px 10px}.choir-mixer .cm-body{overflow:auto;overscroll-behavior:contain}.choir-mixer .cm-player{padding:4px 10px}.choir-mixer .cm-caption{display:none}.choir-mixer .cm-transport{margin-bottom:0}.choir-mixer .cm-master,.choir-mixer .cm-tuning{padding:4px 10px}.choir-mixer .cm-auto-plan{padding:4px 8px}.choir-mixer .cm-levels{flex-shrink:0}.choir-mixer .cm-levels-body{overflow:visible}}
   `);
   root.innerHTML = `<div class="ensemble-tts">
@@ -2552,27 +2552,29 @@ export async function setup(ctx) {
   const setSpeed=value=>{stretchSpeedSlider(value);mixerState.playbackRate=value;syncVoiceControls();applyPlaybackRate();refreshSpeechGrouping();};
   const setGap=value=>{mixerState.voiceGapMs=value;syncVoiceControls();refreshSpeechGrouping();};
   const saveMixerValue=()=>void persistMixer();
-  const speedControl=makeMixerTuning('Playback speed',{...SPEED_CONTROL,title:SPEED_TITLE,onValue:setSpeed,onCommit:saveMixerValue});
-  const gapControl=makeMixerTuning('Gap between voices',{...GAP_CONTROL,title:GAP_TITLE,onValue:setGap,onCommit:saveMixerValue});
-  // The settings drawer shows its own copies of the same two controls, reading and writing the same mixerState values.
+  // Detailed controls stay in settings; the mixer offers three quick speed choices.
   const speedSettings=makeMixerTuning('Playback speed in settings',{...SPEED_CONTROL,title:SPEED_TITLE,onValue:setSpeed,onCommit:saveMixerValue});
   const gapSettings=makeMixerTuning('Gap between voices in settings',{...GAP_CONTROL,title:GAP_TITLE,onValue:setGap,onCommit:saveMixerValue});
   // A character's own speed replaces the master speed for that character. Without one (no key, or null) it follows the master speed.
   const speakerSpeedRows=[];
   function paintSpeakerSpeeds(){
     const master=voiceRate();
+    for(let index=speakerSpeedRows.length-1;index>=0;index--)if(!speakerSpeedRows[index].speed.root.isConnected)speakerSpeedRows.splice(index,1);
     for(const row of speakerSpeedRows){
+      row.speed.root.querySelector('input[type="range"]').setAttribute('aria-label',`${row.speaker} speed`);
+      row.speed.root.querySelector('input[type="number"]').setAttribute('aria-label',`${row.speaker} speed value`);
+      row.followButton.setAttribute('aria-label',`Follow playback speed for ${row.speaker}`);
       const custom=speakerPlaybackRate(mixerState.channels,row.speaker);
       const shown=custom ?? master;
       row.speed.set(shown);
       row.speed.setInherited(custom===null,
         `Follows master speed (${shown.toFixed(2)}×). Change to set a custom speed for ${row.speaker}.`,
-        `Custom speed for ${row.speaker}, used instead of the master speed. Double-click or ↺ to follow the master speed again.`);
+        `Custom speed for ${row.speaker}, used instead of the global speed. Double-click or choose Use global to follow the global speed again.`);
       row.followButton.hidden=custom===null;
     }
   }
   // Clears the custom speed entirely, so the character follows the master speed again.
-  function followMasterSpeed(channel,speaker){delete channel.speed;paintSpeakerSpeeds();applyPlaybackRate();refreshSpeechGrouping();saveMixerValue();}
+  function followMasterSpeed(speaker){if(Object.hasOwn(mixerState.channels,speaker))delete mixerState.channels[speaker].speed;paintSpeakerSpeeds();applyPlaybackRate();refreshSpeechGrouping();saveMixerValue();}
   function attachDrawerTuning(slotName,control,label,defaultText){
     const slot=$(slotName);if(!slot)return;
     const reset=document.createElement('button');reset.type='button';reset.className='et-tuning-reset';reset.textContent='Reset';reset.title=`Reset ${label} to ${defaultText}`;reset.setAttribute('aria-label',`Reset ${label}`);reset.onclick=()=>control.reset();
@@ -2582,10 +2584,10 @@ export async function setup(ctx) {
   attachDrawerTuning('voiceGapSlot',gapSettings,'gap between voices',GAP_CONTROL.text(GAP_CONTROL.fallback));
   speedSettings.root.querySelector('input[type="range"]').dataset.et='playbackRate';speedSettings.root.querySelector('input[type="number"]').dataset.et='playbackRateEntry';
   gapSettings.root.querySelector('input[type="range"]').dataset.et='voiceGapMs';gapSettings.root.querySelector('input[type="number"]').dataset.et='voiceGapMsEntry';
-  // Moves the top end of every speed slider: master, settings and each character.
+  // Moves the top end of the global settings slider and each character's slider.
   function setSpeedSliderMax(value){
     mixerState.speedSliderMax=normalizeSpeedSliderMax(value);
-    for(const control of [speedControl,speedSettings,...speakerSpeedRows.map(row=>row.speed)])control.setSliderMax(mixerState.speedSliderMax);
+    for(const control of [speedSettings,...speakerSpeedRows.map(row=>row.speed)])control.setSliderMax(mixerState.speedSliderMax);
     const field=$('speedSliderMax');if(field && document.activeElement!==field)field.value=String(mixerState.speedSliderMax);
   }
   const sliderMaxField=$('speedSliderMax');
@@ -2593,9 +2595,13 @@ export async function setup(ctx) {
     sliderMaxField.value=String(mixerState.speedSliderMax);
     sliderMaxField.onchange=()=>{setSpeedSliderMax(sliderMaxField.value);sliderMaxField.value=String(mixerState.speedSliderMax);saveMixerValue();};
   }
-  const tuningRow=(label,control)=>{const row=document.createElement('div');row.className='cm-tuning';const caption=document.createElement('span');caption.textContent=label;row.append(caption,control.root);return row;};
-  const speedRow=tuningRow('Speed',speedControl),gapRow=tuningRow('Gap',gapControl);
-  const playbackTuning=document.createElement('div');playbackTuning.className='cm-playback-tuning';playbackTuning.append(speedRow,gapRow);
+  const speedOptions=document.createElement('div');speedOptions.className='cm-speed-options';speedOptions.setAttribute('role','group');speedOptions.setAttribute('aria-label','Playback speed');
+  const speedButtons=[['Normal',1],['Fast',1.5],['Very fast',2]].map(([label,rate])=>{
+    const button=document.createElement('button');button.type='button';button.dataset.playbackRate=String(rate);button.setAttribute('aria-label',`${label} (${rate}×)`);
+    const caption=document.createElement('span'),value=document.createElement('small');caption.textContent=label;value.textContent=`${rate}×`;button.append(caption,value);
+    button.onclick=()=>{setSpeed(rate);saveMixerValue();};speedOptions.append(button);return button;
+  });
+  const playbackTuning=document.createElement('div');playbackTuning.className='cm-playback-tuning';playbackTuning.append(speedOptions);
   const mixerPlay=document.createElement('button');mixerPlay.type='button';mixerPlay.dataset.choirAction='playback';
   mixerPlay.onclick=()=>{if(voiceGapHold){voiceGapHold.paused?voiceGapHold.resume():voiceGapHold.pause();pauseBeds(voiceGapHold.paused);updateTransport();return;}if(currentAudio){if(currentAudio.paused){currentAudio.play().then(updateTransport).catch(e=>status(e.message,true));pauseBeds(false);}else{currentAudio.pause();pauseBeds(true);updateTransport();}}else if(!busy && !controller){mixerPlay.disabled=true;status('Loading playback…');run(async()=>{const latest=latestReply();if(!latest)throw new Error('No assistant reply in the active chat.');if(plan && planSource?.chatId===chatId && planSource.messageId===latest.id && sameSpeech(planSource.content,ctx.messages.getContent(latest.id)))await play({resume:true});else await playMessage(latest.id);});}};
   const mixerPlanLatest=document.createElement('button');mixerPlanLatest.type='button';mixerPlanLatest.dataset.choirAction='plan-latest';mixerPlanLatest.innerHTML=ICON_PLAN;mixerPlanLatest.title='Plan latest reply without starting audio';mixerPlanLatest.setAttribute('aria-label','Plan latest reply');mixerPlanLatest.onclick=()=>run(planLatest);
@@ -2765,11 +2771,11 @@ export async function setup(ctx) {
     for(let i=index-1;i>=0;i--)if(items[i] && !items[i].kind && !playbackExcluded(items[i]))return voiceGapSetting();
     return 0;
   }
-  // Mirrors the saved speed and gap into the mixer rows and the drawer controls. Every control reads the same mixerState values.
+  // Keep the quick speed buttons and drawer controls in step with saved playback settings.
   function syncVoiceControls(){
     const rate=voiceRate(),gap=voiceGapSetting();
-    for(const control of [speedControl,speedSettings])control.set(rate);
-    for(const control of [gapControl,gapSettings])control.set(gap);
+    speedSettings.set(rate);gapSettings.set(gap);
+    for(const button of speedButtons)button.setAttribute('aria-pressed',String(Number(button.dataset.playbackRate)===rate));
     paintSpeakerSpeeds();
   }
   // Browsers accept only their own playback range, so the speed is first clamped into it. A browser that still refuses it plays at normal speed instead of stopping the block.
@@ -2806,7 +2812,7 @@ export async function setup(ctx) {
     syncVoiceControls();
     const focused=doc.activeElement,focusLabel=channelsRoot.contains(focused)?focused.getAttribute('aria-label'):null,focusTabKey=channelTabs.contains(focused)?focused.dataset.channelKey:null,scrollTop=channelsRoot.scrollTop;
     updateNextControls();
-    channelsRoot.replaceChildren();speakerLabel.replaceChildren();speakerSpeedRows.length=0;
+    channelsRoot.replaceChildren();speakerLabel.replaceChildren();
     if(currentSpeaker){const prefix=doc.createElement('span');prefix.className='cm-sr-only';prefix.textContent='Speaking: ';speakerLabel.append(prefix,doc.createTextNode(currentSpeaker));}else speakerLabel.textContent='Ready to play';
     const speakers=new Set((mixerPlaybackSegments ?? plan?.segments ?? []).flatMap(speechMembers).filter(segment=>!segment.kind && segment.speaker).map(segment=>segment.speaker));
     const mainCast=new Set((config?.fixed || []).flatMap(actor=>[actor.speaker,...(actor.aliases || [])]).map(normalizeName));
@@ -2820,13 +2826,7 @@ export async function setup(ctx) {
       const controls=doc.createElement('div');controls.className='cm-channel-controls';
       const volume=makeMixerVolume(speaker,channel.volume,readout,value=>{channel.volume=value;applyVolume();updateGroupingStatus();if(config?.batchSpeech)refreshSectionControls();},MAX_CHANNEL_VOLUME);
       const silent=doc.createElement('button');silent.type='button';silent.className='cm-toggle';silent.dataset.kind='silent';silent.innerHTML=channel.mute?ICON_MUTED:ICON_SOUND;silent.setAttribute('aria-label',`${speaker} silent`);silent.setAttribute('aria-pressed',String(Boolean(channel.mute)));silent.title='Silent: mute playback. Audio can still be generated and cached.';silent.onclick=()=>{channel.mute=!channel.mute;applyVolume();renderMixer();if(config?.batchSpeech)refreshSectionControls();persistMixer();};
-      // Different dialogue rates split into separate clips on the next Play.
-      // Simultaneous unison voices keep a shared rate to stay aligned.
-      const speed=makeMixerTuning(`${speaker} speed`,{...SPEED_CONTROL,max:mixerState.speedSliderMax,title:`Speed for ${speaker}. Replaces the playback speed for this character. Different dialogue speeds use separate clips on the next Play. Unison voices share the first speaker's speed. Pitch is kept.`,onValue:value=>{stretchSpeedSlider(value);channel.speed=value;paintSpeakerSpeeds();applyPlaybackRate();refreshSpeechGrouping();},onCommit:saveMixerValue,onReset:()=>followMasterSpeed(channel,speaker)});
-      const followButton=doc.createElement('button');followButton.type='button';followButton.className='cm-speed-reset';followButton.textContent='↺';followButton.setAttribute('aria-label',`Follow playback speed for ${speaker}`);followButton.title=`Use the playback speed for ${speaker} again`;followButton.onclick=()=>followMasterSpeed(channel,speaker);
-      speakerSpeedRows.push({speaker,speed,followButton});paintSpeakerSpeeds();
-      const speedLine=doc.createElement('div');speedLine.className='cm-channel-speed';const speedCaption=doc.createElement('span');speedCaption.textContent='Speed';speedLine.append(speedCaption,speed.root,followButton);
-      controls.append(volume,speedLine);head.append(silent);
+      controls.append(volume);head.append(silent);
       const noVoice=doc.createElement('button');noVoice.type='button';noVoice.className='cm-toggle';noVoice.dataset.kind='no-voice';noVoice.innerHTML=speakerExcluded(speaker)?ICON_MIC_OFF:ICON_MIC;noVoice.setAttribute('aria-label',`${speaker} no voice`);noVoice.setAttribute('aria-pressed',String(speakerExcluded(speaker)));noVoice.title='No voice: skip this character, including cached playback. No new audio is generated; text and saved audio stay available.';noVoice.onclick=()=>run(()=>setSpeakerExcluded(speaker,!speakerExcluded(speaker)));head.append(noVoice);
       row.append(head,controls);
       channelsRoot.append(row);
@@ -3835,6 +3835,17 @@ export async function setup(ctx) {
       if(node===gender || node===style)wrap.hidden=true;
       if(node===voiceWrap)wrap.style.cssText='grid-column:1 / -1;margin-top:2px';
     }
+    const speedSection=document.createElement('div');speedSection.className='et-tuning et-character-speed';
+    const speedHeading=document.createElement('span');speedHeading.className='et-tuning-title';speedHeading.textContent='Voice speed';
+    const speedSlot=document.createElement('div');speedSlot.className='et-tuning-slot';
+    const speed=makeMixerTuning(`${actor.speaker} speed`,{...SPEED_CONTROL,max:mixerState.speedSliderMax,title:'Replaces the global playback speed for this character. Pitch is kept.',onValue:value=>{
+      stretchSpeedSlider(value);const speaker=name.value.trim(),channel=Object.hasOwn(mixerState.channels,speaker)?mixerState.channels[speaker]:{volume:1,mute:false};
+      channel.speed=value;Object.defineProperty(mixerState.channels,speaker,{value:channel,writable:true,enumerable:true,configurable:true});
+      paintSpeakerSpeeds();applyPlaybackRate();refreshSpeechGrouping();
+    },onCommit:saveMixerValue,onReset:()=>followMasterSpeed(name.value.trim())});
+    const followButton=document.createElement('button');followButton.type='button';followButton.className='et-tuning-reset';followButton.textContent='Use global';followButton.setAttribute('aria-label',`Follow playback speed for ${actor.speaker}`);followButton.onclick=()=>followMasterSpeed(name.value.trim());
+    speakerSpeedRows.push({get speaker(){return name.value.trim();},speed,followButton});
+    speedSlot.append(speed.root,followButton);speedSection.append(speedHeading,speedSlot);editor.append(speedSection);
     if(!reserved){
       const tools=document.createElement('div');tools.style.gridColumn='1 / -1';
       const hint=document.createElement('small');hint.textContent='Say name as changes how every voice says this name in this chat. Story text stays unchanged. Leave blank to use its written spelling.';
@@ -3855,6 +3866,7 @@ export async function setup(ctx) {
       const remove=document.createElement('button');remove.type='button';remove.textContent='Remove';remove.onclick=()=>{row.remove();scheduleSettingsSave();renderMixer();};editor.append(move,remove);
     }
     container.append(row);
+    paintSpeakerSpeeds();
     updateCardProviderControls();
     return {row,voiceChoice:()=>[name.value.trim(),voice.value],setExcluded:value=>{excluded.checked=value;},read:()=>({speaker:name.value.trim(),voice:single?actor.voice || '':voice.value,route:single?actor.route || '':route.value,gender:gender.value,style:style.value.trim(),aliases:aliases.value.split(',').map(a=>a.trim()).filter((a,i,list)=>a && normalizeName(a)!==normalizeName(name.value) && list.findIndex(b=>normalizeName(b)===normalizeName(a))===i),pronunciation:pronunciation.value.trim(),sayAs:sayAs.value.trim(),accent:accent.value.trim(),excluded:excluded.checked})};
   }

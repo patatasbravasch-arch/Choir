@@ -3014,27 +3014,36 @@ test('Local heuristic mode and the Skip non-story blocks toggle make no check re
  }finally{await h.close();}
 });
 
-const speedInput=()=>document.querySelector('[aria-label="Playback speed"]');
-const gapInput=()=>document.querySelector('[aria-label="Gap between voices"]');
-const speedEntry=()=>document.querySelector('[aria-label="Playback speed value"]');
-const gapEntry=()=>document.querySelector('[aria-label="Gap between voices value"]');
+const speedInput=()=>document.querySelector('[aria-label="Playback speed in settings"]');
+const gapInput=()=>document.querySelector('[aria-label="Gap between voices in settings"]');
+const speedEntry=()=>document.querySelector('[aria-label="Playback speed in settings value"]');
+const gapEntry=()=>document.querySelector('[aria-label="Gap between voices in settings value"]');
+const speedPreset=rate=>document.querySelector(`.cm-speed-options [data-playback-rate="${rate}"]`);
 const setRange=(h,input,value)=>{input.value=value;input.dispatchEvent(new h.dom.window.Event('input'));input.dispatchEvent(new h.dom.window.Event('change'));};
 const typeValue=(h,input,value)=>{input.value=value;input.dispatchEvent(new h.dom.window.Event('input'));};
 const commitValue=(h,input,value)=>{typeValue(h,input,value);input.dispatchEvent(new h.dom.window.Event('blur'));};
 const savedMixer=h=>h.store.get('ui:mixer');
 const resetOf=(h,slot)=>h.$(slot).querySelector('.et-tuning-reset');
 
-test('playback speed and voice gap rows sit under Master, share one saved value with the drawer and survive reload',async()=>{
+test('mixer offers Normal, Fast and Very fast buttons while gap stays in settings and choices survive reload',async()=>{
  const h=await harness();try{
   const master=document.querySelector('[data-choir-mixer] .cm-master');
-  assert.deepEqual([...master.nextElementSibling.querySelectorAll('.cm-tuning>span')].map(label=>label.textContent),['Speed','Gap']);
+  assert.deepEqual([...master.nextElementSibling.querySelectorAll('button')].map(button=>button.getAttribute('aria-label')),['Normal (1×)','Fast (1.5×)','Very fast (2×)']);
+  assert.equal(master.nextElementSibling.querySelector('input'),null);assert.equal(document.querySelector('[data-choir-mixer] [aria-label*="Gap"]'),null);
+  assert.equal(speedPreset(1).getAttribute('aria-pressed'),'true');
   assert.equal(speedInput().value,'1');assert.equal(gapInput().value,'0');assert.equal(h.$('playbackRate').value,'1');assert.equal(h.$('voiceGapMs').value,'0');
-  setRange(h,speedInput(),'1.5');assert.equal(h.$('playbackRate').value,'1.5');assert.equal(speedEntry().value,'1.50');assert.equal(h.$('playbackRateEntry').value,'1.50');
+  speedPreset(2).click();assert.equal(speedEntry().value,'2.00');assert.equal(speedPreset(2).getAttribute('aria-pressed'),'true');
+  speedPreset(1).click();assert.equal(speedEntry().value,'1.00');
+  speedPreset(1.5).click();assert.equal(h.$('playbackRate').value,'1.5');assert.equal(speedEntry().value,'1.50');assert.equal(h.$('playbackRateEntry').value,'1.50');
+  assert.equal(speedPreset(1.5).getAttribute('aria-pressed'),'true');assert.equal(speedPreset(1).getAttribute('aria-pressed'),'false');
   setRange(h,gapInput(),'250');assert.equal(h.$('voiceGapMs').value,'250');assert.equal(gapEntry().value,'250');assert.equal(h.$('voiceGapMsEntry').value,'250');
   await until(()=>savedMixer(h)?.playbackRate===1.5 && savedMixer(h)?.voiceGapMs===250);
   assert.equal(h.store.get('chat:chat-a').playbackRate,undefined,'speed is no longer written into the chat');
   await h.reload();
+  assert.equal(speedPreset(1.5).getAttribute('aria-pressed'),'true');
   assert.equal(speedInput().value,'1.5');assert.equal(h.$('playbackRate').value,'1.5');assert.equal(gapInput().value,'250');assert.equal(h.$('voiceGapMs').value,'250');
+  await h.plan();h.state.blockAudio=true;h.$('play').click();await until(()=>voices(h).length>=1 && !voices(h)[0].paused);
+  const calls=h.synthesis.length;speedPreset(2).click();assert.equal(voices(h)[0].playbackRate,2);assert.equal(h.synthesis.length,calls);h.$('stop').click();
  }finally{await h.close();}
 });
 
@@ -3071,9 +3080,10 @@ test('each character speed replaces the playback speed for that character, follo
  const h=await harness();try{
   await h.plan();
   const speedOf=name=>document.querySelector(`[aria-label="${name} speed"]`);
-  const speedRow=document.querySelector('.cm-channel[data-speaker="Mira"] .cm-channel-speed');
-  assert.ok(speedRow,'Mira has a Speed row under its volume');assert.equal(speedRow.firstElementChild.textContent,'Speed');
-  assert.equal(document.querySelector('.cm-channel[data-kind="sfx"] .cm-channel-speed'),null,'effect channels have no speed row');
+  const speedRow=speedOf('Mira').closest('.et-character-speed'),editor=speedRow.closest('[data-choir-cast-editor]');
+  assert.ok(editor,'Mira has a speed control inside her character editor');assert.equal(editor.hidden,true);
+  editor.closest('.et-cast-row').querySelector('[data-choir-edit]').click();assert.equal(editor.hidden,false);
+  assert.equal(document.querySelector('[data-choir-mixer] [aria-label="Mira speed"]'),null,'character speed controls are absent from the mixer');
   assert.equal(speedOf('Mira').value,'1');assert.equal(document.querySelector('[aria-label="Mira speed value"]').value,'1.00');
   assert.ok(speedOf('Mira').closest('.cm-volume').classList.contains('cm-inherited'),'a character without its own speed is dimmed');
   assert.match(speedOf('Mira').closest('.cm-volume').title,/Follows master speed/);
@@ -3091,6 +3101,18 @@ test('each character speed replaces the playback speed for that character, follo
   await until(()=>voices(h).length>=2 && !voices(h)[1].paused);
   assert.equal(voices(h)[1].playbackRate,2.5,'Mira speaks at her own 2.5x, not the playback speed times 2.5');
   h.$('stop').click();
+ }finally{await h.close();}
+});
+
+test('character and NPC speeds are available before planning and preserve mixer volume edits after a speed change',async()=>{
+ const h=await harness();try{
+  const guardSpeed=()=>document.querySelector('[aria-label="Guard speed"]');
+  assert.ok(document.querySelector('[aria-label="Mira speed"]'));assert.ok(guardSpeed().closest('[data-choir-cast-editor]').hidden);
+  setRange(h,guardSpeed(),'1.25');await until(()=>savedMixer(h)?.channels?.Guard?.speed===1.25);
+  await h.plan();setRange(h,guardSpeed(),'1.75');
+  commitValue(h,document.querySelector('[aria-label="Guard volume percent"]'),'50');
+  await until(()=>savedMixer(h)?.channels?.Guard?.speed===1.75 && savedMixer(h)?.channels?.Guard?.volume===0.5);
+  await h.reload();assert.equal(guardSpeed().value,'1.75');assert.equal(document.querySelector('[data-choir-mixer] [aria-label="Guard speed"]'),null);
  }finally{await h.close();}
 });
 
@@ -3306,18 +3328,21 @@ test('REGRESSION speed saved at 2 stays editable with no chat open: the mixer ro
  }finally{await h.close();}
 });
 
-test('mixer and drawer speed read and write one value and update each other live, after a drawer reopens and after reload',async()=>{
+test('mixer speed buttons follow settings and leave custom speeds unselected across navigation and reload',async()=>{
  const h=await harness();try{
-  setRange(h,speedInput(),'1.01');
-  assert.equal(h.$('playbackRate').getAttribute('aria-valuetext'),'1.01×');assert.equal(h.$('playbackRateEntry').value,'1.01');
+  speedPreset(1.5).click();
+  assert.equal(h.$('playbackRate').getAttribute('aria-valuetext'),'1.50×');assert.equal(h.$('playbackRateEntry').value,'1.50');
+  setRange(h,h.$('playbackRate'),'2');assert.equal(speedPreset(2).getAttribute('aria-pressed'),'true');
   setRange(h,h.$('playbackRate'),'2.36');
   assert.equal(speedInput().value,'2.36');assert.equal(speedEntry().value,'2.36');assert.equal(speedInput().getAttribute('aria-valuetext'),'2.36×');
+  assert.ok([...document.querySelectorAll('.cm-speed-options button')].every(button=>button.getAttribute('aria-pressed')==='false'));
   h.subscriptions.get('chat.active')();await tick();
   assert.equal(h.$('playbackRate').getAttribute('aria-valuetext'),'2.36×','the drawer still shows the shared value after a chat switch');
   assert.equal(speedInput().value,'2.36');
   await until(()=>savedMixer(h)?.playbackRate===2.36);
   await h.reload();
   assert.equal(h.$('playbackRate').getAttribute('aria-valuetext'),'2.36×');assert.equal(h.$('playbackRateEntry').value,'2.36');assert.equal(speedInput().value,'2.36');
+  assert.ok([...document.querySelectorAll('.cm-speed-options button')].every(button=>button.getAttribute('aria-pressed')==='false'));
  }finally{await h.close();}
 });
 
@@ -3326,22 +3351,22 @@ test('REGRESSION after a host remount the live drawer and the mixer stay in step
   const drawers=()=>[...h.root.querySelectorAll('[data-et="playbackRate"]')];
   await h.remount();
   assert.equal(drawers().length,1,'remount disposes the earlier drawer, so exactly one live drawer remains');
-  setRange(h,speedInput(),'2.36');
-  assert.equal(drawers()[0].getAttribute('aria-valuetext'),'2.36×','the live drawer follows the mixer');
-  setRange(h,drawers()[0],'1.01');
-  assert.equal(speedInput().value,'1.01','the mixer follows the drawer');
-  assert.equal(drawers()[0].getAttribute('aria-valuetext'),'1.01×','the drawer shows the value it set');
-  await until(()=>savedMixer(h)?.playbackRate===1.01);
+  assert.equal(document.querySelectorAll('.cm-speed-options button').length,3);
+  speedPreset(1.5).click();
+  assert.equal(drawers()[0].getAttribute('aria-valuetext'),'1.50×','the live drawer follows the mixer');
+  setRange(h,drawers()[0],'2');
+  assert.equal(speedPreset(2).getAttribute('aria-pressed'),'true','the mixer follows the drawer');
+  assert.equal(drawers()[0].getAttribute('aria-valuetext'),'2.00×','the drawer shows the value it set');
+  await until(()=>savedMixer(h)?.playbackRate===2);
  }finally{await h.close();}
 });
 
-test('REGRESSION the mixer entry shows a value moved by the drawer slider even while the entry still has focus',async()=>{
+test('a mixer speed button updates a focused typed speed field without restoring the previous value on blur',async()=>{
  const h=await harness();try{
-  speedEntry().focus();assert.equal(document.activeElement,speedEntry(),'the mixer entry has focus');
-  setRange(h,h.$('playbackRate'),'2.36');
-  assert.equal(speedEntry().value,'2.36','the focused mixer entry follows the drawer slider');
-  assert.equal(speedInput().value,'2.36');
-  speedEntry().blur();assert.equal(speedEntry().value,'2.36');
+  speedEntry().focus();typeValue(h,speedEntry(),'2.36');
+  speedPreset(1.5).click();assert.equal(speedEntry().value,'1.50');assert.equal(speedInput().value,'1.5');
+  speedEntry().blur();assert.equal(speedEntry().value,'1.50');
+  await until(()=>savedMixer(h)?.playbackRate===1.5);
  }finally{await h.close();}
 });
 
