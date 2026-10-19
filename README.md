@@ -4,14 +4,16 @@
 
 # Choir
 
-[![Version](https://img.shields.io/badge/version-1.1.6--lunch--test.4-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/lunch-test)
+[![Version](https://img.shields.io/badge/version-1.1.6--lunch--test.5-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/lunch-test)
 [![Platform](https://img.shields.io/badge/platform-Lumiverse%20Spindle-purple.svg)](https://docs.lumiverse.chat/)
-[![Tests](https://img.shields.io/badge/tests-431%20tests-blue.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-433%20tests-blue.svg)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 An installable Lumiverse Spindle extension for multi-voice narration, dialogue attribution, sound effects, ambience and background music.
 
 </div>
+
+Version **1.1.6-lunch-test.5** prevents a bad character suggestion from blocking playback. Card evidence tolerates differences in formatting, spacing and quote characters; discarded instruction headings do not need evidence. Suggestions without matching evidence are skipped. The existing cast and recognized profiles remain available when none can be verified, using the existing analysis cache without additional analysis requests.
 
 Version **1.1.6-lunch-test.4** integrates the playback controls from PR #4: global playback speed, per-character speed that replaces the global value, and a gap between voices. These settings live beside mixer levels, persist across reloads, and appear in both the mixer and settings drawer. Typing a speed above the slider maximum expands its range. Speech keeps its pitch; music, ambience, effects and auditions retain normal speed. Dialogue with different character speeds uses separate clips, and a nonzero gap separates speakers even when grouping is enabled. Saved shared recordings rebuild when those controls require a split, using existing attribution without another planner request. Ordinary speed changes reuse cached audio. Changes to an already playing shared clip take effect on the next Play; simultaneous unison voices keep the first speaker's rate so they stay aligned. Excluded opening speakers do not introduce an initial gap, and Pause, Next and Stop control pending gaps.
 

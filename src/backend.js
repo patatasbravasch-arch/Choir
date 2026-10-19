@@ -1,4 +1,4 @@
-import { validateCardRoles, validateCastConfig, validatePlan, npcCastActor, parsePlanJson, resolvePlanReferences, castReply, speechSourceUnits, normalizeName, unisonSpeakers, fastClassifyPlan, resolvePlannerMode, soundCuePrompt, parseSoundCues, rankMusic, MUSIC_GENRES, skipCheckPrompt, parseSkipRows, skippedLines } from './core.js';
+import { cardAnalysisRoles, validateCastConfig, validatePlan, npcCastActor, parsePlanJson, resolvePlanReferences, castReply, speechSourceUnits, normalizeName, unisonSpeakers, fastClassifyPlan, resolvePlannerMode, soundCuePrompt, parseSoundCues, rankMusic, MUSIC_GENRES, skipCheckPrompt, parseSkipRows, skippedLines } from './core.js';
 
 async function jevPost(url, headers, payload, signal) {
   signal?.throwIfAborted();
@@ -484,9 +484,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
         ...textGenerationOptions(connection,{max_tokens:8192,...jsonResponseParameters(connection)}),signal:controller.signal});
       if(controller.signal.aborted)return;
       const raw=parsePlanJson(result.content);
-      const roles=validateCardRoles(raw.roles);
-      if(raw.roles.some(role=>typeof role.evidence!=='string' || !role.evidence.trim() || role.evidence.length>600 || !source.includes(role.evidence.trim())))throw new Error('Card analysis did not provide valid source evidence for every lead.');
-      send({result:{roles}});return;
+      send({result:{roles:cardAnalysisRoles(raw.roles,fields)}});return;
     }
     if(message.action==='testPlanner') {
       const mode=resolvePlannerMode(input);

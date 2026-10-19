@@ -760,6 +760,16 @@ test('cast capture retains voices when the host returns different parent wrapper
  }finally{await h.close();}
 });
 
+test('no verified card suggestions keeps the existing cast and does not block playback or repeat analysis on reload',async()=>{
+ const h=await harness();try{
+  h.state.character={name:'Mira',description:'Mira is the captain, with a warm voice. No formatted profiles.'};h.state.cardRoles=[];
+  await h.reload();await h.plan();await h.play();
+  assert.deepEqual(h.store.get('chat:chat-a').fixed.map(actor=>[actor.speaker,actor.voice]),[['Narrator','n'],['You','y'],['Mira','m']]);
+  await h.reload();h.message.content='At dusk. "Hello." "Wait." The gate opened.';await h.plan();await h.play();
+  assert.equal(h.requests.filter(request=>request.action==='cardCast').length,1);assert.equal(h.store.get('chat:chat-a').fixed[2].voice,'m');
+ }finally{await h.close();}
+});
+
 test('freeform scenario titles use cached generic card analysis and preserve separately assigned voices',async()=>{
  const h=await harness();try{
   h.state.character={name:'Closing Time',description:'Adrian is the captain. Ethan is his teammate. No special headings or tags.'};h.state.cardRoles=[{name:'Adrian',aliases:['Captain Adrian'],description:'Low-voiced captain.'},{name:'Ethan',description:'Brighter teammate.'}];h.state.multiCard=true;

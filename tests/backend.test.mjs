@@ -213,11 +213,11 @@ test('generic card analysis reads freeform profiles and requires source evidence
  const card={name:'Closing Time',description:'Adrian is the captain, with a low voice. Ethan is his teammate, with a brighter voice.',scenario:'They run the station together.'};
  const h=await harness(async input=>{calls++;request=input;return {content:JSON.stringify({roles:[{name:'Adrian',description:'A low-voiced captain.',evidence:'Adrian is the captain'},{name:'Ethan',description:'A brighter-voiced teammate.',evidence:'Ethan is his teammate'}]})};});
  h.send('cardCast',{card,connectionId:'llm-a'});const result=(await h.result()).message;assert.equal(result.error,undefined);assert.deepEqual([...result.result.roles.map(role=>role.name)],['Adrian','Ethan']);assert.equal(calls,1);assert.match(request.messages[0].content,/regardless of formatting or title/);assert.match(request.messages[0].content,/untrusted data/);assert.equal(JSON.parse(request.messages[1].content).description,card.description);assert.equal(request.userId,'user-a');
- const bad=await harness(async()=>({content:JSON.stringify({roles:[{name:'Invented',description:'A stranger.',evidence:'Not present in the card.'}]})}));bad.send('cardCast',{card});assert.match((await bad.result()).message.error,/source evidence/);
+ const bad=await harness(async()=>({content:JSON.stringify({roles:[{name:'Invented',description:'A stranger.',evidence:'Not present in the card.'}]})}));bad.send('cardCast',{card});const rejected=(await bad.result()).message;assert.equal(rejected.error,undefined);assert.deepEqual([...rejected.result.roles],[]);
 });
 test('card analysis discards narrative guideline headings returned as lead names',async()=>{
  const card={name:'Eliza',description:'Eliza is the main character.\n# NARRATIVE GUIDELINES\nKeep the main character consistent.'};
- const h=await harness(async()=>({content:JSON.stringify({roles:[{name:'Eliza',evidence:'Eliza is the main character.'},{name:'NARRATIVE GUIDELINES',evidence:'Keep the main character consistent.'}]})}));
+ const h=await harness(async()=>({content:JSON.stringify({roles:[{name:'Eliza',evidence:'Eliza is the main character.'},{name:'NARRATIVE GUIDELINES'}]})}));
  h.send('cardCast',{card});const message=(await h.result()).message;assert.equal(message.error,undefined);assert.deepEqual([...message.result.roles.map(role=>role.name)],['Eliza']);
 });
 

@@ -4,7 +4,7 @@ import {createHash} from 'node:crypto';
 import {speechPanel} from './fixtures/speech-panel.mjs';
 import {phoneWidget} from './fixtures/phone-widget.mjs';
 import {sfxCueOffset} from '../src/core.js';
-import {randomUuid,sha256Hex,ignoredTagNames,characterCardRoles,validateCardRoles,reconcileCardCast} from '../src/core.js';
+import {randomUuid,sha256Hex,ignoredTagNames,characterCardRoles,validateCardRoles,cardAnalysisRoles,reconcileCardCast} from '../src/core.js';
 import {normalizePlaybackRate,normalizeVoiceGap,speakerPlaybackRate,effectivePlaybackRate,browserPlaybackRate,PLAYBACK_RATE_LIMITS,VOICE_GAP_LIMITS,BROWSER_PLAYBACK_RATE_LIMITS} from '../src/core.js';
 
 test('playback speed and voice gap clamp and round stored values and fall back to the defaults for missing or invalid input',()=>{
@@ -107,6 +107,18 @@ test('styled story layouts, literal UI descriptions and incomplete tab markup ar
   const mixed=speechPanel.replace('  <style>','Phone screen description. <style>');
   const surrounding=`<div style="background: navy"><p>Story before.</p>${mixed}<p>Story after.</p></div>`;
   assert.ok(transcriptFromMessage(surrounding).includes('Story before.'));assert.ok(transcriptFromMessage(surrounding).includes('Story after.'));
+});
+
+test('card evidence tolerates presentation differences but rejects paraphrases and invented excerpts',()=>{
+  const card={name:'Eliza',description:'<p>Eliza is the <b>captain</b> &amp; leader.</p><p>She’s\n  calm, with a **warm** voice.</p>',personality:'Caf\u00e9 owner.'};
+  const roles=[{name:'Eliza',evidence:'Eliza is the captain & leader.'},{name:'Captain',evidence:"She's calm, with a warm voice."},{name:'Owner',evidence:'Cafe\u0301 owner.'},{name:'NARRATIVE GUIDELINES'}];
+  assert.deepEqual(cardAnalysisRoles(roles,card).map(role=>role.name),['Eliza','Captain','Owner']);
+  for(const evidence of ['',null,'Eliza commands the ship.','A person not in this card.','x'.repeat(601)]){
+    assert.deepEqual(cardAnalysisRoles([{name:'Eliza',evidence}],card),[]);
+  }
+  assert.deepEqual(cardAnalysisRoles([{name:'Eliza',evidence:'Eliza is the captain & leader.'},{name:'Invented',evidence:'Another person entirely.'}],card).map(role=>role.name),['Eliza']);
+  assert.deepEqual(cardAnalysisRoles([{name:'Merged',evidence:'Eliza The captain.'}],{name:'Eliza',description:'The captain.'}),[],'evidence cannot span unrelated fields');
+  assert.deepEqual(cardAnalysisRoles([{name:'Eliza',aliases:['Captain'],evidence:'Eliza is the captain & leader.'},{name:'Captain',evidence:'Not in the card.'}],card)[0].aliases,['Captain']);
 });
 
 test('card instructions stay out of character discovery even when they mention the main character',()=>{

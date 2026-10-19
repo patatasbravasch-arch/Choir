@@ -226,6 +226,31 @@ export function validateCardRoles(roles) {
   return result;
 }
 
+// Evidence must still occur in one card field. Normalize presentation only;
+// paraphrases and invented excerpts are not evidence for a new lead.
+export function cardAnalysisRoles(rawRoles,card={}) {
+  const candidates=validateCardRoles(rawRoles);
+  const normalize=value=>String(value || '')
+    .replace(/<\/?(?:p|div|li|h[1-6]|br|section|article|blockquote)\b[^>]*>/gi,' ').replace(/<[^>]*>/g,'')
+    .replace(/&(quot|apos|nbsp|amp|lt|gt|#\d+|#x[a-f0-9]+);/gi,(entity,name)=>{
+      const known={quot:'"',apos:"'",nbsp:' ',amp:'&',lt:'<',gt:'>'},key=name.toLowerCase();
+      if(Object.hasOwn(known,key))return known[key];
+      const point=key.startsWith('#x')?parseInt(key.slice(2),16):Number(key.slice(1));
+      return Number.isInteger(point) && point>0 && point<=0x10ffff?String.fromCodePoint(point):entity;
+    })
+    .normalize('NFKC').replace(/[\u2018\u2019]/g,"'").replace(/[\u201c\u201d]/g,'"')
+    .replace(/(\*{1,3}|_{1,3}|`{1,3})([^\n]*?)\1/g,'$2').replace(/\s+/gu,' ').trim().toLowerCase();
+  const sources=['name','description','personality','scenario','first_mes'].map(field=>normalize(card[field]));
+  const rawByName=new Map(rawRoles.map(role=>[normalizeName(role?.name),role]));
+  const verified=new Set(candidates.flatMap(role=>{
+    const quote=rawByName.get(normalizeName(role.name))?.evidence;
+    if(typeof quote!=='string' || !quote.trim() || quote.length>600)return [];
+    const evidence=normalize(quote);
+    return evidence && sources.some(source=>source.includes(evidence))?[normalizeName(role.name)]:[];
+  }));
+  return validateCardRoles(rawRoles.filter(role=>verified.has(normalizeName(role?.name))));
+}
+
 // A decorated single-character card title is another name for an existing lead,
 // not an NPC. Require a matching lead identity; scenario titles and group cards
 // cannot safely be assigned to one person from their title alone.
