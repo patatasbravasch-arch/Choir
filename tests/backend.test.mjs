@@ -904,6 +904,14 @@ const communityCast={voices:[{id:'own-1',route:'native:fish'},{id:'used-1',route
 const describedPlan='D1|Mira|soft\nNPC|Mira|female|young; soft, bright\nLANG|pt-BR';
 const fishSearch=(urls,pages)=>async url=>{urls.push(new URL(url));const items=pages[urls.length-1];return items?{status:200,body:JSON.stringify({total:items.length,items})}:{status:500,body:'Down'};};
 
+test('a first Fish narration resolves an automatic voice from an empty relay catalogue',async()=>{
+  const urls=[],cast={...communityCast,voices:[],fixed:[{speaker:'Narrator',voice:'',style:'',route:'native:fish'}],npcs:[]};
+  const h=await harness(async()=>({content:'NPC|Narrator|neutral|middle-aged; calm\nLANG|en'}),fishSearch(urls,[[fishItem('narrator-first','Narrator',['neutral','middle-aged','calm'])]]));
+  h.send('plan',{transcript:'The room grew quiet.',config:cast});const message=(await h.result()).message;
+  assert.equal(message.error,undefined);assert.equal(message.result.segments[0].voice,'narrator-first');assert.equal(urls.length,1);
+  assert.equal(message.result.communityVoices[0].route,'native:fish');
+});
+
 test('a described voice is searched in the Fish community library with relaxed tags, without duplicates or voices already cast, and picked by the Decision model',async()=>{
   const urls=[];let prompt,evaluated;
   const h=await harness(async input=>{prompt=input.messages;return {content:describedPlan};},

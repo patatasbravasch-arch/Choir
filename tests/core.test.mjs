@@ -77,6 +77,21 @@ test('styled story layouts, literal UI descriptions and incomplete tab markup ar
   assert.ok(transcriptFromMessage(surrounding).includes('Story before.'));assert.ok(transcriptFromMessage(surrounding).includes('Story after.'));
 });
 
+test('card discovery keeps explicitly supporting profiles out of the lead cast',()=>{
+  const card={name:'Mira',description:'# Mira\nName: Mira\nA warm lead.\n# NPCs\n## Guard\nName: Guard\nA stern guard.\n## Clerk\nName: Clerk\nHelpful.'};
+  assert.deepEqual(characterCardRoles(card).map(role=>role.name),['Mira']);
+  assert.deepEqual(characterCardRoles({name:'Mira',description:JSON.stringify({characters:[{name:'Mira',role:'main character'},{name:'Guard',role:'NPC'}]})}).map(role=>role.name),['Mira']);
+  assert.deepEqual(characterCardRoles({name:'Mira',description:'<Mira>Name: Mira\nA warm lead.</Mira><NPCs><Guard>Name: Guard\nA stern guard.</Guard></NPCs>'}).map(role=>role.name),['Mira']);
+});
+
+test('an empty Fish catalogue can defer automatic voices to the community but never accepts invalid explicit assignments',()=>{
+  const config={fixed:[{speaker:'Narrator',voice:'',style:''}],npcs:[],voices:[],defaultRoute:'native:fish',communityRoutes:{'native:fish':'community'}};
+  assert.doesNotThrow(()=>validateCastConfig(config));
+  assert.throws(()=>validateCastConfig({...config,communityRoutes:{}}),/voice list/);
+  assert.throws(()=>validateCastConfig({...config,fixed:[{...config.fixed[0],voice:'Puck'}]}),/voice catalogue/);
+  assert.throws(()=>validateCastConfig({...config,fixed:[{...config.fixed[0],route:'native:other'}]}),/voice catalogue/);
+});
+
 test('multiple card characters keep separate profiles even when the second begins beyond the description budget',()=>{
   const card={name:'Adrian and Ethan | Show and Tell',description:'<adrian>\n# Adrian\nA male captain. '+ 'Captain. '.repeat(1000)+'\n</adrian>\n<ethan>\n# Ethan\nA male teammate with a different voice.\n</ethan>'};
   const roles=characterCardRoles(card);assert.deepEqual(roles.map(role=>role.name),['Adrian','Ethan']);assert.equal(roles[0].description.length,8000);assert.match(roles[1].description,/different voice/);assert.ok(!roles[1].description.includes('Captain.'));

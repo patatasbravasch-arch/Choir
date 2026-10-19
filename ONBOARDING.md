@@ -60,6 +60,15 @@ route-aware default catalogue behavior. Jev uses host Decision connections;
 the existing session-key fallback is offered only when the backend reports no
 Decision API. Heuristic tests run locally and make no LLM request.
 
+OpenRouter's mixed OpenAI/Gemini presets are filtered for the selected Fish
+model. A Fish connection may start with an empty catalogue: community casting
+can resolve its first voice, and the cast editor still offers browsing and
+pasted Fish IDs. Saved assigned Fish IDs also populate that route's catalogue.
+Automatic voices still require the LLM or Jev; local heuristic attribution
+requires explicit voices. Other unavailable catalogues retain the saved cast
+editors and report the request error, so changing an unrelated setting cannot
+erase the cast while the provider is down.
+
 Lead voices offer **Let the LLM choose** with the Standard LLM planner, or
 **Let Choir choose (Jev)** with the Jev classifier. These save the existing empty
 voice-ID convention, so normal planning selects and remembers a voice using

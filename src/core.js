@@ -136,6 +136,7 @@ export function characterCardRoleDiscovery(card={}) {
   const titleNames=title.split(/\s+and\s+|\s*[&+]\s*|,\s*/i).map(name=>name.trim()).filter(Boolean);
   const nameFields=text=>[...text.matchAll(/^\s*(?:[-*]\s*)?(?:\*\*)?(?:Character\s+)?Name(?:\*\*)?\s*:\s*([^\n\r]+)/gim)].map(match=>clean(match[1]));
   const profiles=[];let needsAnalysis=false;
+  const secondary=value=>/^(?:NPCs?|supporting (?:cast|characters?)|secondary (?:cast|characters?)|side characters?|incidental characters?)$/i.test(String(value || '').trim());
   const add=(name,aliases,description,start)=>profiles.push({name,aliases,description:description.trim().slice(0,8000),__start:start});
   for(const field of ['description','personality','scenario','first_mes']){
   const fieldStart=profiles.length;
@@ -145,15 +146,18 @@ export function characterCardRoleDiscovery(card={}) {
     const data=JSON.parse(description.replace(/^\s*```(?:json)?\s*|\s*```\s*$/g,''));
     const entries=Array.isArray(data)?data:data.characters || data.cast || data.profiles;
     if(Array.isArray(entries) && entries.length){
-      profiles.push(...validateCardRoles(entries.map(entry=>({name:entry.name,aliases:entry.aliases || [],description:typeof entry.description==='string'?entry.description:JSON.stringify(entry)}))));
+      profiles.push(...validateCardRoles(entries.filter(entry=>!secondary(entry.role || entry.category || entry.type)).map(entry=>({name:entry.name,aliases:entry.aliases || [],description:typeof entry.description==='string'?entry.description:JSON.stringify(entry)}))));
       continue;
     }
   }catch{}
   const headings=[...description.matchAll(/^(#{1,6})[ \t]+([^#\n\r]{1,100})[ \t]*$/gm)].map(match=>({name:clean(match[2]),level:match[1].length,start:match.index,end:match.index+match[0].length}));
   const sections=[...description.matchAll(/(?=<([\w-]+)\b[^>]*>([\s\S]*?)<\/\1\s*>)/g)].map(match=>({tag:match[1],text:match[2],start:match.index})).sort((a,b)=>a.text.length-b.text.length);
+  const npcSpans=[...headings.filter(heading=>secondary(heading.name)).map(heading=>[heading.start,headings.find(next=>next.start>heading.start && next.level<=heading.level)?.start ?? description.length]),...sections.filter(section=>secondary(section.tag.replace(/[_-]/g,' '))).map(section=>[section.start,section.start+section.text.length+section.tag.length*2+5])];
+  const isSecondary=(start,text)=>npcSpans.some(([from,to])=>start>=from && start<to) || /^\s*(?:[-*]\s*)?(?:role|category|type)\s*:\s*(?:NPC|supporting character|secondary character)\b/im.test(text);
   const candidates=headings.flatMap((heading,index)=>{
     const next=headings[index+1];
     const block=description.slice(heading.end,next?.start),names=nameFields(block);
+    if(isSecondary(heading.start,block))return [];
     const inTitle=titleNames.some(name=>normalizeName(name)===normalizeName(heading.name));
     const namedSection=sections.some(section=>normalizeName(section.tag.replace(/[_-]/g,' '))===normalizeName(heading.name));
     const explicitLead=!/^(?:speech|personality|appearance|background|history|relationships|likes|dislikes|behavio[u]?r|notes|details|voice|goals|traits|scenario)$/i.test(heading.name) && /\b(?:lead|primary character|main character|playable character)\b/i.test(block);
@@ -161,6 +165,7 @@ export function characterCardRoleDiscovery(card={}) {
   });
   const spans=[],seenSections=new Set();
   for(const section of sections){
+    if(isSecondary(section.start,section.text))continue;
     const names=nameFields(section.text);
     const heading=candidates.find(item=>item.start>=section.start && item.start<section.start+section.text.length && (normalizeName(item.name)===normalizeName(section.tag.replace(/[_-]/g,' ')) || names.some(name=>normalizeName(name)===normalizeName(item.fullName))));
     const sectionTitle=titleNames.find(name=>normalizeName(name)===normalizeName(section.tag.replace(/[_-]/g,' ')));
@@ -411,14 +416,15 @@ export function parsePlanJson(value) {
 }
 
 export function validateCastConfig(config) {
-  if (!config || !Array.isArray(config.voices) || !config.voices.length || config.voices.length > 1000) throw new Error('Load an available voice list first.');
+  const communityRoute=route=>['community','both'].includes(config?.communityRoutes?.[route || config?.defaultRoute || '']);
+  if (!config || !Array.isArray(config.voices) || !config.voices.length && !Object.values(config.communityRoutes || {}).some(source=>['community','both'].includes(source)) || config.voices.length > 1000) throw new Error('Load an available voice list first.');
   const voices = new Set(config.voices.map(v => v.id));
   const available=(actor)=>config.voices.some(v=>v.id===actor.voice && (v.route || '')===(actor.route || config.defaultRoute || ''));
   if ([...voices].some(id => typeof id !== 'string' || !id || id.length > 200)) throw new Error('Invalid voice catalogue.');
   if (!Array.isArray(config.fixed) || !config.fixed.length || config.fixed.length > 50) throw new Error('Configure narrator, persona and main characters.');
   const names = new Set();
   for (const entry of config.fixed) {
-    if(!config.voices.some(v=>(v.route || '')===(entry.route || config.defaultRoute || '')))throw new Error(`Load the voice catalogue for ${entry.speaker}'s TTS connection.`);
+    if(!config.voices.some(v=>(v.route || '')===(entry.route || config.defaultRoute || '')) && !(communityRoute(entry.route) && entry.voice===''))throw new Error(`Load the voice catalogue for ${entry.speaker}'s TTS connection.`);
     if(entry.gender !== undefined && !['auto','female','male','neutral'].includes(entry.gender))throw new Error('Invalid voice gender preference.');
     const name = normalizeName(entry.speaker);
     if (!name || name.length > 100 || names.has(name)) throw new Error('Every fixed speaker must have a unique name.');
@@ -436,7 +442,7 @@ export function validateCastConfig(config) {
   }
   if (!Array.isArray(config.npcs) || config.npcs.length > 500) throw new Error('Invalid NPC cast.');
   for (const npc of config.npcs) {
-    if(!config.voices.some(v=>(v.route || '')===(npc.route || config.defaultRoute || '')))throw new Error(`Load the voice catalogue for ${npc.speaker}'s TTS connection.`);
+    if(!config.voices.some(v=>(v.route || '')===(npc.route || config.defaultRoute || '')) && !(communityRoute(npc.route) && npc.voice===''))throw new Error(`Load the voice catalogue for ${npc.speaker}'s TTS connection.`);
     if(npc.gender !== undefined && !['auto','female','male','neutral'].includes(npc.gender))throw new Error('Invalid NPC voice gender preference.');
     const name = normalizeName(npc.speaker);
     if (!name || names.has(name) || (npc.voice !== '' && !available(npc))) throw new Error(`Invalid or conflicting NPC assignment: ${npc.speaker}`);
@@ -1435,7 +1441,7 @@ segment is the index of the numbered segment where the sound happens. trigger co
 For sound effects, keep each spoken phrase intact. Anchor at a sentence start, after clause punctuation (comma, semicolon, colon or dash), or at a conjunction that begins a complete action group, such as "and slid" or "as the glass shattered". Include the subject with its action; never insert an effect between a name/pronoun and its verb, inside a noun phrase, or inside a quoted utterance. For "Once she took the bite, Kellin set the plate back on the walnut edge and slid his hand beneath the hoodie", use "Kellin set the plate" or "and slid his hand", never "set the plate" after Kellin. If the action has no nearby clean break, use the start of its sentence.
 Return at most ${soundCueLimit(segments)} cues in story order, at most one per sentence. Prefer fewer, clearly audible moments.
 ambience entries follow the same segment, trigger and query rules but start a quiet looping background bed for a sustained environment the scene clearly stays in, such as "rain", "tavern crowd", "forest birds", "wind" or "fire crackle". A bed starts right before its trigger words and lasts until the next ambience entry or the end of the text; an entry with "stop":true instead of a query ends it when the scene moves somewhere quiet. Return at most ${AMBIENCE_LIMIT} ambience entries in story order, none for brief sounds.${music?`
-music entries follow the same segment and trigger rules but start instrumental background music that sits quietly under the narration and suits the mood and setting. feels lists 1 to 3 of: ${MUSIC_FEELS.join(', ')}. genres lists 1 or 2 of: ${Object.values(MUSIC_GENRES).join(', ')}. keywords lists 2 to 5 English words naming fitting instruments or the setting, such as "piano", "lute", "tavern" or "space". Music lasts until the next music entry or the end of the text; an entry with "stop":true instead ends it. Return at most ${MUSIC_LIMIT} music entries in story order, usually one at the start, and change music only when the mood clearly shifts.${playing?` Music ${playing} is already playing from the previous text and carries on: return a music entry only when this text clearly changes the mood or setting, otherwise return no music entries.`:''}`:''}
+music entries follow the same segment and trigger rules but start instrumental background music that sits quietly under the narration and suits the mood and setting. feels lists 1 to 3 of: ${MUSIC_FEELS.join(', ')}. genres lists 1 or 2 of: ${Object.values(MUSIC_GENRES).join(', ')}. keywords lists 2 to 5 English words naming fitting instruments, mood or setting, such as "piano", "romantic", "lute", "tavern" or "space". Music lasts until the next music entry or the end of the text; an entry with "stop":true instead ends it. Read the entire text as a mood timeline before choosing cues. Return at most ${MUSIC_LIMIT} music entries in story order: one for the opening mood when needed, then one at each clear sustained mood change, including changes within the SAME segment or message. Do not let the opening mood decide the soundtrack for the whole message. For example, if a frightening encounter gives way to a tender romantic scene, start with Eerie/Suspenseful music, then use Calming/Relaxed music with romantic piano or strings at the exact words where tenderness begins. Use different feels and keywords for distinct moods. Keep one track through minor emotional beats and brief dialogue; use stop:true when silence fits better.${playing?` Music ${playing} is already playing from the previous text and carries on: return a music entry only when this text clearly changes the mood or setting, otherwise return no music entries. Check later parts of this text too; the opening may match the current music even when the ending needs a replacement.`:''}`:''}
 Return {"cues":[],"ambience":[]${music?',"music":[]':''}} when nothing fits.`},
     {role:'user',content:JSON.stringify({segments:segments.map((segment, index) => ({index, speaker:segment.speaker, text:segment.text}))})}
   ];

@@ -116,7 +116,7 @@ async function harness(mixerPreferences,mobile=false){
         }
         else if(request.action==='music'){
           if(state.musicError){backend({namespace:'choir',id:request.id,error:state.musicError});return;}
-          const title=state.musicTitle || 'Crypto',reply=()=>backend?.({namespace:'choir',id:request.id,result:{title,url:`https://incompetech.com/music/royalty-free/mp3-royaltyfree/${title}.mp3`}});
+          const title=state.musicTitles?.[request.input.feels?.[0]] || state.musicTitle || 'Crypto',reply=()=>backend?.({namespace:'choir',id:request.id,result:{title,url:`https://incompetech.com/music/royalty-free/mp3-royaltyfree/${title}.mp3`}});
           if(state.holdMusic){state.releaseMusic=reply;return;}result={title,url:`https://incompetech.com/music/royalty-free/mp3-royaltyfree/${title}.mp3`};
         }
         else if(request.action==='searchVoices')result={results:state.voiceSearchResults || [{id:'community_fish_voice',name:'Community narrator',description:'A warm, steady storyteller.'}]};
@@ -714,6 +714,29 @@ test('late message decorators wait for catalogues before restoring saved grouped
  }finally{release?.();cleanupExtra?.();await h.close();}
 });
 
+test('catalogue outages keep the saved lead and NPC editors and cannot erase their voices on autosave',async()=>{
+ const h=await harness();try{
+  const saved=h.store.get('chat:chat-a');saved.connection='b';saved.casts['native:b']=saved.casts['native:a'];delete saved.casts['native:a'];h.store.set('chat:chat-a',saved);h.store.set('settings:global',{connection:'b'});h.state.failCatalogue=true;
+  await h.reload();assert.match(h.$('status').textContent,/catalogue unavailable/);
+  assert.deepEqual([...h.$('fixed').querySelectorAll('.et-cast-header strong')].map(node=>node.textContent),['Narrator','You','Mira']);
+  assert.match(h.$('npcs').textContent,/Guard/);h.$('skipMeta').checked=false;h.$('skipMeta').dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));
+  await until(()=>h.$('saveState').textContent==='Saved automatically');assert.deepEqual(h.store.get('chat:chat-a').fixed.map(actor=>actor.voice),['n','y','m']);
+  h.state.failCatalogue=false;await h.reload();assert.equal(h.$('fixed').children.length,3);
+ }finally{await h.close();}
+});
+
+test('a character moved to NPC keeps its voice and pronunciation and stays there after card discovery and reload',async()=>{
+ const h=await harness();try{
+  h.state.character={name:'Mira',description:'# Mira\nName: Mira\nA warm lead character.'};const saved=h.store.get('chat:chat-a');saved.fixed[2].sayAs='Mee Rah';h.store.set('chat:chat-a',saved);await h.reload();
+  const move=h.$('fixed').querySelector('[aria-label="Move Mira to NPC cast"]');assert.ok(move);move.click();
+  await until(()=>h.$('saveState').textContent==='Saved automatically');assert.equal(h.$('fixed').children.length,2);assert.match(h.$('npcs').textContent,/Mira/);
+  const actor=h.store.get('chat:chat-a').casts['native:a'].find(actor=>actor.speaker==='Mira');assert.equal(actor.voice,'m');assert.equal(actor.sayAs,'Mee Rah');
+  await h.reload();await h.plan();assert.equal(h.$('fixed').children.length,2);assert.match(h.$('npcs').textContent,/Mira/);
+  h.$('npcs').querySelector('[aria-label="Move Mira to lead cast"]').click();await until(()=>h.$('saveState').textContent==='Saved automatically');
+  await h.reload();assert.equal(h.$('fixed').children.length,3);assert.equal(h.store.get('chat:chat-a').fixed[2].sayAs,'Mee Rah');
+ }finally{await h.close();}
+});
+
 test('cast capture retains voices when the host returns different parent wrappers and repairs a missing narrator',async()=>{
  const h=await harness();try{
   for(const row of h.$('fixed').children)Object.defineProperty(row,'parentElement',{configurable:true,get:()=>Object.create(h.$('fixed'))});
@@ -1171,6 +1194,19 @@ test('Ambience slider sets bed level live without touching speech and persists a
   await until(()=>h.store.get('ui:mixer')?.ambience===0.4);h.$('stop').click();await h.reload();
   assert.equal(document.querySelector('[aria-label="Ambience volume"]').value,'0.4');
   h.$('play').click();await until(()=>beds(h).length===2 && beds(h)[1].volume>0);assert.ok(beds(h)[1].volume<=0.1+0.000001);
+ }finally{await h.close();}
+});
+
+test('music changes from scary to romantic at a later cue within one narrated message',async()=>{
+ const h=await harness();try{
+  await toggle(h,'enableMusic',true);h.message.content='A shadow crept along the wall; then she held his hand with a tender smile.';
+  h.state.soundCues={cues:[],ambience:[],music:[{segment:0,trigger:'A shadow crept',feels:['Eerie'],genres:['Horror'],keywords:['dark','strings']},{segment:0,trigger:'then she held',feels:['Calming'],genres:['Classical'],keywords:['romantic','piano']}]};
+  h.state.musicTitles={Eerie:'Crypto',Calming:'Tender'};await h.plan();h.state.blockAudio=true;h.$('play').click();
+  await until(()=>voices(h).length===1 && beds(h).length===1 && !beds(h)[0].paused);assert.match(beds(h)[0].src,/Crypto/);assert.equal(h.synthesis[0].text,'A shadow crept along the wall;');
+  voices(h)[0].onended();await until(()=>voices(h).length===2 && beds(h).length===2 && !beds(h)[1].paused);
+  assert.match(beds(h)[1].src,/Tender/);assert.match(h.synthesis[1].text,/^then she held/);assert.equal(globalThis.__CHOIR_API__.getMusic().title,'Tender');
+  const selection=h.requests.filter(request=>request.action==='music');assert.equal(selection.length,2);assert.deepEqual(selection[1].input.keywords,['romantic','piano']);assert.match(selection[1].input.moment,/tender smile/);
+  h.state.blockAudio=false;voices(h)[1].onended();await until(()=>h.$('status').textContent.includes('Playback finished'));
  }finally{await h.close();}
 });
 
@@ -1762,6 +1798,19 @@ async function openRouterGroupingHarness(family='fish_audio',patched=true){
  if(family==='fish_audio'){saved.extraVoices=fishIds.map(id=>`${id} | A warm storyteller.`).join('\n');saved.extraVoiceRoutes=Object.fromEntries(fishIds.map(id=>[id,['native:a']]));}
  h.store.set('chat:chat-a',saved);await h.reload();return h;
 }
+
+test('OpenRouter Fish restores assigned voices without an extra catalogue and lets a new cast add its first voice',async()=>{
+ const h=await openRouterGroupingHarness('fish_audio',false);try{
+  const saved=h.store.get('chat:chat-a');delete saved.extraVoices;delete saved.extraVoiceRoutes;h.store.set('chat:chat-a',saved);
+  await h.reload();assert.equal(h.$('fixed').children.length,3);assert.doesNotMatch(h.$('status').textContent,/returned no voices/);
+  await h.plan();await h.play();assert.equal(h.synthesis.length,4);assert.ok(h.synthesis.every(input=>/^[a-f0-9]{32}$/i.test(input.voice)));
+  for(const actor of saved.fixed)actor.voice='';saved.casts={};h.store.set('chat:chat-a',saved);await h.reload();
+  assert.equal(h.$('fixed').children.length,3);assert.ok(h.$('fixed').querySelector('[aria-label="Paste Fish Audio voice ID for Narrator"]'));
+  assert.ok(![...h.$('fixed').querySelector('[data-choir-voice]').options].some(option=>['alloy','Puck'].includes(option.value)));
+  const narrator=h.$('fixed').firstElementChild;narrator.querySelector('[data-choir-voice-id]').click();narrator.querySelector('[data-choir-voice-id-input]').value='5'.repeat(32);narrator.querySelector('[data-choir-apply-voice-id]').click();
+  await until(()=>h.$('saveState').textContent==='Saved automatically');assert.equal(h.store.get('chat:chat-a').singleVoices['native:a'].Narrator,'5'.repeat(32));
+ }finally{await h.close();}
+});
 
 test('OpenRouter Fish grouping uses Fish voice IDs and exposes Fish catalogue tools without Gemini or GPT voices',async()=>{
  const h=await openRouterGroupingHarness();try{

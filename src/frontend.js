@@ -805,6 +805,11 @@ export async function setup(ctx) {
     if(!nativeConnections.some(c=>c.id===connectionId))throw new Error('Select an available TTS connection for this speaker.');
     const conn=nativeConnections.find(c=>c.id===connectionId);
     const provider=detectProvider(route);
+    if(provider==='fish_audio'){
+      const assigned=[...(config.fixed || []),...Object.values(config.casts || {}).flat()].filter(actor=>config.connectionMode==='one' || (actor.route || scope(config))===route);
+      const ids=[conn.voice,...assigned.map(actor=>config.connectionMode==='one'?config.singleVoices?.[route]?.[actor.speaker] ?? actor.voice:actor.voice)];
+      extra.push(...ids.filter(id=>/^[a-f0-9]{32}$/i.test(id || '')).map(id=>({id,name:id})));
+    }
     const fallback=nativeProviders.find(item=>item.id===conn.provider)?.capabilities?.staticVoices || [];
     let data;
     try{data=await api(`/tts-connections/${encodeURIComponent(connectionId)}/voices`).then(response=>response.json());}
@@ -822,7 +827,9 @@ export async function setup(ctx) {
     const merged=new Map(baseVoices.map(voice=>[voice.id,voice]));
     for(const voice of extra)merged.set(voice.id,{...merged.get(voice.id),...voice});
     const catalogue=normalizeVoiceCatalogue([...merged.values()]);
-    if(!catalogue.length)throw new Error(data.error || 'This TTS connection returned no voices. Configure its voice catalogue in Lumiverse.');
+    // Fish IDs come from its community catalogue or a pasted voice ID. The
+    // relay's mixed preset list can legitimately contain no Fish voices yet.
+    if(!catalogue.length && (provider!=='fish_audio' || data.error))throw new Error(data.error || 'This TTS connection returned no voices. Configure its voice catalogue in Lumiverse.');
     voiceCatalogues.set(route,catalogue);return catalogue;
   }
   const settingsKey = id => `chat:${id}`;
@@ -1424,18 +1431,19 @@ export async function setup(ctx) {
 
   let castEditorId=0;
   function makeRow(actor,container,reserved=false,open=false) {
+    const required=reserved || container===$('fixed') && actor===config.fixed[1];
     const row=document.createElement('div');row.className='et-card et-cast-row';
     const header=document.createElement('div');header.className='et-cast-header';
     const heading=document.createElement('strong'),edit=document.createElement('button');edit.type='button';edit.className='et-btn-subtle';edit.dataset.choirEdit='';
     const editor=document.createElement('div');editor.className='et-grid et-cast-editor';editor.dataset.choirCastEditor='';editor.id=`choir-cast-editor-${++castEditorId}`;editor.hidden=!open;edit.setAttribute('aria-controls',editor.id);
     const name=document.createElement('input');name.value=actor.speaker;name.disabled=reserved;name.style.display='none';name.dataset.choirPersist='';editor.prepend(name);
     const refreshHeading=()=>{const speaker=name.value.trim() || 'Character';heading.textContent=speaker;edit.textContent=editor.hidden?'Edit':'Done';edit.setAttribute('aria-label',editor.hidden?`Edit ${speaker}`:`Close ${speaker} editor`);edit.setAttribute('aria-expanded',String(!editor.hidden));};
-    if(!reserved){
+    if(!required){
       const delBtn=document.createElement('button');delBtn.type='button';delBtn.className='et-btn-subtle';delBtn.title='Remove character';delBtn.setAttribute('aria-label','Remove character');delBtn.innerHTML=ICON_CLOSE;
       delBtn.style.cssText='padding:1px 5px;line-height:1;border-radius:4px;cursor:pointer;opacity:0.65;margin-right:6px';
       delBtn.onmouseenter=()=>{delBtn.style.opacity='1';delBtn.style.color='#ef7878';};
       delBtn.onmouseleave=()=>{delBtn.style.opacity='0.65';delBtn.style.color='inherit';};
-      delBtn.onclick=(e)=>{e.preventDefault();e.stopPropagation();row.remove();};
+      delBtn.onclick=(e)=>{e.preventDefault();e.stopPropagation();row.remove();scheduleSettingsSave();renderMixer();};
       header.append(delBtn);
     }
     name.addEventListener('input',refreshHeading);edit.onclick=()=>{editor.hidden=!editor.hidden;refreshHeading();};refreshHeading();
@@ -1662,7 +1670,19 @@ export async function setup(ctx) {
       const test=document.createElement('button');test.type='button';test.className='et-btn-subtle';test.textContent='Test pronunciation';test.dataset.choirPronunciationTest='';test.setAttribute('aria-label',`Test pronunciation of ${actor.speaker}`);
       test.onclick=()=>audition(`${name.value.trim()} opened the door.`);tools.append(hint,document.createElement('br'),test);editor.append(tools);
     }
-    if(!reserved){const remove=document.createElement('button');remove.type='button';remove.textContent='Remove';remove.onclick=()=>{row.remove();scheduleSettingsSave();renderMixer();};editor.append(remove);}
+    if(!required){
+      const move=document.createElement('button');move.type='button';move.className='et-btn-subtle';
+      const toNPC=container===$('fixed');move.textContent=toNPC?'Move to NPC cast':'Move to lead cast';move.setAttribute('aria-label',`Move ${actor.speaker} to ${toNPC?'NPC':'lead'} cast`);
+      move.onclick=()=>{
+        const value=capture(),key=normalizeName(name.value),matches=entry=>normalizeName(entry.speaker)===key;
+        const current=toNPC?value.fixed.find(matches):(value.casts[scope(value)] || []).find(matches);if(!current)return;
+        const overrides=new Set((value.cardCastNPCs || []).map(normalizeName));
+        if(toNPC){value.fixed=value.fixed.filter(entry=>!matches(entry));value.casts[scope(value)]=[...(value.casts[scope(value)] || []).filter(entry=>!matches(entry)),current];for(const alias of [current.speaker,...(current.aliases || [])])overrides.add(normalizeName(alias));}
+        else{value.casts=Object.fromEntries(Object.entries(value.casts).map(([route,actors])=>[route,actors.filter(entry=>!matches(entry))]));value.fixed.push(current);for(const alias of [current.speaker,...(current.aliases || [])])overrides.delete(normalizeName(alias));}
+        value.cardCastNPCs=[...overrides];config=value;clearPlan();renderCast();scheduleSettingsSave();status(`${current.speaker} moved to ${toNPC?'NPC':'lead'} cast.`);
+      };
+      const remove=document.createElement('button');remove.type='button';remove.textContent='Remove';remove.onclick=()=>{row.remove();scheduleSettingsSave();renderMixer();};editor.append(move,remove);
+    }
     container.append(row);
     updateCardProviderControls();
     return {row,voiceChoice:()=>[name.value.trim(),voice.value],setExcluded:value=>{excluded.checked=value;},read:()=>({speaker:name.value.trim(),voice:single?actor.voice || '':voice.value,route:single?actor.route || '':route.value,gender:gender.value,style:style.value.trim(),aliases:aliases.value.split(',').map(a=>a.trim()).filter((a,i,list)=>a && normalizeName(a)!==normalizeName(name.value) && list.findIndex(b=>normalizeName(b)===normalizeName(a))===i),pronunciation:pronunciation.value.trim(),sayAs:sayAs.value.trim(),accent:accent.value.trim(),excluded:excluded.checked})};
@@ -1897,6 +1917,8 @@ export async function setup(ctx) {
   async function loadVoices(version=loadVersion) {
     cataloguesReady=false;
     voiceCatalogues.clear();
+    // Keep saved editors available even if the catalogue request fails.
+    renderCast();
     const catalogue=await ensureCatalogue(scope(config),version);
     if(disposed || version!==loadVersion)return;
     voices=catalogue;
@@ -2053,7 +2075,11 @@ export async function setup(ctx) {
   // Only placeholder lead names are replaced, so names the user typed stay. Runs after each chat load and
   // whenever the persona changes, because the persona may become known only after the chat opened.
   const cardFingerprint=card=>sha256Hex(JSON.stringify(['name','description','personality','scenario','first_mes'].map(field=>card?.[field] || '')));
-  function rolesForCard(card){const local=characterCardRoles(card || {}),cached=config?.cardCastAnalysis?.key===activeCardKey?validateCardRoles(config.cardCastAnalysis.roles):[];return cached.length?cached:local;}
+  function rolesForCard(card){
+    const local=characterCardRoles(card || {}),cached=config?.cardCastAnalysis?.key===activeCardKey?validateCardRoles(config.cardCastAnalysis.roles):[];
+    const npcNames=new Set((config?.cardCastNPCs || []).map(normalizeName));
+    return (cached.length?cached:local).filter(role=>![role.name,...(role.aliases || [])].some(name=>npcNames.has(normalizeName(name))));
+  }
   function expandCardRoles(value,roles,character){
     let renamed=false;
     const matchesRole=(actor,role)=>actor && [actor.speaker,...(actor.aliases || [])].some(name=>[role.name,...(role.aliases || [])].some(other=>normalizeName(name)===normalizeName(other)));

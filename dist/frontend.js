@@ -137,6 +137,7 @@ function characterCardRoleDiscovery(card={}) {
   const titleNames=title.split(/\s+and\s+|\s*[&+]\s*|,\s*/i).map(name=>name.trim()).filter(Boolean);
   const nameFields=text=>[...text.matchAll(/^\s*(?:[-*]\s*)?(?:\*\*)?(?:Character\s+)?Name(?:\*\*)?\s*:\s*([^\n\r]+)/gim)].map(match=>clean(match[1]));
   const profiles=[];let needsAnalysis=false;
+  const secondary=value=>/^(?:NPCs?|supporting (?:cast|characters?)|secondary (?:cast|characters?)|side characters?|incidental characters?)$/i.test(String(value || '').trim());
   const add=(name,aliases,description,start)=>profiles.push({name,aliases,description:description.trim().slice(0,8000),__start:start});
   for(const field of ['description','personality','scenario','first_mes']){
   const fieldStart=profiles.length;
@@ -146,15 +147,18 @@ function characterCardRoleDiscovery(card={}) {
     const data=JSON.parse(description.replace(/^\s*```(?:json)?\s*|\s*```\s*$/g,''));
     const entries=Array.isArray(data)?data:data.characters || data.cast || data.profiles;
     if(Array.isArray(entries) && entries.length){
-      profiles.push(...validateCardRoles(entries.map(entry=>({name:entry.name,aliases:entry.aliases || [],description:typeof entry.description==='string'?entry.description:JSON.stringify(entry)}))));
+      profiles.push(...validateCardRoles(entries.filter(entry=>!secondary(entry.role || entry.category || entry.type)).map(entry=>({name:entry.name,aliases:entry.aliases || [],description:typeof entry.description==='string'?entry.description:JSON.stringify(entry)}))));
       continue;
     }
   }catch{}
   const headings=[...description.matchAll(/^(#{1,6})[ \t]+([^#\n\r]{1,100})[ \t]*$/gm)].map(match=>({name:clean(match[2]),level:match[1].length,start:match.index,end:match.index+match[0].length}));
   const sections=[...description.matchAll(/(?=<([\w-]+)\b[^>]*>([\s\S]*?)<\/\1\s*>)/g)].map(match=>({tag:match[1],text:match[2],start:match.index})).sort((a,b)=>a.text.length-b.text.length);
+  const npcSpans=[...headings.filter(heading=>secondary(heading.name)).map(heading=>[heading.start,headings.find(next=>next.start>heading.start && next.level<=heading.level)?.start ?? description.length]),...sections.filter(section=>secondary(section.tag.replace(/[_-]/g,' '))).map(section=>[section.start,section.start+section.text.length+section.tag.length*2+5])];
+  const isSecondary=(start,text)=>npcSpans.some(([from,to])=>start>=from && start<to) || /^\s*(?:[-*]\s*)?(?:role|category|type)\s*:\s*(?:NPC|supporting character|secondary character)\b/im.test(text);
   const candidates=headings.flatMap((heading,index)=>{
     const next=headings[index+1];
     const block=description.slice(heading.end,next?.start),names=nameFields(block);
+    if(isSecondary(heading.start,block))return [];
     const inTitle=titleNames.some(name=>normalizeName(name)===normalizeName(heading.name));
     const namedSection=sections.some(section=>normalizeName(section.tag.replace(/[_-]/g,' '))===normalizeName(heading.name));
     const explicitLead=!/^(?:speech|personality|appearance|background|history|relationships|likes|dislikes|behavio[u]?r|notes|details|voice|goals|traits|scenario)$/i.test(heading.name) && /\b(?:lead|primary character|main character|playable character)\b/i.test(block);
@@ -162,6 +166,7 @@ function characterCardRoleDiscovery(card={}) {
   });
   const spans=[],seenSections=new Set();
   for(const section of sections){
+    if(isSecondary(section.start,section.text))continue;
     const names=nameFields(section.text);
     const heading=candidates.find(item=>item.start>=section.start && item.start<section.start+section.text.length && (normalizeName(item.name)===normalizeName(section.tag.replace(/[_-]/g,' ')) || names.some(name=>normalizeName(name)===normalizeName(item.fullName))));
     const sectionTitle=titleNames.find(name=>normalizeName(name)===normalizeName(section.tag.replace(/[_-]/g,' ')));
@@ -412,14 +417,15 @@ function parsePlanJson(value) {
 }
 
 function validateCastConfig(config) {
-  if (!config || !Array.isArray(config.voices) || !config.voices.length || config.voices.length > 1000) throw new Error('Load an available voice list first.');
+  const communityRoute=route=>['community','both'].includes(config?.communityRoutes?.[route || config?.defaultRoute || '']);
+  if (!config || !Array.isArray(config.voices) || !config.voices.length && !Object.values(config.communityRoutes || {}).some(source=>['community','both'].includes(source)) || config.voices.length > 1000) throw new Error('Load an available voice list first.');
   const voices = new Set(config.voices.map(v => v.id));
   const available=(actor)=>config.voices.some(v=>v.id===actor.voice && (v.route || '')===(actor.route || config.defaultRoute || ''));
   if ([...voices].some(id => typeof id !== 'string' || !id || id.length > 200)) throw new Error('Invalid voice catalogue.');
   if (!Array.isArray(config.fixed) || !config.fixed.length || config.fixed.length > 50) throw new Error('Configure narrator, persona and main characters.');
   const names = new Set();
   for (const entry of config.fixed) {
-    if(!config.voices.some(v=>(v.route || '')===(entry.route || config.defaultRoute || '')))throw new Error(`Load the voice catalogue for ${entry.speaker}'s TTS connection.`);
+    if(!config.voices.some(v=>(v.route || '')===(entry.route || config.defaultRoute || '')) && !(communityRoute(entry.route) && entry.voice===''))throw new Error(`Load the voice catalogue for ${entry.speaker}'s TTS connection.`);
     if(entry.gender !== undefined && !['auto','female','male','neutral'].includes(entry.gender))throw new Error('Invalid voice gender preference.');
     const name = normalizeName(entry.speaker);
     if (!name || name.length > 100 || names.has(name)) throw new Error('Every fixed speaker must have a unique name.');
@@ -437,7 +443,7 @@ function validateCastConfig(config) {
   }
   if (!Array.isArray(config.npcs) || config.npcs.length > 500) throw new Error('Invalid NPC cast.');
   for (const npc of config.npcs) {
-    if(!config.voices.some(v=>(v.route || '')===(npc.route || config.defaultRoute || '')))throw new Error(`Load the voice catalogue for ${npc.speaker}'s TTS connection.`);
+    if(!config.voices.some(v=>(v.route || '')===(npc.route || config.defaultRoute || '')) && !(communityRoute(npc.route) && npc.voice===''))throw new Error(`Load the voice catalogue for ${npc.speaker}'s TTS connection.`);
     if(npc.gender !== undefined && !['auto','female','male','neutral'].includes(npc.gender))throw new Error('Invalid NPC voice gender preference.');
     const name = normalizeName(npc.speaker);
     if (!name || names.has(name) || (npc.voice !== '' && !available(npc))) throw new Error(`Invalid or conflicting NPC assignment: ${npc.speaker}`);
@@ -1436,7 +1442,7 @@ segment is the index of the numbered segment where the sound happens. trigger co
 For sound effects, keep each spoken phrase intact. Anchor at a sentence start, after clause punctuation (comma, semicolon, colon or dash), or at a conjunction that begins a complete action group, such as "and slid" or "as the glass shattered". Include the subject with its action; never insert an effect between a name/pronoun and its verb, inside a noun phrase, or inside a quoted utterance. For "Once she took the bite, Kellin set the plate back on the walnut edge and slid his hand beneath the hoodie", use "Kellin set the plate" or "and slid his hand", never "set the plate" after Kellin. If the action has no nearby clean break, use the start of its sentence.
 Return at most ${soundCueLimit(segments)} cues in story order, at most one per sentence. Prefer fewer, clearly audible moments.
 ambience entries follow the same segment, trigger and query rules but start a quiet looping background bed for a sustained environment the scene clearly stays in, such as "rain", "tavern crowd", "forest birds", "wind" or "fire crackle". A bed starts right before its trigger words and lasts until the next ambience entry or the end of the text; an entry with "stop":true instead of a query ends it when the scene moves somewhere quiet. Return at most ${AMBIENCE_LIMIT} ambience entries in story order, none for brief sounds.${music?`
-music entries follow the same segment and trigger rules but start instrumental background music that sits quietly under the narration and suits the mood and setting. feels lists 1 to 3 of: ${MUSIC_FEELS.join(', ')}. genres lists 1 or 2 of: ${Object.values(MUSIC_GENRES).join(', ')}. keywords lists 2 to 5 English words naming fitting instruments or the setting, such as "piano", "lute", "tavern" or "space". Music lasts until the next music entry or the end of the text; an entry with "stop":true instead ends it. Return at most ${MUSIC_LIMIT} music entries in story order, usually one at the start, and change music only when the mood clearly shifts.${playing?` Music ${playing} is already playing from the previous text and carries on: return a music entry only when this text clearly changes the mood or setting, otherwise return no music entries.`:''}`:''}
+music entries follow the same segment and trigger rules but start instrumental background music that sits quietly under the narration and suits the mood and setting. feels lists 1 to 3 of: ${MUSIC_FEELS.join(', ')}. genres lists 1 or 2 of: ${Object.values(MUSIC_GENRES).join(', ')}. keywords lists 2 to 5 English words naming fitting instruments, mood or setting, such as "piano", "romantic", "lute", "tavern" or "space". Music lasts until the next music entry or the end of the text; an entry with "stop":true instead ends it. Read the entire text as a mood timeline before choosing cues. Return at most ${MUSIC_LIMIT} music entries in story order: one for the opening mood when needed, then one at each clear sustained mood change, including changes within the SAME segment or message. Do not let the opening mood decide the soundtrack for the whole message. For example, if a frightening encounter gives way to a tender romantic scene, start with Eerie/Suspenseful music, then use Calming/Relaxed music with romantic piano or strings at the exact words where tenderness begins. Use different feels and keywords for distinct moods. Keep one track through minor emotional beats and brief dialogue; use stop:true when silence fits better.${playing?` Music ${playing} is already playing from the previous text and carries on: return a music entry only when this text clearly changes the mood or setting, otherwise return no music entries. Check later parts of this text too; the opening may match the current music even when the ending needs a replacement.`:''}`:''}
 Return {"cues":[],"ambience":[]${music?',"music":[]':''}} when nothing fits.`},
     {role:'user',content:JSON.stringify({segments:segments.map((segment, index) => ({index, speaker:segment.speaker, text:segment.text}))})}
   ];
@@ -2702,6 +2708,11 @@ export async function setup(ctx) {
     if(!nativeConnections.some(c=>c.id===connectionId))throw new Error('Select an available TTS connection for this speaker.');
     const conn=nativeConnections.find(c=>c.id===connectionId);
     const provider=detectProvider(route);
+    if(provider==='fish_audio'){
+      const assigned=[...(config.fixed || []),...Object.values(config.casts || {}).flat()].filter(actor=>config.connectionMode==='one' || (actor.route || scope(config))===route);
+      const ids=[conn.voice,...assigned.map(actor=>config.connectionMode==='one'?config.singleVoices?.[route]?.[actor.speaker] ?? actor.voice:actor.voice)];
+      extra.push(...ids.filter(id=>/^[a-f0-9]{32}$/i.test(id || '')).map(id=>({id,name:id})));
+    }
     const fallback=nativeProviders.find(item=>item.id===conn.provider)?.capabilities?.staticVoices || [];
     let data;
     try{data=await api(`/tts-connections/${encodeURIComponent(connectionId)}/voices`).then(response=>response.json());}
@@ -2719,7 +2730,9 @@ export async function setup(ctx) {
     const merged=new Map(baseVoices.map(voice=>[voice.id,voice]));
     for(const voice of extra)merged.set(voice.id,{...merged.get(voice.id),...voice});
     const catalogue=normalizeVoiceCatalogue([...merged.values()]);
-    if(!catalogue.length)throw new Error(data.error || 'This TTS connection returned no voices. Configure its voice catalogue in Lumiverse.');
+    // Fish IDs come from its community catalogue or a pasted voice ID. The
+    // relay's mixed preset list can legitimately contain no Fish voices yet.
+    if(!catalogue.length && (provider!=='fish_audio' || data.error))throw new Error(data.error || 'This TTS connection returned no voices. Configure its voice catalogue in Lumiverse.');
     voiceCatalogues.set(route,catalogue);return catalogue;
   }
   const settingsKey = id => `chat:${id}`;
@@ -3321,18 +3334,19 @@ export async function setup(ctx) {
 
   let castEditorId=0;
   function makeRow(actor,container,reserved=false,open=false) {
+    const required=reserved || container===$('fixed') && actor===config.fixed[1];
     const row=document.createElement('div');row.className='et-card et-cast-row';
     const header=document.createElement('div');header.className='et-cast-header';
     const heading=document.createElement('strong'),edit=document.createElement('button');edit.type='button';edit.className='et-btn-subtle';edit.dataset.choirEdit='';
     const editor=document.createElement('div');editor.className='et-grid et-cast-editor';editor.dataset.choirCastEditor='';editor.id=`choir-cast-editor-${++castEditorId}`;editor.hidden=!open;edit.setAttribute('aria-controls',editor.id);
     const name=document.createElement('input');name.value=actor.speaker;name.disabled=reserved;name.style.display='none';name.dataset.choirPersist='';editor.prepend(name);
     const refreshHeading=()=>{const speaker=name.value.trim() || 'Character';heading.textContent=speaker;edit.textContent=editor.hidden?'Edit':'Done';edit.setAttribute('aria-label',editor.hidden?`Edit ${speaker}`:`Close ${speaker} editor`);edit.setAttribute('aria-expanded',String(!editor.hidden));};
-    if(!reserved){
+    if(!required){
       const delBtn=document.createElement('button');delBtn.type='button';delBtn.className='et-btn-subtle';delBtn.title='Remove character';delBtn.setAttribute('aria-label','Remove character');delBtn.innerHTML=ICON_CLOSE;
       delBtn.style.cssText='padding:1px 5px;line-height:1;border-radius:4px;cursor:pointer;opacity:0.65;margin-right:6px';
       delBtn.onmouseenter=()=>{delBtn.style.opacity='1';delBtn.style.color='#ef7878';};
       delBtn.onmouseleave=()=>{delBtn.style.opacity='0.65';delBtn.style.color='inherit';};
-      delBtn.onclick=(e)=>{e.preventDefault();e.stopPropagation();row.remove();};
+      delBtn.onclick=(e)=>{e.preventDefault();e.stopPropagation();row.remove();scheduleSettingsSave();renderMixer();};
       header.append(delBtn);
     }
     name.addEventListener('input',refreshHeading);edit.onclick=()=>{editor.hidden=!editor.hidden;refreshHeading();};refreshHeading();
@@ -3559,7 +3573,19 @@ export async function setup(ctx) {
       const test=document.createElement('button');test.type='button';test.className='et-btn-subtle';test.textContent='Test pronunciation';test.dataset.choirPronunciationTest='';test.setAttribute('aria-label',`Test pronunciation of ${actor.speaker}`);
       test.onclick=()=>audition(`${name.value.trim()} opened the door.`);tools.append(hint,document.createElement('br'),test);editor.append(tools);
     }
-    if(!reserved){const remove=document.createElement('button');remove.type='button';remove.textContent='Remove';remove.onclick=()=>{row.remove();scheduleSettingsSave();renderMixer();};editor.append(remove);}
+    if(!required){
+      const move=document.createElement('button');move.type='button';move.className='et-btn-subtle';
+      const toNPC=container===$('fixed');move.textContent=toNPC?'Move to NPC cast':'Move to lead cast';move.setAttribute('aria-label',`Move ${actor.speaker} to ${toNPC?'NPC':'lead'} cast`);
+      move.onclick=()=>{
+        const value=capture(),key=normalizeName(name.value),matches=entry=>normalizeName(entry.speaker)===key;
+        const current=toNPC?value.fixed.find(matches):(value.casts[scope(value)] || []).find(matches);if(!current)return;
+        const overrides=new Set((value.cardCastNPCs || []).map(normalizeName));
+        if(toNPC){value.fixed=value.fixed.filter(entry=>!matches(entry));value.casts[scope(value)]=[...(value.casts[scope(value)] || []).filter(entry=>!matches(entry)),current];for(const alias of [current.speaker,...(current.aliases || [])])overrides.add(normalizeName(alias));}
+        else{value.casts=Object.fromEntries(Object.entries(value.casts).map(([route,actors])=>[route,actors.filter(entry=>!matches(entry))]));value.fixed.push(current);for(const alias of [current.speaker,...(current.aliases || [])])overrides.delete(normalizeName(alias));}
+        value.cardCastNPCs=[...overrides];config=value;clearPlan();renderCast();scheduleSettingsSave();status(`${current.speaker} moved to ${toNPC?'NPC':'lead'} cast.`);
+      };
+      const remove=document.createElement('button');remove.type='button';remove.textContent='Remove';remove.onclick=()=>{row.remove();scheduleSettingsSave();renderMixer();};editor.append(move,remove);
+    }
     container.append(row);
     updateCardProviderControls();
     return {row,voiceChoice:()=>[name.value.trim(),voice.value],setExcluded:value=>{excluded.checked=value;},read:()=>({speaker:name.value.trim(),voice:single?actor.voice || '':voice.value,route:single?actor.route || '':route.value,gender:gender.value,style:style.value.trim(),aliases:aliases.value.split(',').map(a=>a.trim()).filter((a,i,list)=>a && normalizeName(a)!==normalizeName(name.value) && list.findIndex(b=>normalizeName(b)===normalizeName(a))===i),pronunciation:pronunciation.value.trim(),sayAs:sayAs.value.trim(),accent:accent.value.trim(),excluded:excluded.checked})};
@@ -3794,6 +3820,8 @@ export async function setup(ctx) {
   async function loadVoices(version=loadVersion) {
     cataloguesReady=false;
     voiceCatalogues.clear();
+    // Keep saved editors available even if the catalogue request fails.
+    renderCast();
     const catalogue=await ensureCatalogue(scope(config),version);
     if(disposed || version!==loadVersion)return;
     voices=catalogue;
@@ -3950,7 +3978,11 @@ export async function setup(ctx) {
   // Only placeholder lead names are replaced, so names the user typed stay. Runs after each chat load and
   // whenever the persona changes, because the persona may become known only after the chat opened.
   const cardFingerprint=card=>sha256Hex(JSON.stringify(['name','description','personality','scenario','first_mes'].map(field=>card?.[field] || '')));
-  function rolesForCard(card){const local=characterCardRoles(card || {}),cached=config?.cardCastAnalysis?.key===activeCardKey?validateCardRoles(config.cardCastAnalysis.roles):[];return cached.length?cached:local;}
+  function rolesForCard(card){
+    const local=characterCardRoles(card || {}),cached=config?.cardCastAnalysis?.key===activeCardKey?validateCardRoles(config.cardCastAnalysis.roles):[];
+    const npcNames=new Set((config?.cardCastNPCs || []).map(normalizeName));
+    return (cached.length?cached:local).filter(role=>![role.name,...(role.aliases || [])].some(name=>npcNames.has(normalizeName(name))));
+  }
   function expandCardRoles(value,roles,character){
     let renamed=false;
     const matchesRole=(actor,role)=>actor && [actor.speaker,...(actor.aliases || [])].some(name=>[role.name,...(role.aliases || [])].some(other=>normalizeName(name)===normalizeName(other)));
