@@ -4,14 +4,16 @@
 
 # Choir
 
-[![Version](https://img.shields.io/badge/version-1.1.6--lunch--test.2-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/lunch-test)
+[![Version](https://img.shields.io/badge/version-1.1.6--lunch--test.3-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/lunch-test)
 [![Platform](https://img.shields.io/badge/platform-Lumiverse%20Spindle-purple.svg)](https://docs.lumiverse.chat/)
-[![Tests](https://img.shields.io/badge/tests-401%20tests-blue.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-404%20tests-blue.svg)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 An installable Lumiverse Spindle extension for multi-voice narration, dialogue attribution, sound effects, ambience and background music.
 
 </div>
+
+Version **1.1.6-lunch-test.3** excludes instruction headings such as **NARRATIVE GUIDELINES** and **Writing Instructions** from automatic character discovery, including JSON/XML profiles and cached Planner LLM results. Mentioning "main character" inside those sections no longer makes the heading a lead. Remove any previously saved false character once; the updated detector will not add it back. Existing saved cast rows are preserved until explicitly removed.
 
 Version **1.1.6-lunch-test.2** retains saved cast editors when a voice catalogue is unavailable and restores saved Fish voice IDs through OpenRouter. An empty Fish preset list still offers community selection and pasted IDs. Supporting profiles explicitly labelled NPC are kept out of automatic lead discovery; **Move to NPC cast / Move to lead cast** in each character editor preserves that character's voice and pronunciation and remembers the category on reload. Narrator and persona rows cannot be removed with the character delete buttons; use **No voice** to omit them from playback. Music planning now explicitly checks for sustained mood changes within a message, including frightening scenes becoming romantic, and can place up to three music cues at their spoken trigger words. Existing saved plans keep their music cues until replanned.
 

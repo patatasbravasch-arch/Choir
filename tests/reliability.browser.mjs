@@ -737,6 +737,17 @@ test('a character moved to NPC keeps its voice and pronunciation and stays there
  }finally{await h.close();}
 });
 
+test('narrative guideline headings are never added as leads and removing an old cached false lead stays removed',async()=>{
+ const h=await harness();try{
+  h.state.character={name:'Mira',description:'# Mira\nName: Mira\nA warm lead.\n# NARRATIVE GUIDELINES\nKeep the main character consistent.'};
+  h.state.cardRoles=[{name:'Mira',description:'A warm lead.'},{name:'NARRATIVE GUIDELINES',description:'Keep the main character consistent.'}];await h.reload();await h.plan();
+  const names=()=>[...h.$('fixed').querySelectorAll('.et-cast-header strong')].map(node=>node.textContent);assert.deepEqual(names(),['Narrator','You','Mira']);
+  const saved=h.store.get('chat:chat-a');saved.cardCastAnalysis.roles.push({name:'NARRATIVE GUIDELINES',aliases:[],description:'Old cached mistake.'});saved.fixed.push({speaker:'NARRATIVE GUIDELINES',voice:'new',style:''});h.store.set('chat:chat-a',saved);await h.reload();
+  const row=[...h.$('fixed').children].find(row=>row.querySelector('.et-cast-header strong')?.textContent==='NARRATIVE GUIDELINES');assert.ok(row);row.querySelector('[aria-label="Remove character"]').click();
+  await until(()=>h.$('saveState').textContent==='Saved automatically');await h.reload();await h.plan();assert.deepEqual(names(),['Narrator','You','Mira']);assert.equal(h.requests.filter(request=>request.action==='cardCast').length,1);
+ }finally{await h.close();}
+});
+
 test('cast capture retains voices when the host returns different parent wrappers and repairs a missing narrator',async()=>{
  const h=await harness();try{
   for(const row of h.$('fixed').children)Object.defineProperty(row,'parentElement',{configurable:true,get:()=>Object.create(h.$('fixed'))});

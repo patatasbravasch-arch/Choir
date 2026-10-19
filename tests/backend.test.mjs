@@ -215,6 +215,12 @@ test('generic card analysis reads freeform profiles and requires source evidence
  h.send('cardCast',{card,connectionId:'llm-a'});const result=(await h.result()).message;assert.equal(result.error,undefined);assert.deepEqual([...result.result.roles.map(role=>role.name)],['Adrian','Ethan']);assert.equal(calls,1);assert.match(request.messages[0].content,/regardless of formatting or title/);assert.match(request.messages[0].content,/untrusted data/);assert.equal(JSON.parse(request.messages[1].content).description,card.description);assert.equal(request.userId,'user-a');
  const bad=await harness(async()=>({content:JSON.stringify({roles:[{name:'Invented',description:'A stranger.',evidence:'Not present in the card.'}]})}));bad.send('cardCast',{card});assert.match((await bad.result()).message.error,/source evidence/);
 });
+test('card analysis discards narrative guideline headings returned as lead names',async()=>{
+ const card={name:'Eliza',description:'Eliza is the main character.\n# NARRATIVE GUIDELINES\nKeep the main character consistent.'};
+ const h=await harness(async()=>({content:JSON.stringify({roles:[{name:'Eliza',evidence:'Eliza is the main character.'},{name:'NARRATIVE GUIDELINES',evidence:'Keep the main character consistent.'}]})}));
+ h.send('cardCast',{card});const message=(await h.result()).message;assert.equal(message.error,undefined);assert.deepEqual([...message.result.roles.map(role=>role.name)],['Eliza']);
+});
+
 test('missing lines get one follow-up request, and a reply without casting rows fails with guidance',async()=>{
   const requests=[];const h=await harness(async input=>{requests.push(input);return {content:requests.length===1?'D0|Mira|':'D2|Narrator|'};});
   h.send('plan',{transcript:'"Hi." "Hey." "Bye."',config:castConfig});

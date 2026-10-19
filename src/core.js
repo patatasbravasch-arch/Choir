@@ -128,6 +128,10 @@ export function respellNames(text,actors=[]) {
 // Require those explicit profiles before splitting a title: "War and Peace" is not a cast list.
 export function characterCardRoles(card={}) {return characterCardRoleDiscovery(card).roles;}
 
+// These labels describe card structure or authoring rules, not a person's
+// identity. A mention of "main character" inside them is not profile evidence.
+const cardSectionName=value=>/^(?:speech|personality|appearance|background|history|relationships|likes|dislikes|behavio[u]?r|notes|details|voice|goals|traits|scenario|instructions?|guidelines?|rules?|examples?|example\s*dialogue|(?:narrative|narration|story|storytelling|writing|roleplay|role\s*play|response|dialogue|system|character|formatting|output)\s*(?:guidelines?|rules?|instructions?|requirements?|constraints?|style|format))$/i.test(String(value || '').replace(/[*_`]/g,'').replace(/[-:：]+/g,' ').trim());
+
 // Check all card fields and keep each profile inside its own section.
 export function characterCardRoleDiscovery(card={}) {
   const escape=value=>value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
@@ -152,20 +156,20 @@ export function characterCardRoleDiscovery(card={}) {
   }catch{}
   const headings=[...description.matchAll(/^(#{1,6})[ \t]+([^#\n\r]{1,100})[ \t]*$/gm)].map(match=>({name:clean(match[2]),level:match[1].length,start:match.index,end:match.index+match[0].length}));
   const sections=[...description.matchAll(/(?=<([\w-]+)\b[^>]*>([\s\S]*?)<\/\1\s*>)/g)].map(match=>({tag:match[1],text:match[2],start:match.index})).sort((a,b)=>a.text.length-b.text.length);
-  const npcSpans=[...headings.filter(heading=>secondary(heading.name)).map(heading=>[heading.start,headings.find(next=>next.start>heading.start && next.level<=heading.level)?.start ?? description.length]),...sections.filter(section=>secondary(section.tag.replace(/[_-]/g,' '))).map(section=>[section.start,section.start+section.text.length+section.tag.length*2+5])];
-  const isSecondary=(start,text)=>npcSpans.some(([from,to])=>start>=from && start<to) || /^\s*(?:[-*]\s*)?(?:role|category|type)\s*:\s*(?:NPC|supporting character|secondary character)\b/im.test(text);
+  const excludedSpans=[...headings.filter(heading=>secondary(heading.name) || cardSectionName(heading.name)).map(heading=>[heading.start,headings.find(next=>next.start>heading.start && next.level<=heading.level)?.start ?? description.length]),...sections.filter(section=>secondary(section.tag.replace(/[_-]/g,' ')) || cardSectionName(section.tag)).map(section=>[section.start,section.start+section.text.length+section.tag.length*2+5])];
+  const excludedProfile=(start,text)=>excludedSpans.some(([from,to])=>start>=from && start<to) || /^\s*(?:[-*]\s*)?(?:role|category|type)\s*:\s*(?:NPC|supporting character|secondary character)\b/im.test(text);
   const candidates=headings.flatMap((heading,index)=>{
     const next=headings[index+1];
     const block=description.slice(heading.end,next?.start),names=nameFields(block);
-    if(isSecondary(heading.start,block))return [];
+    if(excludedProfile(heading.start,block))return [];
     const inTitle=titleNames.some(name=>normalizeName(name)===normalizeName(heading.name));
     const namedSection=sections.some(section=>normalizeName(section.tag.replace(/[_-]/g,' '))===normalizeName(heading.name));
-    const explicitLead=!/^(?:speech|personality|appearance|background|history|relationships|likes|dislikes|behavio[u]?r|notes|details|voice|goals|traits|scenario)$/i.test(heading.name) && /\b(?:lead|primary character|main character|playable character)\b/i.test(block);
+    const explicitLead=/\b(?:lead|primary character|main character|playable character)\b/i.test(block);
     return names.length===1 || inTitle || namedSection || explicitLead?[{...heading,fullName:names.length===1?names[0]:undefined}]:[];
   });
   const spans=[],seenSections=new Set();
   for(const section of sections){
-    if(isSecondary(section.start,section.text))continue;
+    if(excludedProfile(section.start,section.text))continue;
     const names=nameFields(section.text);
     const heading=candidates.find(item=>item.start>=section.start && item.start<section.start+section.text.length && (normalizeName(item.name)===normalizeName(section.tag.replace(/[_-]/g,' ')) || names.some(name=>normalizeName(name)===normalizeName(item.fullName))));
     const sectionTitle=titleNames.find(name=>normalizeName(name)===normalizeName(section.tag.replace(/[_-]/g,' ')));
@@ -209,7 +213,7 @@ export function characterCardRoleDiscovery(card={}) {
 export function validateCardRoles(roles) {
   if(!Array.isArray(roles) || roles.length>20)throw new Error('Card analysis must return at most 20 lead characters.');
   const names=new Set();
-  const result=roles.map(role=>{
+  const result=roles.filter(role=>!cardSectionName(role?.name)).map(role=>{
     const name=typeof role?.name==='string'?role.name.trim():'';
     if(!name || name.length>100 || ['narrator','persona','user','{{user}}','{{char}}'].includes(normalizeName(name)) || names.has(normalizeName(name)))throw new Error('Card analysis returned invalid or duplicate character names.');
     names.add(normalizeName(name));

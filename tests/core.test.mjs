@@ -4,7 +4,7 @@ import {createHash} from 'node:crypto';
 import {speechPanel} from './fixtures/speech-panel.mjs';
 import {phoneWidget} from './fixtures/phone-widget.mjs';
 import {sfxCueOffset} from '../src/core.js';
-import {randomUuid,sha256Hex,ignoredTagNames,characterCardRoles,reconcileCardCast} from '../src/core.js';
+import {randomUuid,sha256Hex,ignoredTagNames,characterCardRoles,validateCardRoles,reconcileCardCast} from '../src/core.js';
 import {validatePlan, validateCastConfig, splitSegment, speechBatches, speechRequestLimits, audioBytes, transcriptFromMessage, parsePlanJson, normalizeVoiceCatalogue, speechSourceUnits, resolvePlanReferences, castingPrompt, parseCastRows, castReply, stripAudioTags, fastClassifyPlan, resolvePlannerMode, soundCuePrompt, parseSoundCues, applySoundCues, rankMusic, cueOffset, transcriptLines, skipCheckPrompt, parseSkipRows, skippedLines, withoutLines, readableText, readAlongIndex, locatePassages, spokenLength, attributionPlan, restoreAttribution, apiErrorMessage} from '../src/core.js';
 
 test('ignored tags skip nested, attributed, mixed-case and unfinished blocks without dropping ordinary story markup',()=>{
@@ -75,6 +75,18 @@ test('styled story layouts, literal UI descriptions and incomplete tab markup ar
   const mixed=speechPanel.replace('  <style>','Phone screen description. <style>');
   const surrounding=`<div style="background: navy"><p>Story before.</p>${mixed}<p>Story after.</p></div>`;
   assert.ok(transcriptFromMessage(surrounding).includes('Story before.'));assert.ok(transcriptFromMessage(surrounding).includes('Story after.'));
+});
+
+test('card instructions stay out of character discovery even when they mention the main character',()=>{
+  const guidelines='Always portray the main character consistently. Keep narration in third person.';
+  for(const label of ['NARRATIVE GUIDELINES','Writing Instructions','Output Format','Personality']){
+    const card={name:'Eliza',description:`# Eliza\nName: Eliza\nA warm lead.\n# ${label}\n${guidelines}`};
+    assert.deepEqual(characterCardRoles(card).map(role=>role.name),['Eliza']);
+  }
+  assert.deepEqual(characterCardRoles({name:'Eliza',description:'<Eliza>Name: Eliza\nA warm lead.</Eliza><narrative_guidelines>Name: Authoring rules\n'+guidelines+'</narrative_guidelines>'}).map(role=>role.name),['Eliza']);
+  assert.deepEqual(characterCardRoles({name:'Eliza',description:JSON.stringify({characters:[{name:'Eliza'},{name:'NARRATIVE GUIDELINES',description:guidelines}]})}).map(role=>role.name),['Eliza']);
+  assert.deepEqual(validateCardRoles([{name:'Eliza'},{name:'NARRATIVE GUIDELINES',description:guidelines}]).map(role=>role.name),['Eliza']);
+  assert.deepEqual(validateCardRoles([{name:'Guideline Keeper',description:'An actual named person.'}]).map(role=>role.name),['Guideline Keeper']);
 });
 
 test('card discovery keeps explicitly supporting profiles out of the lead cast',()=>{
