@@ -153,10 +153,8 @@ export async function setup(ctx) {
     .choir-mixer .cm-master .cm-percent,.choir-mixer .cm-channel-head .cm-percent{display:none}
     .choir-mixer .cm-playback-tuning{display:flex;flex-direction:column;flex-shrink:0;min-width:0}
     .choir-mixer .cm-speed-options{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:5px;padding:6px 10px;border-bottom:1px solid var(--cm-line)}
-    .choir-mixer .cm-speed-options button{display:flex;flex-direction:column;gap:2px;min-width:0;min-height:36px;padding:4px 2px;border:1px solid var(--cm-border-hover);border-radius:5px;background:var(--cm-fill);font-size:10px}
-    .choir-mixer .cm-speed-options button small{font-size:9px;color:var(--cm-muted)}
+    .choir-mixer .cm-speed-options button{min-width:0;min-height:30px;padding:4px 2px;border:1px solid var(--cm-border-hover);border-radius:5px;background:var(--cm-fill);font-size:10px}
     .choir-mixer .cm-speed-options button[aria-pressed="true"]{background:var(--cm-accent);border-color:var(--cm-accent);color:var(--cm-accent-contrast)}
-    .choir-mixer .cm-speed-options button[aria-pressed="true"] small{color:inherit}
     .ensemble-tts .et-character-speed{grid-column:1/-1}
     .ensemble-tts .et-character-speed .cm-inherited>input,.ensemble-tts .et-character-speed .cm-inherited .cm-volume-entry{opacity:.55}
     .ensemble-tts .et-tuning-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,250px),1fr));gap:10px;margin:4px 0 6px}
@@ -631,8 +629,7 @@ export async function setup(ctx) {
   }
   const speedOptions=document.createElement('div');speedOptions.className='cm-speed-options';speedOptions.setAttribute('role','group');speedOptions.setAttribute('aria-label','Playback speed');
   const speedButtons=[['Normal',1],['Fast',1.5],['Very fast',2]].map(([label,rate])=>{
-    const button=document.createElement('button');button.type='button';button.dataset.playbackRate=String(rate);button.setAttribute('aria-label',`${label} (${rate}×)`);
-    const caption=document.createElement('span'),value=document.createElement('small');caption.textContent=label;value.textContent=`${rate}×`;button.append(caption,value);
+    const button=document.createElement('button');button.type='button';button.dataset.playbackRate=String(rate);button.setAttribute('aria-label',label);button.textContent=label;
     button.onclick=()=>{setSpeed(rate);saveMixerValue();};speedOptions.append(button);return button;
   });
   const playbackTuning=document.createElement('div');playbackTuning.className='cm-playback-tuning';playbackTuning.append(speedOptions);

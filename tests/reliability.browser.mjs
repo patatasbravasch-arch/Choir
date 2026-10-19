@@ -3028,7 +3028,7 @@ const resetOf=(h,slot)=>h.$(slot).querySelector('.et-tuning-reset');
 test('mixer offers Normal, Fast and Very fast buttons while gap stays in settings and choices survive reload',async()=>{
  const h=await harness();try{
   const master=document.querySelector('[data-choir-mixer] .cm-master');
-  assert.deepEqual([...master.nextElementSibling.querySelectorAll('button')].map(button=>button.getAttribute('aria-label')),['Normal (1×)','Fast (1.5×)','Very fast (2×)']);
+  assert.deepEqual([...master.nextElementSibling.querySelectorAll('button')].map(button=>button.textContent),['Normal','Fast','Very fast']);
   assert.equal(master.nextElementSibling.querySelector('input'),null);assert.equal(document.querySelector('[data-choir-mixer] [aria-label*="Gap"]'),null);
   assert.equal(speedPreset(1).getAttribute('aria-pressed'),'true');
   assert.equal(speedInput().value,'1');assert.equal(gapInput().value,'0');assert.equal(h.$('playbackRate').value,'1');assert.equal(h.$('voiceGapMs').value,'0');

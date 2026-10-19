@@ -157,7 +157,7 @@ try{
   assert.equal(await speedPage.locator('[data-et="playbackRate"]').getAttribute('max'),'12');
   await speedPage.locator('[data-et="playbackRate"]').evaluate(node=>{node.value='11';node.dispatchEvent(new Event('input'));node.dispatchEvent(new Event('change'));});
   assert.equal(await speedNumber.inputValue(),'11.00');await speedNumber.blur();
-  await speedPage.getByRole('button',{name:'Fast (1.5×)',exact:true}).click();assert.equal(await speedNumber.inputValue(),'1.50');
+  await speedPage.getByRole('button',{name:'Fast',exact:true}).click();assert.equal(await speedNumber.inputValue(),'1.50');
   assert.equal(await speedPage.locator('[data-choir-mixer] input[aria-label*="speed"]').count(),0);
   await speedPage.locator('[data-et="enableSfx"]').uncheck();await speedPage.locator('[data-et="enableAmbience"]').uncheck();
   await speedPage.locator('[data-et="latest"]').click();await speedPage.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Ready:'));

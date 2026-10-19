@@ -4,7 +4,7 @@
 
 # Choir
 
-[![Version](https://img.shields.io/badge/version-1.1.6--lunch--test.7-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/lunch-test)
+[![Version](https://img.shields.io/badge/version-1.1.6--lunch--test.8-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/lunch-test)
 [![Platform](https://img.shields.io/badge/platform-Lumiverse%20Spindle-purple.svg)](https://docs.lumiverse.chat/)
 [![Tests](https://img.shields.io/badge/tests-436%20tests-blue.svg)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -12,6 +12,8 @@
 An installable Lumiverse Spindle extension for multi-voice narration, dialogue attribution, sound effects, ambience and background music.
 
 </div>
+
+Version **1.1.6-lunch-test.8** simplifies the mixer speed buttons to **Normal**, **Fast** and **Very fast**, without numerical labels. Their speeds and saved choices are unchanged, with smaller desktop buttons and the existing touch target size on phones.
 
 Version **1.1.6-lunch-test.7** gives the mixer three playback speed buttons: **Normal (1×)**, **Fast (1.5×)** and **Very fast (2×)**. Individual voice speeds live inside each character's **Edit** drawer, including NPCs, and are available before planning. The gap control stays in **Speech & Planner → Playback** alongside the detailed global speed control. Existing speeds and gaps are preserved; character speeds still replace the global speed, and **Use global** clears an individual override.
 
