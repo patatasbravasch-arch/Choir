@@ -1,5 +1,6 @@
 import { characterCardRoleDiscovery, namePronunciation, namePronunciations, respellNames } from './core.js';
 import { createSetupWizard, saveSetupSettings } from './setup.js';
+import { ABYSSAL_THEME_CSS } from './abyssal-theme.js';
 import { randomUuid, sha256Hex, GEMINI_VOICES, OPENAI_VOICES, additionalVoices, apiErrorMessage, MAX_SPEECH_CHARS, MAX_CHANNEL_VOLUME, speechProviderFamily, speechRequestLimits, normalizeName, normalizeVoiceCatalogue, characterCardRoles, validateCardRoles, reconcileCardCast, unisonSpeakers, speechSourceUnits, mixUnisonAudio, transcriptFromMessage, readableText, readAlongIndex, locatePassages, spokenLength, validateCastConfig, validatePlan, npcCastActor, parsePlanJson, speechBatches, groupedSpeechBatches, audioBytes, fastClassifyPlan, resolvePlannerMode, attributionPlan, restoreAttribution, passageKey, mixerVolume, loudnessGain, castExport, castImport, applySoundCues, cueOffset, sfxCueOffset, transcriptLines, withoutLines } from './core.js';
 import { normalizeSpeedSliderMax, normalizePlaybackRate, normalizeVoiceGap, speakerPlaybackRate, effectivePlaybackRate, browserPlaybackRate, PLAYBACK_RATE_LIMITS, VOICE_GAP_LIMITS } from './core.js';
 
@@ -244,7 +245,7 @@ export async function setup(ctx) {
     @media(pointer:coarse),(max-width:600px){.choir-mixer{max-height:calc(100dvh - 24px)}.choir-mixer .cm-header{padding:7px 12px}.choir-mixer .cm-player{padding:6px 12px}.choir-mixer .cm-now{margin-bottom:4px}.choir-mixer .cm-master,.choir-mixer .cm-tuning{padding:6px 12px}.choir-mixer .cm-auto-plan{gap:3px;padding:6px}.choir-mixer .cm-auto-plan button{padding:4px 3px}.choir-mixer .cm-channels-title{padding:8px 12px}.choir-mixer .cm-volume{grid-template-columns:minmax(0,1fr)}.choir-mixer .cm-volume>input[type="range"]{display:none}.choir-mixer .cm-volume-steps{grid-template-columns:44px minmax(0,1fr) 44px}.choir-mixer .cm-volume-steps>button{display:inline-flex}.choir-mixer .cm-volume-entry{height:44px}.choir-mixer .cm-volume-entry input{font-size:16px}.choir-mixer .cm-channel-head{gap:5px}.choir-mixer .cm-toggle{width:44px;height:44px}.choir-mixer .cm-toggle svg{width:19px;height:19px}}
     @media(pointer:coarse),(max-width:600px){.choir-mixer .cm-speed-options button{min-height:44px}}
     @media(max-height:480px){.choir-mixer .cm-header{padding:4px 10px}.choir-mixer .cm-body{overflow:auto;overscroll-behavior:contain}.choir-mixer .cm-player{padding:4px 10px}.choir-mixer .cm-caption{display:none}.choir-mixer .cm-transport{margin-bottom:0}.choir-mixer .cm-master,.choir-mixer .cm-tuning{padding:4px 10px}.choir-mixer .cm-auto-plan{padding:4px 8px}.choir-mixer .cm-levels{flex-shrink:0}.choir-mixer .cm-levels-body{overflow:visible}}
-  `);
+  ${ABYSSAL_THEME_CSS}`);
   root.innerHTML = `<div class="ensemble-tts">
     <div class="et-header">
       <div class="et-title-group">
@@ -363,6 +364,7 @@ export async function setup(ctx) {
       <div class="et-row">
         <label class="et-check"><input data-et="sectionButtons" type="checkbox"> Show message play controls</label>
         <label class="et-check"><input data-et="enableMixer" type="checkbox"> Floating audio mixer</label>
+        <label class="et-check" title="Use the Abyssal Constellation appearance for the mixer."><input data-et="abyssalMixerTheme" type="checkbox"> Match Abyssal Constellation</label>
         <label class="et-check"><input data-et="showAutoPlanAction" type="checkbox"> Show Auto-plan in chat toolbar</label>
       </div>
       <label data-et="extraVoicesWrap" style="margin-top:10px"><span data-et="extraVoicesLabel">Additional voices & community models (ID | description)</span><textarea data-et="extraVoices" rows="2" placeholder="voice_id | description (e.g. Fish Audio community model ID or Gemini voice)"></textarea></label>
@@ -490,7 +492,7 @@ export async function setup(ctx) {
   // Speech takes the playback speed; the silence before a spoken block is held here so Pause and skips reach it.
   let currentAudioSpeech=false,currentSpeedSpeaker='',voiceGapHold=null;
   // Keep the launcher unobtrusive on every load, including existing expanded preferences.
-  const savedMixer=await ctx.settings.get('ui:mixer').catch(()=>null);let mixerState={master:1,sfx:1,ambience:1,music:1,levelsCollapsed:true,channelTab:'',channels:{},x:20,y:80,enabled:savedMixer?(savedMixer.enabled??true):Boolean(config?.enableMixer),playbackRate:PLAYBACK_RATE_LIMITS.fallback,voiceGapMs:VOICE_GAP_LIMITS.fallback,...(savedMixer||{}),collapsed:true};
+  const savedMixer=await ctx.settings.get('ui:mixer').catch(()=>null);let mixerState={master:1,sfx:1,ambience:1,music:1,levelsCollapsed:true,channelTab:'',channels:{},x:20,y:80,enabled:savedMixer?(savedMixer.enabled??true):Boolean(config?.enableMixer),abyssalTheme:false,playbackRate:PLAYBACK_RATE_LIMITS.fallback,voiceGapMs:VOICE_GAP_LIMITS.fallback,...(savedMixer||{}),collapsed:true};
   // Global speed and gap are mixer state, saved in ui:mixer beside the channel levels, so they work with or without a chat open.
   mixerState.speedSliderMax=normalizeSpeedSliderMax(mixerState.speedSliderMax);mixerState.playbackRate=normalizePlaybackRate(mixerState.playbackRate);mixerState.voiceGapMs=normalizeVoiceGap(mixerState.voiceGapMs);
   // Solo is no longer exposed; old solo preferences must not silently mute other voices.
@@ -942,6 +944,9 @@ export async function setup(ctx) {
   }
   $('showMixer').onclick=()=>{const close=Boolean(config?.enableMixer) && !mixerState.collapsed;config.enableMixer=true;if($('enableMixer'))$('enableMixer').checked=true;mixerState.enabled=true;mixerState.collapsed=close;positionMixer();persistMixer();scheduleSettingsSave();};
   if($('enableMixer'))$('enableMixer').onchange=()=>{config.enableMixer=$('enableMixer').checked;mixerState.enabled=config.enableMixer;positionMixer();scheduleSettingsSave();persistMixer();};
+  const applyMixerTheme=()=>{const enabled=mixerState.abyssalTheme===true;mixer.dataset.abyssalTheme=String(enabled);$('abyssalMixerTheme').checked=enabled;};
+  $('abyssalMixerTheme').onchange=()=>{mixerState.abyssalTheme=$('abyssalMixerTheme').checked;applyMixerTheme();void persistMixer();};
+  applyMixerTheme();
   positionMixer();
   function status(text,error=false) {
     if(disposed)return;

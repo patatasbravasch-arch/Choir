@@ -3025,6 +3025,19 @@ const commitValue=(h,input,value)=>{typeValue(h,input,value);input.dispatchEvent
 const savedMixer=h=>h.store.get('ui:mixer');
 const resetOf=(h,slot)=>h.$(slot).querySelector('.et-tuning-reset');
 
+test('Abyssal mixer checkbox applies immediately and saves its choice independently of chat settings',async()=>{
+ const h=await harness({enabled:true,playbackRate:1.5,channels:{Mira:{volume:0.6,speed:1.25}}});try{
+  const mixer=()=>document.querySelector('[data-choir-mixer]'),toggle=()=>h.$('abyssalMixerTheme'),chat=structuredClone(h.store.get('chat:chat-a'));
+  assert.equal(toggle().checked,false);assert.equal(mixer().dataset.abyssalTheme,'false');
+  toggle().checked=true;toggle().dispatchEvent(new h.dom.window.Event('change'));
+  assert.equal(mixer().dataset.abyssalTheme,'true');await until(()=>savedMixer(h)?.abyssalTheme===true);
+  assert.deepEqual(h.store.get('chat:chat-a'),chat);await h.reload();assert.equal(toggle().checked,true);assert.equal(mixer().dataset.abyssalTheme,'true');
+  toggle().checked=false;toggle().dispatchEvent(new h.dom.window.Event('change'));assert.equal(mixer().dataset.abyssalTheme,'false');
+  await until(()=>savedMixer(h)?.abyssalTheme===false);await h.reload();assert.equal(toggle().checked,false);
+  assert.equal(savedMixer(h).playbackRate,1.5);assert.equal(savedMixer(h).channels.Mira.volume,0.6);assert.equal(savedMixer(h).channels.Mira.speed,1.25);
+ }finally{await h.close();}
+});
+
 test('mixer offers Normal, Fast and Very fast buttons while gap stays in settings and choices survive reload',async()=>{
  const h=await harness();try{
   const master=document.querySelector('[data-choir-mixer] .cm-master');

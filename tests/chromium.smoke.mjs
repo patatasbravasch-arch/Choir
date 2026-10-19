@@ -153,6 +153,15 @@ try{
   const speedPage=await browser.newPage({viewport:{width:1440,height:1000}});speedPage.on('pageerror',error=>errors.push(error.message));
   await speedPage.goto(`http://127.0.0.1:${server.address().port}`);await speedPage.waitForFunction(()=>window.ready);
   await speedPage.getByRole('button',{name:'Open Choir voice mixer',exact:true}).click();
+  const themeCheckbox=speedPage.locator('[data-et="abyssalMixerTheme"]');
+  await themeCheckbox.evaluate(node=>node.closest('details').open=true);assert.equal(await themeCheckbox.isChecked(),false);
+  const originalMixerBg=await speedPage.locator('[data-choir-mixer]').evaluate(node=>getComputedStyle(node).getPropertyValue('--cm-bg').trim());
+  const originalHostStyle=await speedPage.locator('html').getAttribute('style');
+  await themeCheckbox.check();assert.equal(await speedPage.locator('[data-choir-mixer]').evaluate(node=>getComputedStyle(node).getPropertyValue('--cm-bg').trim()),'#061323');
+  assert.equal(await speedPage.locator('.cm-brand strong').evaluate(node=>getComputedStyle(node).color),'rgb(224, 207, 170)');
+  assert.ok((await speedPage.locator('.cm-header').evaluate(node=>getComputedStyle(node).backgroundImage)).includes('data:image/svg+xml'));
+  assert.equal(await speedPage.locator('html').getAttribute('style'),originalHostStyle);
+  if(process.env.CHOIR_ABYSSAL_MIXER_SCREENSHOT)await speedPage.locator('[data-choir-mixer]').screenshot({path:process.env.CHOIR_ABYSSAL_MIXER_SCREENSHOT});
   const speedNumber=speedPage.locator('[data-et="playbackRateEntry"]');await speedNumber.fill('12');
   assert.equal(await speedPage.locator('[data-et="playbackRate"]').getAttribute('max'),'12');
   await speedPage.locator('[data-et="playbackRate"]').evaluate(node=>{node.value='11';node.dispatchEvent(new Event('input'));node.dispatchEvent(new Event('change'));});
@@ -172,6 +181,9 @@ try{
   const speedCalls=await speedPage.evaluate(()=>window.calls.length);await speedPage.evaluate(async()=>{window.cleanup();window.cleanup=await window.mountChoir();});
   await speedPage.waitForFunction(()=>document.querySelector('[data-et="playbackRateEntry"]')?.value==='1.50');
   assert.equal(await speedPage.evaluate(()=>window.fixtureStore.get('ui:mixer').channels.Mira.speed),0.75);assert.equal(await speedPage.evaluate(()=>window.calls.length),speedCalls);
+  assert.equal(await themeCheckbox.isChecked(),true);assert.equal(await speedPage.locator('[data-choir-mixer]').getAttribute('data-abyssal-theme'),'true');
+  await themeCheckbox.evaluate(node=>node.closest('details').open=true);await themeCheckbox.uncheck();
+  assert.equal(await speedPage.locator('[data-choir-mixer]').evaluate(node=>getComputedStyle(node).getPropertyValue('--cm-bg').trim()),originalMixerBg);
   await speedPage.evaluate(()=>window.cleanup());await speedPage.close();console.log('PASS: Chrome preserves pitch with global and character speeds, waits between voices, updates the typed-speed slider and restores saved controls.');
   const page=await browser.newPage({viewport:{width:1440,height:1000}});page.on('pageerror',error=>errors.push(error.message));
   await page.goto(`http://127.0.0.1:${server.address().port}`);await page.waitForFunction(()=>window.ready);
@@ -467,6 +479,8 @@ try{
   assert.equal(await touch.locator('.et-character-speed').evaluateAll(nodes=>nodes.every(node=>node.scrollWidth<=node.clientWidth+1)),true);
   if(process.env.CHOIR_CHARACTER_SPEED_MOBILE_SCREENSHOT)await touch.locator('.et-cast-row').filter({has:touch.locator('[aria-label="Mira speed"]')}).screenshot({path:process.env.CHOIR_CHARACTER_SPEED_MOBILE_SCREENSHOT});
   await touch.getByRole('button',{name:'Close Mira editor',exact:true}).tap();await touch.getByRole('button',{name:'Open Choir voice mixer',exact:true}).tap();
+  await touch.locator('[data-et="abyssalMixerTheme"]').evaluate(node=>node.closest('details').open=true);await touch.getByRole('checkbox',{name:'Match Abyssal Constellation',exact:true}).check();
+  assert.equal(await touch.locator('[data-choir-mixer]').evaluate(node=>getComputedStyle(node).getPropertyValue('--cm-bg').trim()),'#061323');
   const targets=await touch.locator('.cm-transport button').evaluateAll(nodes=>nodes.map(node=>{const rect=node.getBoundingClientRect();return {x:rect.x,width:rect.width,height:rect.height};}));assert.equal(targets.length,5);assert.ok(targets.every((rect,index)=>rect.width>=44 && rect.height>=44 && (!index || rect.x>=targets[index-1].x+targets[index-1].width)));
   const touchMixer=touch.locator('[data-choir-mixer]');assert.equal(await touch.getByRole('slider',{name:'Master volume',exact:true}).isVisible(),false);
   const masterPercent=touch.getByRole('spinbutton',{name:'Master volume percent',exact:true});assert.equal(await masterPercent.getAttribute('inputmode'),'numeric');

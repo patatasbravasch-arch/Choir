@@ -4,14 +4,16 @@
 
 # Choir
 
-[![Version](https://img.shields.io/badge/version-1.1.6--lunch--test.8-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/lunch-test)
+[![Version](https://img.shields.io/badge/version-1.1.6--lunch--test.9-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/lunch-test)
 [![Platform](https://img.shields.io/badge/platform-Lumiverse%20Spindle-purple.svg)](https://docs.lumiverse.chat/)
-[![Tests](https://img.shields.io/badge/tests-436%20tests-blue.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-437%20tests-blue.svg)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 An installable Lumiverse Spindle extension for multi-voice narration, dialogue attribution, sound effects, ambience and background music.
 
 </div>
+
+Version **1.1.6-lunch-test.9** adds **Match Abyssal Constellation** in **Advanced Settings**, beside **Floating audio mixer**. It applies the existing Abyssal mixer's deep blue panels, pale blue controls, gold heading and static constellation decoration. The choice applies immediately and is saved with mixer preferences across reloads. It starts unchecked, affects only the mixer and its launcher, and uses the host theme's Abyssal fonts when available.
 
 Version **1.1.6-lunch-test.8** simplifies the mixer speed buttons to **Normal**, **Fast** and **Very fast**, without numerical labels. Their speeds and saved choices are unchanged, with smaller desktop buttons and the existing touch target size on phones.
 
