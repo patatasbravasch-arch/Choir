@@ -1,11 +1,13 @@
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 const root = new URL('../', import.meta.url);
+const manifest = JSON.parse(readFileSync(new URL('spindle.json', root), 'utf8'));
 mkdirSync(new URL('dist/', root), { recursive: true });
 const core = readFileSync(new URL('src/core.js', root), 'utf8').replace(/^export /gm, '');
 const setup = readFileSync(new URL('src/setup.js', root), 'utf8').replace(/^export /gm, '');
 for (const target of ['backend', 'frontend']) {
   let entry = readFileSync(new URL(`src/${target}.js`, root), 'utf8').replace(/^import .* from '\.\/core\.js';\r?\n/gm, '');
+  entry = entry.replaceAll("'__CHOIR_VERSION__'", JSON.stringify(manifest.version));
   entry = entry.replace(/^import .* from '\.\/setup\.js';\r?\n/gm, '');
   if (target === 'backend') {
     entry = entry.replace(/^export /gm, '');

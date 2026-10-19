@@ -665,6 +665,41 @@ function mixerVolume(master, speaker, channels) {
   return Math.max(0,Math.min(1,Number(master ?? 1)))*Math.max(0,Math.min(MAX_CHANNEL_VOLUME,Number(channel.volume ?? 1)))*(channel.mute || (solo && !channel.solo)?0:1);
 }
 
+// Playback speed and the pause between spoken blocks. Stored values are clamped and snapped to these steps.
+// Speed can be typed or stepped from 0.07 to 16 times, the browser maximum. The mixer slider shows the practical part, 0.25 to 4.
+const PLAYBACK_RATE_LIMITS={min:0.07,max:16,step:0.01,fallback:1};
+const VOICE_GAP_LIMITS={min:0,max:3000,step:50,fallback:0};
+function snapToLimits(value,{min,max,step,fallback}){
+  if(value===undefined || value===null || value==='' || typeof value==='boolean')return fallback;
+  const number=Number(value);
+  if(!Number.isFinite(number))return fallback;
+  const clamped=Math.min(max,Math.max(min,number));
+  return Number((min+Math.round((clamped-min)/step)*step).toFixed(2));
+}
+const normalizePlaybackRate=value=>snapToLimits(value,PLAYBACK_RATE_LIMITS);
+const normalizeVoiceGap=value=>snapToLimits(value,VOICE_GAP_LIMITS);
+// The user's top end for the speed sliders. Typed speeds still reach the full PLAYBACK_RATE_LIMITS range.
+const SPEED_SLIDER_MAX_LIMITS={min:1,max:16,step:0.25,fallback:4};
+const normalizeSpeedSliderMax=value=>snapToLimits(value,SPEED_SLIDER_MAX_LIMITS);
+// A speaker's own speed lives beside its volume in the mixer state (channels[speaker].speed). It replaces the playback speed for that speaker. Null means no own speed: the speaker follows the playback speed.
+function speakerPlaybackRate(channels, speaker) {
+  const channel=channels && Object.hasOwn(channels,speaker)?channels[speaker]:{};
+  const value=channel?.speed;
+  if(value===undefined || value===null || value==='' || typeof value==='boolean' || !Number.isFinite(Number(value)))return null;
+  return normalizePlaybackRate(value);
+}
+// A speaker's own speed replaces the playback speed for that speaker. Without one, the playback speed applies.
+function effectivePlaybackRate(globalRate, channels, speaker) {
+  return speakerPlaybackRate(channels,speaker) ?? normalizePlaybackRate(globalRate);
+}
+// Browsers play only inside their own range. A value outside it moves to the nearest end they accept.
+const BROWSER_PLAYBACK_RATE_LIMITS={min:0.0625,max:16};
+function browserPlaybackRate(rate) {
+  const number=Number(rate);
+  if(!Number.isFinite(number))return 1;
+  return Math.min(BROWSER_PLAYBACK_RATE_LIMITS.max,Math.max(BROWSER_PLAYBACK_RATE_LIMITS.min,number));
+}
+
 function loudnessGain(channels, target=0.12) {
   let squares=0,peak=0,count=0;
   for(const samples of channels)for(const sample of samples){squares+=sample*sample;peak=Math.max(peak,Math.abs(sample));count++;}
@@ -1961,7 +1996,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
   (async () => {
     const input = message.input || {};
     if (message.action === 'ping') {
-      send({result:{version:'1.1.6-lunch-test.1',ready:true,decisionsAvailable:typeof spindle.decisions?.evaluate==='function'}});return;
+      send({result:{version:"1.1.6-lunch-test.4",ready:true,decisionsAvailable:typeof spindle.decisions?.evaluate==='function'}});return;
     }
     if(message.action==='cardCast'){
       const card=input.card;

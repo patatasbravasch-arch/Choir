@@ -4,14 +4,16 @@
 
 # Choir
 
-[![Version](https://img.shields.io/badge/version-1.1.6--lunch--test.3-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/lunch-test)
+[![Version](https://img.shields.io/badge/version-1.1.6--lunch--test.4-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/lunch-test)
 [![Platform](https://img.shields.io/badge/platform-Lumiverse%20Spindle-purple.svg)](https://docs.lumiverse.chat/)
-[![Tests](https://img.shields.io/badge/tests-404%20tests-blue.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-431%20tests-blue.svg)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 An installable Lumiverse Spindle extension for multi-voice narration, dialogue attribution, sound effects, ambience and background music.
 
 </div>
+
+Version **1.1.6-lunch-test.4** integrates the playback controls from PR #4: global playback speed, per-character speed that replaces the global value, and a gap between voices. These settings live beside mixer levels, persist across reloads, and appear in both the mixer and settings drawer. Typing a speed above the slider maximum expands its range. Speech keeps its pitch; music, ambience, effects and auditions retain normal speed. Dialogue with different character speeds uses separate clips, and a nonzero gap separates speakers even when grouping is enabled. Saved shared recordings rebuild when those controls require a split, using existing attribution without another planner request. Ordinary speed changes reuse cached audio. Changes to an already playing shared clip take effect on the next Play; simultaneous unison voices keep the first speaker's rate so they stay aligned. Excluded opening speakers do not introduce an initial gap, and Pause, Next and Stop control pending gaps.
 
 Version **1.1.6-lunch-test.3** excludes instruction headings such as **NARRATIVE GUIDELINES** and **Writing Instructions** from automatic character discovery, including JSON/XML profiles and cached Planner LLM results. Mentioning "main character" inside those sections no longer makes the heading a lead. Remove any previously saved false character once; the updated detector will not add it back. Existing saved cast rows are preserved until explicitly removed.
 

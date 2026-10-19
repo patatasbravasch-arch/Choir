@@ -5,6 +5,38 @@ import {speechPanel} from './fixtures/speech-panel.mjs';
 import {phoneWidget} from './fixtures/phone-widget.mjs';
 import {sfxCueOffset} from '../src/core.js';
 import {randomUuid,sha256Hex,ignoredTagNames,characterCardRoles,validateCardRoles,reconcileCardCast} from '../src/core.js';
+import {normalizePlaybackRate,normalizeVoiceGap,speakerPlaybackRate,effectivePlaybackRate,browserPlaybackRate,PLAYBACK_RATE_LIMITS,VOICE_GAP_LIMITS,BROWSER_PLAYBACK_RATE_LIMITS} from '../src/core.js';
+
+test('playback speed and voice gap clamp and round stored values and fall back to the defaults for missing or invalid input',()=>{
+  assert.deepEqual(PLAYBACK_RATE_LIMITS,{min:0.07,max:16,step:0.01,fallback:1});
+  assert.deepEqual(VOICE_GAP_LIMITS,{min:0,max:3000,step:50,fallback:0});
+  for(const value of [undefined,null,'',true,false,'fast',NaN,Infinity])assert.equal(normalizePlaybackRate(value),1);
+  assert.equal(normalizePlaybackRate(0.01),0.07);assert.equal(normalizePlaybackRate(9),9);assert.equal(normalizePlaybackRate(20),16);assert.equal(normalizePlaybackRate('1.5'),1.5);
+  assert.equal(normalizePlaybackRate(1.234),1.23);assert.equal(normalizePlaybackRate(1.237),1.24);assert.equal(normalizePlaybackRate(0.07),0.07);assert.equal(normalizePlaybackRate(16),16);assert.equal(normalizePlaybackRate(3.37),3.37);
+  for(const value of [undefined,null,'',true,'slow',NaN,Infinity])assert.equal(normalizeVoiceGap(value),0);
+  assert.equal(normalizeVoiceGap(-40),0);assert.equal(normalizeVoiceGap(9999),3000);assert.equal(normalizeVoiceGap('275'),300);assert.equal(normalizeVoiceGap(1200),1200);
+});
+
+test('a speaker speed replaces the playback speed, a missing or null speaker speed follows it and browsers get the nearest rate they accept',()=>{
+  const channels={Mira:{volume:1,speed:2.5},Guard:{volume:1},Narrator:{speed:0.5},Rare:{speed:null}};
+  assert.equal(speakerPlaybackRate(channels,'Mira'),2.5);assert.equal(speakerPlaybackRate(channels,'Guard'),null);assert.equal(speakerPlaybackRate(channels,'Unknown'),null);assert.equal(speakerPlaybackRate(channels,'Rare'),null);assert.equal(speakerPlaybackRate(undefined,'Mira'),null);
+  assert.equal(speakerPlaybackRate({Mira:{speed:'fast'}},'Mira'),null);assert.equal(speakerPlaybackRate({constructor:{speed:3}},'constructor'),3);assert.equal(speakerPlaybackRate({},'constructor'),null);
+  assert.equal(speakerPlaybackRate({Mira:{speed:9}},'Mira'),9);assert.equal(speakerPlaybackRate({Mira:{speed:40}},'Mira'),16);
+  // A character's speed replaces the playback speed rather than multiplying it.
+  assert.equal(effectivePlaybackRate(2,channels,'Mira'),2.5);
+  assert.equal(effectivePlaybackRate(1.5,channels,'Mira'),2.5);
+  assert.equal(effectivePlaybackRate(1.5,channels,'Guard'),1.5);
+  assert.equal(effectivePlaybackRate(3,channels,'Narrator'),0.5);
+  assert.equal(effectivePlaybackRate(0.25,channels,'Narrator'),0.5);
+  assert.equal(effectivePlaybackRate(1.2,{Mira:{speed:1.1}},'Mira'),1.1);
+  assert.equal(effectivePlaybackRate(undefined,channels,'Guard'),1);
+  assert.equal(effectivePlaybackRate(16,{Mira:{speed:0.07}},'Mira'),0.07);
+  assert.equal(effectivePlaybackRate(16,{},'Mira'),16);
+});
+test('speeds above 4 times pass through the speed model and browsers accept only their own playback range',()=>{
+  assert.deepEqual(BROWSER_PLAYBACK_RATE_LIMITS,{min:0.0625,max:16});
+  assert.equal(browserPlaybackRate(16),16);assert.equal(browserPlaybackRate(40),16);assert.equal(browserPlaybackRate(0.01),0.0625);assert.equal(browserPlaybackRate(0.07),0.07);assert.equal(browserPlaybackRate(NaN),1);assert.equal(browserPlaybackRate(undefined),1);
+});
 import {validatePlan, validateCastConfig, splitSegment, speechBatches, speechRequestLimits, audioBytes, transcriptFromMessage, parsePlanJson, normalizeVoiceCatalogue, speechSourceUnits, resolvePlanReferences, castingPrompt, parseCastRows, castReply, stripAudioTags, fastClassifyPlan, resolvePlannerMode, soundCuePrompt, parseSoundCues, applySoundCues, rankMusic, cueOffset, transcriptLines, skipCheckPrompt, parseSkipRows, skippedLines, withoutLines, readableText, readAlongIndex, locatePassages, spokenLength, attributionPlan, restoreAttribution, apiErrorMessage} from '../src/core.js';
 
 test('ignored tags skip nested, attributed, mixed-case and unfinished blocks without dropping ordinary story markup',()=>{

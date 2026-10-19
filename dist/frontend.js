@@ -665,6 +665,41 @@ function mixerVolume(master, speaker, channels) {
   return Math.max(0,Math.min(1,Number(master ?? 1)))*Math.max(0,Math.min(MAX_CHANNEL_VOLUME,Number(channel.volume ?? 1)))*(channel.mute || (solo && !channel.solo)?0:1);
 }
 
+// Playback speed and the pause between spoken blocks. Stored values are clamped and snapped to these steps.
+// Speed can be typed or stepped from 0.07 to 16 times, the browser maximum. The mixer slider shows the practical part, 0.25 to 4.
+const PLAYBACK_RATE_LIMITS={min:0.07,max:16,step:0.01,fallback:1};
+const VOICE_GAP_LIMITS={min:0,max:3000,step:50,fallback:0};
+function snapToLimits(value,{min,max,step,fallback}){
+  if(value===undefined || value===null || value==='' || typeof value==='boolean')return fallback;
+  const number=Number(value);
+  if(!Number.isFinite(number))return fallback;
+  const clamped=Math.min(max,Math.max(min,number));
+  return Number((min+Math.round((clamped-min)/step)*step).toFixed(2));
+}
+const normalizePlaybackRate=value=>snapToLimits(value,PLAYBACK_RATE_LIMITS);
+const normalizeVoiceGap=value=>snapToLimits(value,VOICE_GAP_LIMITS);
+// The user's top end for the speed sliders. Typed speeds still reach the full PLAYBACK_RATE_LIMITS range.
+const SPEED_SLIDER_MAX_LIMITS={min:1,max:16,step:0.25,fallback:4};
+const normalizeSpeedSliderMax=value=>snapToLimits(value,SPEED_SLIDER_MAX_LIMITS);
+// A speaker's own speed lives beside its volume in the mixer state (channels[speaker].speed). It replaces the playback speed for that speaker. Null means no own speed: the speaker follows the playback speed.
+function speakerPlaybackRate(channels, speaker) {
+  const channel=channels && Object.hasOwn(channels,speaker)?channels[speaker]:{};
+  const value=channel?.speed;
+  if(value===undefined || value===null || value==='' || typeof value==='boolean' || !Number.isFinite(Number(value)))return null;
+  return normalizePlaybackRate(value);
+}
+// A speaker's own speed replaces the playback speed for that speaker. Without one, the playback speed applies.
+function effectivePlaybackRate(globalRate, channels, speaker) {
+  return speakerPlaybackRate(channels,speaker) ?? normalizePlaybackRate(globalRate);
+}
+// Browsers play only inside their own range. A value outside it moves to the nearest end they accept.
+const BROWSER_PLAYBACK_RATE_LIMITS={min:0.0625,max:16};
+function browserPlaybackRate(rate) {
+  const number=Number(rate);
+  if(!Number.isFinite(number))return 1;
+  return Math.min(BROWSER_PLAYBACK_RATE_LIMITS.max,Math.max(BROWSER_PLAYBACK_RATE_LIMITS.min,number));
+}
+
 function loudnessGain(channels, target=0.12) {
   let squares=0,peak=0,count=0;
   for(const samples of channels)for(const sample of samples){squares+=sample*sample;peak=Math.max(peak,Math.abs(sample));count++;}
@@ -2057,6 +2092,42 @@ export async function setup(ctx) {
     .choir-mixer .cm-seek span{white-space:nowrap}
     .choir-mixer .cm-master{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:6px;margin:0;padding:5px 10px;color:var(--cm-text);font-size:10px;border-bottom:1px solid var(--cm-line);flex-shrink:0}
     .choir-mixer .cm-master .cm-percent,.choir-mixer .cm-channel-head .cm-percent{display:none}
+    .choir-mixer .cm-tuning{display:grid;grid-template-columns:3.6em minmax(0,1fr);align-items:center;gap:6px;margin:0;padding:4px 10px;color:var(--cm-text);font-size:10px;border-bottom:1px solid var(--cm-line);flex-shrink:0}
+    .choir-mixer .cm-playback-tuning{display:flex;flex-direction:column;flex-shrink:0;min-width:0}
+    .choir-mixer .cm-tuning>span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .choir-mixer .cm-channel-speed{display:grid;grid-template-columns:3.6em minmax(0,1fr) auto;align-items:center;gap:6px;margin-top:3px;color:var(--cm-muted);font-size:10px}
+    .choir-mixer .cm-channel-speed>span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .choir-mixer .cm-speed-reset{min-width:24px;padding:0 4px;font-size:12px;line-height:1.4;border:1px solid var(--cm-muted);border-radius:4px;background:transparent;color:inherit;cursor:pointer}
+    .choir-mixer .cm-speed-reset[hidden]{display:none}
+    .choir-mixer .cm-volume.cm-inherited{opacity:.5}
+    .ensemble-tts .et-tuning-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,250px),1fr));gap:10px;margin:4px 0 6px}
+    .ensemble-tts .et-tuning{--cm-accent:var(--lumiverse-primary,#c4b5fd);--cm-accent-contrast:var(--lumiverse-primary-contrast,#1a142a);--cm-text:var(--lumiverse-text,#f1f3fa);--cm-muted:var(--lumiverse-text-muted,#a6afc2);--cm-line:var(--lumiverse-border,#ffffff12);--cm-border-hover:var(--lumiverse-border-hover,#ffffff25);--cm-hover:var(--lumiverse-bg-hover,#ffffff10);--cm-fill:var(--lumiverse-fill-subtle,#ffffff04);display:flex;flex-direction:column;gap:7px;min-width:0;margin:0;padding:10px 12px;border:1px solid var(--cm-line);border-radius:8px;background:var(--cm-fill)}
+    .ensemble-tts .et-tuning-head{display:flex;flex-direction:column;gap:2px;min-width:0}
+    .ensemble-tts .et-tuning-title{font-size:.9em;font-weight:600;color:var(--cm-text)}
+    .ensemble-tts .et-tuning-hint{font-size:.78em;line-height:1.35;color:var(--cm-muted)}
+    .ensemble-tts .et-tuning-slot{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:8px;min-width:0}
+    .ensemble-tts .et-tuning-slot>.cm-volume,.ensemble-tts .et-tuning-slot .cm-volume-steps{display:contents}
+    .ensemble-tts .et-tuning-slot .cm-volume-steps>button{display:none}
+    .ensemble-tts .et-tuning-slot .cm-volume-entry{display:flex;align-items:center;gap:2px;box-sizing:border-box;width:76px;height:28px;padding:0 6px;border:1px solid var(--cm-border-hover);border-radius:6px;background:var(--lumiverse-input-bg,var(--cm-fill))}
+    .ensemble-tts .et-tuning-slot .cm-volume-entry:focus-within{border-color:var(--cm-accent)}
+    .ensemble-tts .et-tuning-slot .cm-volume-entry input{appearance:textfield;-moz-appearance:textfield;box-sizing:border-box;width:100%;min-width:0;height:100%;margin:0;padding:0;border:0;border-radius:0;background:transparent;box-shadow:none;color:inherit;font:12px system-ui,sans-serif;text-align:right;outline:none}
+    .ensemble-tts .et-tuning-slot .cm-volume-entry input::-webkit-inner-spin-button,.ensemble-tts .et-tuning-slot .cm-volume-entry input::-webkit-outer-spin-button{appearance:none;margin:0}
+    .ensemble-tts .et-tuning-slot .cm-volume-entry span{flex-shrink:0;font-size:11px;color:var(--cm-muted)}
+    .ensemble-tts .et-tuning-slot input[type="range"]{appearance:none;-webkit-appearance:none;display:block;box-sizing:border-box;width:100%;min-width:0;height:18px;margin:0;padding:0;border:0;border-radius:0;background:transparent;box-shadow:none;cursor:pointer;--choir-level:100%;--cm-track:linear-gradient(to right,var(--cm-accent) 0%,var(--cm-accent) var(--choir-level),var(--cm-border-hover) var(--choir-level),var(--cm-border-hover) 100%)}
+    .ensemble-tts .et-tuning-slot input[type="range"]::-webkit-slider-runnable-track{height:4px;border-radius:3px;background:var(--cm-track)}
+    .ensemble-tts .et-tuning-slot input[type="range"]::-moz-range-track{height:4px;border-radius:3px;background:var(--cm-track)}
+    .ensemble-tts .et-tuning-slot input[type="range"]::-webkit-slider-thumb{appearance:none;-webkit-appearance:none;box-sizing:border-box;width:14px;height:14px;margin-top:-5px;border:1px solid var(--cm-accent-contrast);border-radius:50%;background:var(--cm-accent);box-shadow:0 1px 4px #0006}
+    .ensemble-tts .et-tuning-slot input[type="range"]::-moz-range-thumb{box-sizing:border-box;width:14px;height:14px;border:1px solid var(--cm-accent-contrast);border-radius:50%;background:var(--cm-accent);box-shadow:0 1px 4px #0006}
+    .ensemble-tts .et-tuning-slot input[type="range"]:focus-visible,.ensemble-tts .et-tuning-slot input[type="number"]:focus-visible{outline:2px solid var(--cm-accent);outline-offset:3px}
+    .ensemble-tts .et-tuning-reset{height:28px;padding:0 10px;border:1px solid var(--cm-border-hover);border-radius:6px;background:var(--cm-fill);color:var(--cm-muted);font:inherit;font-size:.8em;white-space:nowrap;cursor:pointer;box-shadow:none;width:auto}
+    .ensemble-tts .et-tuning-reset:hover{color:var(--cm-text);background:var(--cm-hover)}
+    .ensemble-tts .et-tuning-reset:focus-visible{outline:2px solid var(--cm-accent);outline-offset:2px}
+  .ensemble-tts .et-tuning-max{display:flex;align-items:center;justify-content:flex-end;gap:8px;margin:0;font-size:.78em;color:var(--cm-muted)}
+  .ensemble-tts .et-tuning-max-entry{display:flex;align-items:center;gap:2px;box-sizing:border-box;width:76px;height:26px;padding:0 6px;border:1px solid var(--cm-border-hover);border-radius:6px;background:var(--lumiverse-input-bg,var(--cm-fill));color:var(--cm-text)}
+  .ensemble-tts .et-tuning-max-entry:focus-within{border-color:var(--cm-accent)}
+  .ensemble-tts .et-tuning-max-entry input{appearance:textfield;-moz-appearance:textfield;box-sizing:border-box;width:100%;min-width:0;height:100%;margin:0;padding:0;border:0;border-radius:0;background:transparent;box-shadow:none;color:inherit;font:12px system-ui,sans-serif;text-align:right;outline:none}
+  .ensemble-tts .et-tuning-max-entry input::-webkit-inner-spin-button,.ensemble-tts .et-tuning-max-entry input::-webkit-outer-spin-button{appearance:none;margin:0}
+  .ensemble-tts .et-tuning-max-entry span{flex-shrink:0;font-size:11px;color:var(--cm-muted)}
     .choir-mixer .cm-auto-plan{display:flex;flex-wrap:wrap;gap:3px;padding:4px 6px;border-bottom:1px solid var(--cm-line);flex-shrink:0}
     .choir-mixer .cm-auto-plan button{flex:1 0 auto;min-height:24px;padding:3px 4px;border:1px solid var(--cm-line);border-radius:5px;font-size:10px;color:var(--cm-muted);background:var(--cm-fill);white-space:nowrap}
     .choir-mixer .cm-auto-plan button[aria-pressed="true"]{background:var(--lumiverse-success-015,color-mix(in srgb,var(--cm-success) 15%,transparent));border-color:var(--lumiverse-success-050,color-mix(in srgb,var(--cm-success) 50%,transparent));color:color-mix(in srgb,var(--cm-success) 65%,var(--cm-text))}
@@ -2113,8 +2184,9 @@ export async function setup(ctx) {
     @keyframes choir-level{to{transform:scaleY(.35)}}
     @media(prefers-reduced-motion:reduce){.choir-mixer .cm-activity i{animation:none!important}.choir-mixer button{transition:none}}
     @media(pointer:coarse){.choir-mixer .cm-transport{height:44px;gap:6px;padding:0}.choir-mixer .cm-transport button,.choir-mixer .cm-transport button[data-choir-action]{position:static;min-width:44px;min-height:44px}.choir-mixer .cm-auto-plan button,.choir-mixer .cm-channels-title,.choir-mixer .cm-channel-tab{min-width:44px;min-height:44px}}
-    @media(pointer:coarse),(max-width:600px){.choir-mixer{max-height:calc(100dvh - 24px)}.choir-mixer .cm-header{padding:7px 12px}.choir-mixer .cm-player{padding:6px 12px}.choir-mixer .cm-now{margin-bottom:4px}.choir-mixer .cm-master{padding:6px 12px}.choir-mixer .cm-auto-plan{gap:3px;padding:6px}.choir-mixer .cm-auto-plan button{padding:4px 3px}.choir-mixer .cm-channels-title{padding:8px 12px}.choir-mixer .cm-volume{grid-template-columns:minmax(0,1fr)}.choir-mixer .cm-volume>input[type="range"]{display:none}.choir-mixer .cm-volume-steps{grid-template-columns:44px minmax(0,1fr) 44px}.choir-mixer .cm-volume-steps>button{display:inline-flex}.choir-mixer .cm-volume-entry{height:44px}.choir-mixer .cm-volume-entry input{font-size:16px}.choir-mixer .cm-channel-head{gap:5px}.choir-mixer .cm-toggle{width:44px;height:44px}.choir-mixer .cm-toggle svg{width:19px;height:19px}}
-    @media(max-height:480px){.choir-mixer .cm-header{padding:4px 10px}.choir-mixer .cm-body{overflow:auto;overscroll-behavior:contain}.choir-mixer .cm-player{padding:4px 10px}.choir-mixer .cm-caption{display:none}.choir-mixer .cm-transport{margin-bottom:0}.choir-mixer .cm-master{padding:4px 10px}.choir-mixer .cm-auto-plan{padding:4px 8px}.choir-mixer .cm-levels{flex-shrink:0}.choir-mixer .cm-levels-body{overflow:visible}}
+    @media(pointer:coarse),(max-width:600px){.choir-mixer{max-height:calc(100dvh - 24px)}.choir-mixer .cm-header{padding:7px 12px}.choir-mixer .cm-player{padding:6px 12px}.choir-mixer .cm-now{margin-bottom:4px}.choir-mixer .cm-master,.choir-mixer .cm-tuning{padding:6px 12px}.choir-mixer .cm-auto-plan{gap:3px;padding:6px}.choir-mixer .cm-auto-plan button{padding:4px 3px}.choir-mixer .cm-channels-title{padding:8px 12px}.choir-mixer .cm-volume{grid-template-columns:minmax(0,1fr)}.choir-mixer .cm-volume>input[type="range"]{display:none}.choir-mixer .cm-volume-steps{grid-template-columns:44px minmax(0,1fr) 44px}.choir-mixer .cm-volume-steps>button{display:inline-flex}.choir-mixer .cm-volume-entry{height:44px}.choir-mixer .cm-volume-entry input{font-size:16px}.choir-mixer .cm-channel-head{gap:5px}.choir-mixer .cm-toggle{width:44px;height:44px}.choir-mixer .cm-toggle svg{width:19px;height:19px}}
+    @media(pointer:coarse),(max-width:600px){.choir-mixer .cm-playback-tuning{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}.choir-mixer .cm-tuning{padding:4px 6px}.choir-mixer .cm-tuning .cm-volume-steps{grid-template-columns:minmax(0,1fr)}.choir-mixer .cm-tuning .cm-volume-steps>button{display:none}}
+    @media(max-height:480px){.choir-mixer .cm-header{padding:4px 10px}.choir-mixer .cm-body{overflow:auto;overscroll-behavior:contain}.choir-mixer .cm-player{padding:4px 10px}.choir-mixer .cm-caption{display:none}.choir-mixer .cm-transport{margin-bottom:0}.choir-mixer .cm-master,.choir-mixer .cm-tuning{padding:4px 10px}.choir-mixer .cm-auto-plan{padding:4px 8px}.choir-mixer .cm-levels{flex-shrink:0}.choir-mixer .cm-levels-body{overflow:visible}}
   `);
   root.innerHTML = `<div class="ensemble-tts">
     <div class="et-header">
@@ -2185,6 +2257,18 @@ export async function setup(ctx) {
       <label class="et-check" title="Ambient background sound from Freesound"><input data-et="enableAmbience" type="checkbox" checked> Ambience</label>
       <label class="et-check" title="Kevin MacLeod's incompetech tracks, CC BY 4.0"><input data-et="enableMusic" type="checkbox"> Music</label>
       <label class="et-check" data-et="loopMusicWrap" title="Keep the track playing between replies until another music cue replaces it. Stop, music off, or changing chats ends playback."><input data-et="loopMusic" type="checkbox"> Loop music</label>
+    </div>
+    <h4 class="et-subhead">Playback</h4>
+    <div class="et-tuning-grid">
+      <section class="et-tuning">
+        <div class="et-tuning-head"><span class="et-tuning-title">Playback speed</span><span class="et-tuning-hint">Speaks voices faster or slower with the pitch kept. Type any speed from 0.07× to 16×, the browser maximum. Sound effects and ambience stay at normal speed.</span></div>
+        <div class="et-tuning-slot" data-et="playbackSpeedSlot"></div>
+        <label class="et-tuning-max" title="Top end of every speed slider, from 1× to 16×. Typed speeds are not limited by it.">Slider maximum<span class="et-tuning-max-entry"><input data-et="speedSliderMax" type="number" min="1" max="16" step="0.25" inputmode="decimal"><span aria-hidden="true">×</span></span></label>
+      </section>
+      <section class="et-tuning">
+        <div class="et-tuning-head"><span class="et-tuning-title">Gap between voices</span><span class="et-tuning-hint">Silence between consecutive spoken blocks. Sound effects and ambience are not counted.</span></div>
+        <div class="et-tuning-slot" data-et="voiceGapSlot"></div>
+      </section>
     </div>
     <h4 class="et-subhead">Reading</h4>
     <div class="et-row">
@@ -2346,8 +2430,12 @@ export async function setup(ctx) {
   const followResume=document.createElement('button');followResume.type='button';followResume.className='choir-follow-resume';followResume.hidden=true;
   document.body.append(followResume);unsubs.push(()=>followResume.remove());
   let currentSpeaker='', currentGroupLevel=null,currentGroupNames=[], audioContext, currentGain, currentNormalize=1, activePlayback,advancePlayback,skipAudio,audioReady=false,generationPolicyChanged,mixerPlaybackSegments=null,bedsPaused=false;
+  // Speech takes the playback speed; the silence before a spoken block is held here so Pause and skips reach it.
+  let currentAudioSpeech=false,currentSpeedSpeaker='',voiceGapHold=null;
   // Keep the launcher unobtrusive on every load, including existing expanded preferences.
-  const savedMixer=await ctx.settings.get('ui:mixer').catch(()=>null);let mixerState={master:1,sfx:1,ambience:1,music:1,levelsCollapsed:true,channelTab:'',channels:{},x:20,y:80,enabled:savedMixer?(savedMixer.enabled??true):Boolean(config?.enableMixer),...(savedMixer||{}),collapsed:true};
+  const savedMixer=await ctx.settings.get('ui:mixer').catch(()=>null);let mixerState={master:1,sfx:1,ambience:1,music:1,levelsCollapsed:true,channelTab:'',channels:{},x:20,y:80,enabled:savedMixer?(savedMixer.enabled??true):Boolean(config?.enableMixer),playbackRate:PLAYBACK_RATE_LIMITS.fallback,voiceGapMs:VOICE_GAP_LIMITS.fallback,...(savedMixer||{}),collapsed:true};
+  // Global speed and gap are mixer state, saved in ui:mixer beside the channel levels, so they work with or without a chat open.
+  mixerState.speedSliderMax=normalizeSpeedSliderMax(mixerState.speedSliderMax);mixerState.playbackRate=normalizePlaybackRate(mixerState.playbackRate);mixerState.voiceGapMs=normalizeVoiceGap(mixerState.voiceGapMs);
   // Solo is no longer exposed; old solo preferences must not silently mute other voices.
   for(const channel of Object.values(mixerState.channels))delete channel.solo;
   // Dedicated effect levels replace legacy voice-channel preferences.
@@ -2384,8 +2472,107 @@ export async function setup(ctx) {
   }
   const masterLabel=document.createElement('div');masterLabel.className='cm-master';masterLabel.textContent='Master';
   const masterReadout=document.createElement('span');masterReadout.className='cm-percent';masterReadout.setAttribute('aria-hidden','true');const masterVolume=makeMixerVolume('Master',mixerState.master,masterReadout,value=>{mixerState.master=value;applyVolume();});masterLabel.append(masterVolume,masterReadout);
+  // Same slider, step buttons and entry as the volume rows. The slider shows min..max; typed values and buttons reach hardMin..hardMax, and the readout always shows the true value.
+  function makeMixerTuning(name,{min,max,hardMin=min,hardMax=max,step,nudge,fallback,decimals,unit,text,title,onValue,onCommit,onReset}){
+    const root=document.createElement('div');root.className='cm-volume';root.title=title;
+    const range=document.createElement('input');range.type='range';range.min=String(min);range.max=String(max);range.step=String(step);range.setAttribute('aria-label',name);
+    range.title=`Drag or use arrow keys to adjust, or double-click to reset to ${text(fallback)}.`;
+    const steps=document.createElement('div');steps.className='cm-volume-steps';
+    const minus=document.createElement('button'),plus=document.createElement('button');minus.type=plus.type='button';minus.textContent='−';plus.textContent='+';
+    minus.setAttribute('aria-label',`Decrease ${name.toLowerCase()}`);plus.setAttribute('aria-label',`Increase ${name.toLowerCase()}`);
+    const entry=document.createElement('div');entry.className='cm-volume-entry';const number=document.createElement('input');number.type='number';number.min=String(hardMin);number.max=String(hardMax);number.step=String(step);number.inputMode='decimal';number.setAttribute('aria-label',`${name} value`);
+    const suffix=document.createElement('span');suffix.textContent=unit;suffix.setAttribute('aria-hidden','true');entry.append(number,suffix);steps.append(minus,entry,plus);root.append(range,steps);
+    let current=fallback;
+    const clamp=(value,low,high)=>Math.min(high,Math.max(low,value));
+    // Typed values and buttons land on the step grid inside hardMin..hardMax. NaN keeps the current value.
+    const quantize=value=>{const numeric=Number(value);if(!Number.isFinite(numeric))return current;return Number((hardMin+Math.round((clamp(numeric,hardMin,hardMax)-hardMin)/step)*step).toFixed(decimals));};
+    // An entry keeps its text only while the user types in it. Any other change, such as the drawer slider, repaints it even if the entry still has focus.
+    let typing=false;
+    const paint=()=>{
+      // The slider can only show min..max, so a value beyond it pins the thumb at the end and the fill at 100%.
+      const shown=clamp(current,min,max);
+      range.value=String(shown);
+      // Inside the slider's range the thumb's value is the one the browser kept, so thumb and readout always agree.
+      const actual=Number(range.value);if(current>=min && current<=max && Number.isFinite(actual))current=actual;
+      if(!typing)number.value=current.toFixed(decimals);
+      range.style.setProperty('--choir-level',`${(shown-min)/(max-min)*100}%`);range.setAttribute('aria-valuetext',text(current));
+      minus.disabled=current<=hardMin;plus.disabled=current>=hardMax;
+    };
+    const change=(next,commit)=>{current=quantize(next);paint();onValue(current);if(commit)onCommit();};
+    range.oninput=()=>{typing=false;change(range.value,false);};range.onchange=()=>onCommit();
+    // Double-click resets to the default, unless the control supplies its own reset (a character that follows the master speed).
+    const reset=()=>{typing=false;return onReset?onReset():change(fallback,true);};
+    range.ondblclick=reset;
+    number.oninput=()=>{if(number.value.trim() && Number.isFinite(Number(number.value))){typing=true;change(number.value,true);}};
+    number.onblur=()=>{typing=false;paint();};number.onkeydown=event=>{if(event.key==='Enter'){event.preventDefault();number.blur();}};
+    minus.onclick=()=>{typing=false;change(current-nudge,true);};plus.onclick=()=>{typing=false;change(current+nudge,true);};
+    // A row that follows another value shows it dimmed and says how to set its own value.
+    const setInherited=(flag,inheritedHint,ownHint)=>{root.classList.toggle('cm-inherited',Boolean(flag));root.title=flag?inheritedHint:ownHint;};
+    paint();
+    // The slider's top end can move (the user's slider maximum). Typed values keep their own hardMin..hardMax.
+    const setSliderMax=value=>{max=Math.max(min+step,Number(value)||max);range.max=String(max);paint();};
+    return {root,set(value){const next=quantize(value);if(next!==current)typing=false;current=next;paint();},reset,setInherited,setSliderMax};
+  }
+  // Speed and gap are mixer state saved in ui:mixer beside the channel levels, so they work with or without a chat open.
+  // The slider shows a practical part of the speed range. Typed values and the step buttons reach every speed the browser plays.
+  // The slider's top end is the user's choice (settings card), from 1× up to the 16× browser maximum.
+  const SPEED_SLIDER={min:0.25,max:mixerState.speedSliderMax};
+  const SPEED_CONTROL={...SPEED_SLIDER,hardMin:PLAYBACK_RATE_LIMITS.min,hardMax:PLAYBACK_RATE_LIMITS.max,step:PLAYBACK_RATE_LIMITS.step,fallback:PLAYBACK_RATE_LIMITS.fallback,nudge:0.05,decimals:2,unit:'×',text:value=>`${value.toFixed(2)}×`};
+  const GAP_CONTROL={...VOICE_GAP_LIMITS,nudge:50,decimals:0,unit:'ms',text:value=>`${value} ms`};
+  const SPEED_TITLE='Speaks Choir voices faster or slower with the pitch kept. Drag between 0.25× and the slider maximum set in Choir settings. Type any speed from 0.07× to 16×, the browser maximum. Sound effects and ambience stay at normal speed.';
+  const GAP_TITLE='Silence between consecutive spoken blocks. Sound effects and ambience are not counted.';
+  // A typed speed above the slider's top end raises it, so dragging continues from the typed speed instead of jumping back.
+  const stretchSpeedSlider=value=>{if(value>mixerState.speedSliderMax)setSpeedSliderMax(Math.ceil(value));};
+  const refreshSpeechGrouping=()=>{updateGroupingStatus();if(config?.batchSpeech)refreshSectionControls();};
+  const setSpeed=value=>{stretchSpeedSlider(value);mixerState.playbackRate=value;syncVoiceControls();applyPlaybackRate();refreshSpeechGrouping();};
+  const setGap=value=>{mixerState.voiceGapMs=value;syncVoiceControls();refreshSpeechGrouping();};
+  const saveMixerValue=()=>void persistMixer();
+  const speedControl=makeMixerTuning('Playback speed',{...SPEED_CONTROL,title:SPEED_TITLE,onValue:setSpeed,onCommit:saveMixerValue});
+  const gapControl=makeMixerTuning('Gap between voices',{...GAP_CONTROL,title:GAP_TITLE,onValue:setGap,onCommit:saveMixerValue});
+  // The settings drawer shows its own copies of the same two controls, reading and writing the same mixerState values.
+  const speedSettings=makeMixerTuning('Playback speed in settings',{...SPEED_CONTROL,title:SPEED_TITLE,onValue:setSpeed,onCommit:saveMixerValue});
+  const gapSettings=makeMixerTuning('Gap between voices in settings',{...GAP_CONTROL,title:GAP_TITLE,onValue:setGap,onCommit:saveMixerValue});
+  // A character's own speed replaces the master speed for that character. Without one (no key, or null) it follows the master speed.
+  const speakerSpeedRows=[];
+  function paintSpeakerSpeeds(){
+    const master=voiceRate();
+    for(const row of speakerSpeedRows){
+      const custom=speakerPlaybackRate(mixerState.channels,row.speaker);
+      const shown=custom ?? master;
+      row.speed.set(shown);
+      row.speed.setInherited(custom===null,
+        `Follows master speed (${shown.toFixed(2)}×). Change to set a custom speed for ${row.speaker}.`,
+        `Custom speed for ${row.speaker}, used instead of the master speed. Double-click or ↺ to follow the master speed again.`);
+      row.followButton.hidden=custom===null;
+    }
+  }
+  // Clears the custom speed entirely, so the character follows the master speed again.
+  function followMasterSpeed(channel,speaker){delete channel.speed;paintSpeakerSpeeds();applyPlaybackRate();refreshSpeechGrouping();saveMixerValue();}
+  function attachDrawerTuning(slotName,control,label,defaultText){
+    const slot=$(slotName);if(!slot)return;
+    const reset=document.createElement('button');reset.type='button';reset.className='et-tuning-reset';reset.textContent='Reset';reset.title=`Reset ${label} to ${defaultText}`;reset.setAttribute('aria-label',`Reset ${label}`);reset.onclick=()=>control.reset();
+    slot.replaceChildren(control.root,reset);
+  }
+  attachDrawerTuning('playbackSpeedSlot',speedSettings,'playback speed',SPEED_CONTROL.text(SPEED_CONTROL.fallback));
+  attachDrawerTuning('voiceGapSlot',gapSettings,'gap between voices',GAP_CONTROL.text(GAP_CONTROL.fallback));
+  speedSettings.root.querySelector('input[type="range"]').dataset.et='playbackRate';speedSettings.root.querySelector('input[type="number"]').dataset.et='playbackRateEntry';
+  gapSettings.root.querySelector('input[type="range"]').dataset.et='voiceGapMs';gapSettings.root.querySelector('input[type="number"]').dataset.et='voiceGapMsEntry';
+  // Moves the top end of every speed slider: master, settings and each character.
+  function setSpeedSliderMax(value){
+    mixerState.speedSliderMax=normalizeSpeedSliderMax(value);
+    for(const control of [speedControl,speedSettings,...speakerSpeedRows.map(row=>row.speed)])control.setSliderMax(mixerState.speedSliderMax);
+    const field=$('speedSliderMax');if(field && document.activeElement!==field)field.value=String(mixerState.speedSliderMax);
+  }
+  const sliderMaxField=$('speedSliderMax');
+  if(sliderMaxField){
+    sliderMaxField.value=String(mixerState.speedSliderMax);
+    sliderMaxField.onchange=()=>{setSpeedSliderMax(sliderMaxField.value);sliderMaxField.value=String(mixerState.speedSliderMax);saveMixerValue();};
+  }
+  const tuningRow=(label,control)=>{const row=document.createElement('div');row.className='cm-tuning';const caption=document.createElement('span');caption.textContent=label;row.append(caption,control.root);return row;};
+  const speedRow=tuningRow('Speed',speedControl),gapRow=tuningRow('Gap',gapControl);
+  const playbackTuning=document.createElement('div');playbackTuning.className='cm-playback-tuning';playbackTuning.append(speedRow,gapRow);
   const mixerPlay=document.createElement('button');mixerPlay.type='button';mixerPlay.dataset.choirAction='playback';
-  mixerPlay.onclick=()=>{if(currentAudio){if(currentAudio.paused){currentAudio.play().then(updateTransport).catch(e=>status(e.message,true));pauseBeds(false);}else{currentAudio.pause();pauseBeds(true);updateTransport();}}else if(!busy && !controller){mixerPlay.disabled=true;status('Loading playback…');run(async()=>{const latest=latestReply();if(!latest)throw new Error('No assistant reply in the active chat.');if(plan && planSource?.chatId===chatId && planSource.messageId===latest.id && sameSpeech(planSource.content,ctx.messages.getContent(latest.id)))await play({resume:true});else await playMessage(latest.id);});}};
+  mixerPlay.onclick=()=>{if(voiceGapHold){voiceGapHold.paused?voiceGapHold.resume():voiceGapHold.pause();pauseBeds(voiceGapHold.paused);updateTransport();return;}if(currentAudio){if(currentAudio.paused){currentAudio.play().then(updateTransport).catch(e=>status(e.message,true));pauseBeds(false);}else{currentAudio.pause();pauseBeds(true);updateTransport();}}else if(!busy && !controller){mixerPlay.disabled=true;status('Loading playback…');run(async()=>{const latest=latestReply();if(!latest)throw new Error('No assistant reply in the active chat.');if(plan && planSource?.chatId===chatId && planSource.messageId===latest.id && sameSpeech(planSource.content,ctx.messages.getContent(latest.id)))await play({resume:true});else await playMessage(latest.id);});}};
   const mixerPlanLatest=document.createElement('button');mixerPlanLatest.type='button';mixerPlanLatest.dataset.choirAction='plan-latest';mixerPlanLatest.innerHTML=ICON_PLAN;mixerPlanLatest.title='Plan latest reply without starting audio';mixerPlanLatest.setAttribute('aria-label','Plan latest reply');mixerPlanLatest.onclick=()=>run(planLatest);
   const mixerNext=document.createElement('button');mixerNext.type='button';mixerNext.innerHTML=ICON_NEXT;mixerNext.title='Next spoken block';mixerNext.setAttribute('aria-label','Next spoken block');mixerNext.disabled=true;mixerNext.onclick=()=>advancePlayback?.();
   const mixerPrevious=document.createElement('button');mixerPrevious.type='button';mixerPrevious.innerHTML=ICON_PREVIOUS;mixerPrevious.title='Previous spoken block';mixerPrevious.setAttribute('aria-label','Previous spoken block');mixerPrevious.disabled=true;mixerPrevious.onclick=()=>advancePlayback?.(-1);
@@ -2409,7 +2596,7 @@ export async function setup(ctx) {
   const mixerMusic=document.createElement('button');mixerMusic.type='button';mixerMusic.dataset.choirAction='music';mixerMusic.setAttribute('aria-label','Background music');mixerMusic.onclick=()=>run(()=>{if(!chatId)throw new Error('Open a chat first.');$('enableMusic').checked=!$('enableMusic').checked;scheduleSettingsSave();syncMusicPlayback();});
   autoPlanRow.append(mixerAutoPlan,mixerAutoPlay,mixerSfx,mixerAmbience,mixerMusic);
   levelsBody.append(channelTabs,channelsRoot,legend);levels.append(channelsTitle,levelsBody);
-  player.append(nowPlaying,transport,mixerSeek.root);mixerBody.append(player,masterLabel,autoPlanRow,levels);mixer.append(mixerHeader,mixerBody);document.body.append(mixer);
+  player.append(nowPlaying,transport,mixerSeek.root);mixerBody.append(player,masterLabel,playbackTuning,autoPlanRow,levels);mixer.append(mixerHeader,mixerBody);document.body.append(mixer);
   unsubs.push(()=>{autoPlanAction?.destroy();autoPlanAction=null;toolbarAutoPlan.remove();});
   function refreshAutoPlanControls(){
     mixerAutoPlan.textContent='Auto-plan';
@@ -2545,14 +2732,56 @@ export async function setup(ctx) {
   const docWin=root?.ownerDocument?.defaultView || (typeof window!=='undefined'?window:null);
   const resizeMixer=()=>positionMixer();docWin?.addEventListener('resize',resizeMixer);
   unsubs.push(()=>{docWin?.removeEventListener('resize',resizeMixer);mixer.remove();audioContext?.close().catch(()=>{});});
+  function voiceRate(){return normalizePlaybackRate(mixerState.playbackRate);}
+  function voiceGapSetting(){return normalizeVoiceGap(mixerState.voiceGapMs);}
+  // The silence goes before a spoken block only when an earlier spoken block precedes it. Sound effects and ambience are skipped over.
+  function gapBefore(items,index){
+    if(!items?.[index] || items[index].kind)return 0;
+    for(let i=index-1;i>=0;i--)if(items[i] && !items[i].kind && !playbackExcluded(items[i]))return voiceGapSetting();
+    return 0;
+  }
+  // Mirrors the saved speed and gap into the mixer rows and the drawer controls. Every control reads the same mixerState values.
+  function syncVoiceControls(){
+    const rate=voiceRate(),gap=voiceGapSetting();
+    for(const control of [speedControl,speedSettings])control.set(rate);
+    for(const control of [gapControl,gapSettings])control.set(gap);
+    paintSpeakerSpeeds();
+  }
+  // Browsers accept only their own playback range, so the speed is first clamped into it. A browser that still refuses it plays at normal speed instead of stopping the block.
+  function setAudioRate(audio,rate){
+    try{audio.playbackRate=browserPlaybackRate(rate);}
+    catch{try{audio.playbackRate=1;}catch{}}
+  }
+  // Speed reaches the spoken block that is playing; sound effects, ambience and previews keep normal speed.
+  function applyPlaybackRate(){if(currentAudio)setAudioRate(currentAudio,currentAudioSpeech?playbackRateFor(currentSpeedSpeaker):1);}
+  // A character's own speed when it has one, otherwise the playback speed.
+  function playbackRateFor(speaker){return effectivePlaybackRate(voiceRate(),mixerState.channels,speaker);}
+  // The speaker whose speed a block uses: the first speaker of a unison or dialogue block, otherwise the block's speaker.
+  function primarySpeaker(item,fallback){return item?.unison?.[0]?.speaker ?? item?.turns?.[0]?.speaker ?? fallback;}
+  // A held gap counts as playback that has not started yet, so Next and Previous keep its paused state.
+  const heldPaused=()=>voiceGapHold?voiceGapHold.paused:Boolean(currentAudio?.paused);
+  // The silence before a spoken block. Its countdown runs in real time and only while playback runs, so Pause holds it.
+  function startVoiceGap(ms,paused,finish){
+    let remaining=ms,since=0,timer=null;
+    const hold={
+      paused,
+      run(){if(hold.paused || timer!==null)return;since=Date.now();timer=setTimeout(()=>{timer=null;remaining=0;finish();},remaining);},
+      pause(){if(hold.paused)return;hold.paused=true;if(timer!==null){clearTimeout(timer);timer=null;remaining=Math.max(0,remaining-(Date.now()-since));}},
+      resume(){if(!hold.paused)return;hold.paused=false;hold.run();},
+      cancel(){if(timer!==null){clearTimeout(timer);timer=null;}}
+    };
+    hold.run();
+    return hold;
+  }
   function renderMixer(){
     const doc=root?.ownerDocument || (typeof document!=='undefined'?document:null);
     if(!doc)return;
     updateGroupingStatus();
     refreshAutoPlanControls();
+    syncVoiceControls();
     const focused=doc.activeElement,focusLabel=channelsRoot.contains(focused)?focused.getAttribute('aria-label'):null,focusTabKey=channelTabs.contains(focused)?focused.dataset.channelKey:null,scrollTop=channelsRoot.scrollTop;
     updateNextControls();
-    channelsRoot.replaceChildren();speakerLabel.replaceChildren();
+    channelsRoot.replaceChildren();speakerLabel.replaceChildren();speakerSpeedRows.length=0;
     if(currentSpeaker){const prefix=doc.createElement('span');prefix.className='cm-sr-only';prefix.textContent='Speaking: ';speakerLabel.append(prefix,doc.createTextNode(currentSpeaker));}else speakerLabel.textContent='Ready to play';
     const speakers=new Set((mixerPlaybackSegments ?? plan?.segments ?? []).flatMap(speechMembers).filter(segment=>!segment.kind && segment.speaker).map(segment=>segment.speaker));
     const mainCast=new Set((config?.fixed || []).flatMap(actor=>[actor.speaker,...(actor.aliases || [])]).map(normalizeName));
@@ -2566,7 +2795,13 @@ export async function setup(ctx) {
       const controls=doc.createElement('div');controls.className='cm-channel-controls';
       const volume=makeMixerVolume(speaker,channel.volume,readout,value=>{channel.volume=value;applyVolume();updateGroupingStatus();if(config?.batchSpeech)refreshSectionControls();},MAX_CHANNEL_VOLUME);
       const silent=doc.createElement('button');silent.type='button';silent.className='cm-toggle';silent.dataset.kind='silent';silent.innerHTML=channel.mute?ICON_MUTED:ICON_SOUND;silent.setAttribute('aria-label',`${speaker} silent`);silent.setAttribute('aria-pressed',String(Boolean(channel.mute)));silent.title='Silent: mute playback. Audio can still be generated and cached.';silent.onclick=()=>{channel.mute=!channel.mute;applyVolume();renderMixer();if(config?.batchSpeech)refreshSectionControls();persistMixer();};
-      controls.append(volume);head.append(silent);
+      // Different dialogue rates split into separate clips on the next Play.
+      // Simultaneous unison voices keep a shared rate to stay aligned.
+      const speed=makeMixerTuning(`${speaker} speed`,{...SPEED_CONTROL,max:mixerState.speedSliderMax,title:`Speed for ${speaker}. Replaces the playback speed for this character. Different dialogue speeds use separate clips on the next Play. Unison voices share the first speaker's speed. Pitch is kept.`,onValue:value=>{stretchSpeedSlider(value);channel.speed=value;paintSpeakerSpeeds();applyPlaybackRate();refreshSpeechGrouping();},onCommit:saveMixerValue,onReset:()=>followMasterSpeed(channel,speaker)});
+      const followButton=doc.createElement('button');followButton.type='button';followButton.className='cm-speed-reset';followButton.textContent='↺';followButton.setAttribute('aria-label',`Follow playback speed for ${speaker}`);followButton.title=`Use the playback speed for ${speaker} again`;followButton.onclick=()=>followMasterSpeed(channel,speaker);
+      speakerSpeedRows.push({speaker,speed,followButton});paintSpeakerSpeeds();
+      const speedLine=doc.createElement('div');speedLine.className='cm-channel-speed';const speedCaption=doc.createElement('span');speedCaption.textContent='Speed';speedLine.append(speedCaption,speed.root,followButton);
+      controls.append(volume,speedLine);head.append(silent);
       const noVoice=doc.createElement('button');noVoice.type='button';noVoice.className='cm-toggle';noVoice.dataset.kind='no-voice';noVoice.innerHTML=speakerExcluded(speaker)?ICON_MIC_OFF:ICON_MIC;noVoice.setAttribute('aria-label',`${speaker} no voice`);noVoice.setAttribute('aria-pressed',String(speakerExcluded(speaker)));noVoice.title='No voice: skip this character, including cached playback. No new audio is generated; text and saved audio stay available.';noVoice.onclick=()=>run(()=>setSpeakerExcluded(speaker,!speakerExcluded(speaker)));head.append(noVoice);
       row.append(head,controls);
       channelsRoot.append(row);
@@ -2605,7 +2840,7 @@ export async function setup(ctx) {
     updateSeekControls();
   }
   function updateTransport(){
-    const latest=latestReply(),paused=!currentAudio || currentAudio.paused,label=currentAudio?(paused?'Resume Choir audio':'Pause Choir audio'):'Play latest reply';
+    const latest=latestReply(),paused=voiceGapHold?voiceGapHold.paused:(!currentAudio || currentAudio.paused),label=currentAudio?(paused?'Resume Choir audio':'Pause Choir audio'):'Play latest reply';
     mixerPlay.innerHTML=(paused?ICON_TRANSPORT_PLAY:ICON_TRANSPORT_PAUSE).replace(/<circle[^>]*\/>/,'');mixerPlay.title=label;mixerPlay.setAttribute('aria-label',label);mixerPlay.disabled=currentAudio?!audioReady:busy || Boolean(controller) || !chatId || !latest;
     mixerPlanLatest.disabled=busy || Boolean(controller) || !chatId || !latest;
     mixerStop.disabled=!controller && !currentAudio && !autoReplyQueue.size && !beds.ambience && !beds.music;
@@ -3750,7 +3985,7 @@ export async function setup(ctx) {
     if($('jevEndpoint'))$('jevEndpoint').value=config.jevEndpoint||'';
     for(const name of ['allowLlmFallback','normalizeLoudness','skipMeta','sectionButtons'])$(name).checked=Boolean(config[name]);
     $('prefetch').value=config.prefetch;
-    $('batchSpeech').checked=Boolean(config.batchSpeech);
+    $('batchSpeech').checked=Boolean(config.batchSpeech);syncVoiceControls();
     updatePlannerVisibility();
     updateProviderVisibility();
   }
@@ -4365,7 +4600,11 @@ export async function setup(ctx) {
     currentGroupLevel=item?.unison?1:groupLevels.length?(groupLevels.every(level=>level===groupLevels[0])?groupLevels[0]:item.groupLevel ?? 1):null;
     renderMixer();applyVolume();
     const AudioContextClass=globalThis.AudioContext || globalThis.webkitAudioContext;
-    let mediaSource, gain, stopFollowing;
+    let mediaSource, gain, stopFollowing, gapHold=null;
+    // Speed applies to spoken blocks only. Sound effects, ambience and previews play at normal speed.
+    // A unison or dialogue block has several speakers; its first speaker's own speed is used for the whole block.
+    currentAudioSpeech=Boolean(item && !item.kind);currentSpeedSpeaker=currentAudioSpeech?primarySpeaker(item,speaker):'';setAudioRate(audio,currentAudioSpeech?playbackRateFor(currentSpeedSpeaker):1);audio.preservesPitch=true;
+    const endGap=()=>{gapHold?.cancel();if(voiceGapHold===gapHold)voiceGapHold=null;gapHold=null;};
     try {
     if(AudioContextClass){
       try{
@@ -4388,20 +4627,28 @@ export async function setup(ctx) {
       if(signal.aborted)throw abortError();
       await new Promise((resolve,reject)=>{
         let settled=false;
-        const done=error=>{if(settled)return;settled=true;signal.removeEventListener('abort',cancel);audio.onended=null;audio.onerror=null;if(currentAudio===audio){finishAudio=null;skipAudio=null;updateNextControls();}error?reject(error):resolve();};
+        const done=error=>{if(settled)return;settled=true;signal.removeEventListener('abort',cancel);audio.onended=null;audio.onerror=null;endGap();if(currentAudio===audio){finishAudio=null;skipAudio=null;updateNextControls();}error?reject(error):resolve();};
         const cancel=()=>{audio.pause();done(abortError());};finishAudio=cancel;
         skipAudio=()=>{audio.pause();done();};updateNextControls();
         audio.onended=()=>done();audio.onerror=()=>done(new Error('Browser could not decode this provider’s audio. Use WAV or MP3.'));
         signal.addEventListener('abort',cancel,{once:true});
         if(speakerExcluded(speaker) || speaker==='SFX' && config?.enableSfx===false){done();return;}
         if(track)stopFollowing=followSpeech(audio,track);
-        if(paused){audioReady=true;updateTransport();}
-        else audio.play().then(()=>{if(!settled && currentAudio===audio){audioReady=true;updateTransport();}}).catch(error=>done(new Error(error.name==='NotAllowedError'?'Browser blocked audio. Click Play in the mixer to enable playback.':error.message)));
+        const startAudio=()=>audio.play().then(()=>{if(!settled && currentAudio===audio){audioReady=true;updateTransport();}}).catch(error=>done(new Error(error.name==='NotAllowedError'?'Browser blocked audio. Click Play in the mixer to enable playback.':error.message)));
+        const gapMs=track?.gapMs || 0;
+        if(gapMs>0){
+          // The silence runs before the audio starts. Mixer Play pauses or resumes it, and a block started paused waits for Play.
+          audioReady=true;
+          gapHold=startVoiceGap(gapMs,paused,()=>{if(settled)return;gapHold=null;voiceGapHold=null;startAudio();});
+          voiceGapHold=gapHold;updateTransport();
+        }
+        else if(paused){audioReady=true;updateTransport();}
+        else startAudio();
       });
     } finally {
       if(activePlayback===position && position)savePosition(audio.currentTime || 0);
-      stopFollowing?.();audio.onloadedmetadata=null;audio.ontimeupdate=null;audio.ondurationchange=null;mediaSource?.disconnect();gain?.disconnect();
-      audio.pause();if(currentAudio===audio){currentAudio=null;skipAudio=null;currentGain=null;currentNormalize=1;audioReady=false;currentSpeaker='';currentGroupLevel=null;currentGroupNames=[];renderMixer();}
+      endGap();stopFollowing?.();audio.onloadedmetadata=null;audio.ontimeupdate=null;audio.ondurationchange=null;mediaSource?.disconnect();gain?.disconnect();
+      audio.pause();if(currentAudio===audio){currentAudio=null;currentAudioSpeech=false;currentSpeedSpeaker='';skipAudio=null;currentGain=null;currentNormalize=1;audioReady=false;currentSpeaker='';currentGroupLevel=null;currentGroupNames=[];renderMixer();}
       URL.revokeObjectURL(url);if(objectUrl===url)objectUrl=null;
     }
   }
@@ -4472,11 +4719,11 @@ export async function setup(ctx) {
     const provider=nativeProviders.find(item=>item.id===connection?.provider);
     const family=detectProvider(route),limits=speechRequestLimits(connection?.provider,connection?.model);
     const prebuilt=GEMINI_VOICES.some(voice=>voice.id===segment.voice);
-    const maxSpeakers=family==='fish_audio' || family==='gemini' && prebuilt || provider?.capabilities.staticVoices?.some(voice=>voice.id===segment.voice)?nativeSpeakerLimit(connection):0;
+    const maxSpeakers=voiceGapSetting()>0?0:family==='fish_audio' || family==='gemini' && prebuilt || provider?.capabilities.staticVoices?.some(voice=>voice.id===segment.voice)?nativeSpeakerLimit(connection):0;
     const parameters={...request.parameters};
     if(maxSpeakers && (family==='gemini' || connection?.provider==='openrouter_tts')){delete parameters.speech_style;delete parameters.instructions;}
     const level=mixerVolume(1,segment.speaker,mixerState.channels);
-    return {...limits,...speechTextOptions(snapshot),maxSpeakers,group:JSON.stringify([parameters,level,maxSpeakers]),
+    return {...limits,...speechTextOptions(snapshot),maxSpeakers,group:JSON.stringify([parameters,level,maxSpeakers,playbackRateFor(segment.speaker)]),
       measure:turns=>{
         const styled=turns.map(turn=>synthesisSettings(turn,snapshot).segment);
         const text=styled.map((turn,index)=>family==='fish_audio'
@@ -4631,9 +4878,9 @@ export async function setup(ctx) {
       while(next<segments.length && (segments[next].passageIndex ?? next)===passage)next++;
       for(let index=playIdx;index<next;index++)skipped.add(index);
       if(direction<0){const start=blockStart(playIdx);next=start>0?blockStart(start-1):0;while(next>0 && speakerExcluded(segments[next].speaker))next=blockStart(next-1);if(speakerExcluded(segments[next]?.speaker))next=blockStart(playIdx);for(let index=next;index<segments.length && (segments[index].passageIndex ?? index)===(segments[next].passageIndex ?? next);index++)skipped.delete(index);}
-      failed=[...failures].some(index=>!skipped.has(index) && !speakerExcluded(segments[index].speaker));jumpTo=next;pauseNext=Boolean(currentAudio?.paused);skipAudio();
+      failed=[...failures].some(index=>!skipped.has(index) && !speakerExcluded(segments[index].speaker));jumpTo=next;pauseNext=heldPaused();skipAudio();
     };
-    generationPolicyChanged=()=>{failed=[...failures].some(index=>!skipped.has(index) && !playbackExcluded(segments[index]));if(currentSpeaker==='SFX' && config?.enableSfx===false){pauseNext=Boolean(currentAudio?.paused);skipAudio?.();}nextToSynthesize=Math.min(nextToSynthesize,playIdx);wakePolicy?.({policy:true});pump();};
+    generationPolicyChanged=()=>{failed=[...failures].some(index=>!skipped.has(index) && !playbackExcluded(segments[index]));if(currentSpeaker==='SFX' && config?.enableSfx===false){pauseNext=heldPaused();skipAudio?.();}nextToSynthesize=Math.min(nextToSynthesize,playIdx);wakePolicy?.({policy:true});pump();};
     const passages={...(cached?.passages || {})};
     const inflight=new Map();
     // Upgrade old complete recordings without discarding their audio.
@@ -4756,7 +5003,7 @@ export async function setup(ctx) {
         const offset=resumePending && source.resume.passage===activePlayback.passage && source.resume.chunk===activePlayback.chunk?source.resume.seconds:0;resumePending=false;
         const paused=pauseNext;pauseNext=false;
         for(const kind in beds){const marker=bedIndex(segments,playIdx,kind);followBed(segments[marker]?.[kind],()=>loadBed(marker),kind,()=>{delete passages[cacheKey(segments[marker],snapshot)];blobs[marker]=undefined;void persist();});}
-        try{await playBlob(blob,ctrl.signal,seg.speaker,offset,snapshot.normalizeLoudness,paused,{messageId:source.messageId,items:segments,index:playIdx});}
+        try{await playBlob(blob,ctrl.signal,seg.speaker,offset,snapshot.normalizeLoudness,paused,{messageId:source.messageId,items:segments,index:playIdx,gapMs:gapBefore(segments,playIdx)});}
         catch(error){
           if(seg.kind!=='sfx' || ctrl.signal.aborted || token!==revision)throw error;
           warnFoley(error);delete passages[cacheKey(seg,snapshot)];blobs[playIdx]=undefined;foleyCache.delete(foleyKey(seg.sfx));await persist();
@@ -4855,7 +5102,7 @@ export async function setup(ctx) {
         if(await restoreSavedPlan(messageId)){await play();return;}
         throw new Error('Saved sound-effect timing needs updating. Plan and play this reply to place effects between phrases.');
       }
-      if(recording.segments.some(segment=>segment.unison && (JSON.stringify(segment.mixLevels)!==JSON.stringify(unisonLevels(segment)) || segment.mixNormalize!==config.normalizeLoudness) || segment.dialogue && (!config.batchSpeech || segment.turns.some(turn=>speakerExcluded(turn.speaker) || mixerVolume(1,turn.speaker,mixerState.channels)!==mixerVolume(1,segment.turns[0].speaker,mixerState.channels))))){
+      if(recording.segments.some(segment=>segment.unison && (JSON.stringify(segment.mixLevels)!==JSON.stringify(unisonLevels(segment)) || segment.mixNormalize!==config.normalizeLoudness) || segment.dialogue && (!config.batchSpeech || voiceGapSetting()>0 || segment.turns.some(turn=>speakerExcluded(turn.speaker) || mixerVolume(1,turn.speaker,mixerState.channels)!==mixerVolume(1,segment.turns[0].speaker,mixerState.channels) || playbackRateFor(turn.speaker)!==playbackRateFor(segment.turns[0].speaker))))){
         if(await restoreSavedPlan(messageId)){await play();return;}
         throw new Error('Speaker controls changed. Plan and play this reply to rebuild its grouped audio.');
       }
@@ -4871,7 +5118,7 @@ export async function setup(ctx) {
       }
       mixerPlaybackSegments=recording.segments;renderMixer();
       let pauseNext=false;
-      generationPolicyChanged=()=>{if(currentSpeaker==='SFX' && config?.enableSfx===false){pauseNext=Boolean(currentAudio?.paused);skipAudio?.();}};
+      generationPolicyChanged=()=>{if(currentSpeaker==='SFX' && config?.enableSfx===false){pauseNext=heldPaused();skipAudio?.();}};
       for(let index=0;index<recording.blobs.length;) {
         const blob=recording.blobs[index];
         if(!blob || speakerExcluded(recording.segments[index].speaker) || recording.segments[index].kind==='sfx' && config.enableSfx===false || isBed(recording.segments[index])){index++;continue;}
@@ -4879,10 +5126,10 @@ export async function setup(ctx) {
         status(`Replaying ${index+1}/${recording.blobs.length}: ${recording.segments[index].speaker}`);
         const segment=recording.segments[index];
         let nextIndex=index+1;
-        advancePlayback=(direction=1)=>{if(!skipAudio || ctrl.signal.aborted || token!==revision)return;const passage=segment.passageIndex ?? index;if(direction<0){let start=index;while(start>0 && (recording.segments[start-1].passageIndex ?? start-1)===passage)start--;nextIndex=Math.max(0,start-1);const previous=recording.segments[nextIndex].passageIndex ?? nextIndex;while(nextIndex>0 && (recording.segments[nextIndex-1].passageIndex ?? nextIndex-1)===previous)nextIndex--;}else while(nextIndex<recording.segments.length && (recording.segments[nextIndex].passageIndex ?? nextIndex)===passage)nextIndex++;pauseNext=Boolean(currentAudio?.paused);skipAudio();};
+        advancePlayback=(direction=1)=>{if(!skipAudio || ctrl.signal.aborted || token!==revision)return;const passage=segment.passageIndex ?? index;if(direction<0){let start=index;while(start>0 && (recording.segments[start-1].passageIndex ?? start-1)===passage)start--;nextIndex=Math.max(0,start-1);const previous=recording.segments[nextIndex].passageIndex ?? nextIndex;while(nextIndex>0 && (recording.segments[nextIndex-1].passageIndex ?? nextIndex-1)===previous)nextIndex--;}else while(nextIndex<recording.segments.length && (recording.segments[nextIndex].passageIndex ?? nextIndex)===passage)nextIndex++;pauseNext=heldPaused();skipAudio();};
         activePlayback={chatId:targetChat,messageId,content:recording.content,passage:segment.passageIndex ?? index,chunk:segment.chunkIndex ?? 0};
         for(const kind in beds){const marker=bedIndex(recording.segments,index,kind),bedBlob=bedEnabled(kind) && recording.blobs[marker];const entry=recording.segments[marker]?.[kind];followBed(entry?.stop?entry:bedBlob && entry,async()=>bedBlob,kind);}
-        const paused=pauseNext;pauseNext=false;await playBlob(blob,ctrl.signal,recording.segments[index].speaker,0,config.normalizeLoudness,paused,{messageId,items:recording.segments,index});
+        const paused=pauseNext;pauseNext=false;await playBlob(blob,ctrl.signal,recording.segments[index].speaker,0,config.normalizeLoudness,paused,{messageId,items:recording.segments,index,gapMs:gapBefore(recording.segments,index)});
         index=nextIndex;const next=recording.segments[index];activePlayback={...activePlayback,passage:next?.passageIndex ?? (activePlayback.passage+1),chunk:next?.chunkIndex ?? 0,complete:index===recording.blobs.length};savePosition(0);activePlayback=null;
       }
       if(token===revision)status('Replay finished.');
@@ -5514,7 +5761,7 @@ const paragraphAudioCache = new Map();
             if (ctrl.signal.aborted || signal?.aborted) throw abortError();
             if(playbackExcluded(batch))continue;
             onStatus?.({ kind: 'playing', speaker: batch.speaker });
-            await playBlob(blob,ctrl.signal,batch.speaker,0,snapshot.normalizeLoudness,false,{messageId,items:batches,index:i});
+            await playBlob(blob,ctrl.signal,batch.speaker,0,snapshot.normalizeLoudness,false,{messageId,items:batches,index:i,gapMs:gapBefore(batches,i)});
             played++;
           }catch(error){
             if(batch.kind!=='sfx' || ctrl.signal.aborted || signal?.aborted)throw error;
