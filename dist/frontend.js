@@ -3314,15 +3314,27 @@ export async function setup(ctx) {
     dialog.append(heading,intro,tabs,body,feedback,actions);overlay.append(dialog);document.body.append(overlay);buttons[0].focus();
     for(const refresh of voiceRefreshes)void refresh();void npcEditor.refresh();
   }
-  let settingsWriteQueue=null,pendingSettings=null,autosaveTimer=null,settingsEdit=0;const retentionPolicies=new Map();
+  let settingsWriteQueue=null,pendingSettings=null,autosaveTimer=null,settingsEdit=0,preferenceBaseline={};const retentionPolicies=new Map();
   function saveState(text,error=false){if(disposed)return;$('saveState').textContent=text;$('saveState').classList.toggle('et-error',error);$('save').hidden=!error || !text.startsWith('Save failed');}
   async function persistConfig(targetChat=chatId,value=config,inherit=false){
     if(pendingSettings?.chatId===targetChat){pendingSettings=null;clearTimeout(autosaveTimer);autosaveTimer=null;inherit=true;}
     validateNumericSettings(value);
     const snapshot=structuredClone(withoutSecrets(value)),edit=settingsEdit;
+    const localPreferences=preferenceSnapshot(snapshot),baseline=preferenceBaseline;
     const write=async()=>{
+      let preferences;
+      if(inherit){
+        const latest=await ctx.settings.get(GLOBAL_SETTINGS_KEY);
+        // A stale tab must not overwrite preferences it never edited, including
+        // a Freesound key saved elsewhere. Compare inside the serialized queue
+        // so a later edit can also undo an earlier, still-pending save.
+        const changes=Object.fromEntries(Object.entries(localPreferences).filter(([name,value])=>JSON.stringify(value)!==JSON.stringify(baseline[name])));
+        preferences={...localPreferences,...preferenceSnapshot(latest),...changes};
+        Object.assign(snapshot,preferences);
+      }
       await ctx.settings.set(settingsKey(targetChat),snapshot);
-      if(inherit){await ctx.settings.set(GLOBAL_SETTINGS_KEY,preferenceSnapshot(snapshot));
+      if(inherit){await ctx.settings.set(GLOBAL_SETTINGS_KEY,preferences);
+        Object.assign(baseline,localPreferences);
         if(retentionPolicies.get(targetChat)!==snapshot.retention){try{await recordingStore('policy',recordingKey(targetChat,''),{retention:snapshot.retention});retentionPolicies.set(targetChat,snapshot.retention);}catch(error){if(chatId===targetChat)status(`Settings saved. Audio retention could not be applied: ${error.message}`,true);}}
       }
     };
@@ -4185,6 +4197,7 @@ export async function setup(ctx) {
     config=normalizeSavedSettings({...defaults(),...Object.fromEntries(preferenceFields.filter(name=>preferences && Object.hasOwn(preferences,name)).map(name=>[name,preferences[name]])),...(legacyCast || {}),...(saved || {}),...preferences});
     config.plannerMode=resolvePlannerMode(preferences);
     config.useFastClassifier=config.plannerMode==='heuristic';config.useJev=config.plannerMode==='jev';
+    preferenceBaseline=preferenceSnapshot(config);
     if(!saved && !legacyCast)config.fixed[0].voice='';
     retentionPolicies.set(id,config.retention);
     if(saved && !saved.connectionMode)config.connectionMode='several';

@@ -8,6 +8,44 @@ import {validatePlan,speechSourceUnits,transcriptFromMessage} from '../src/core.
 import {speechPanel} from './fixtures/speech-panel.mjs';
 import {phoneWidget} from './fixtures/phone-widget.mjs';
 
+test('Freesound key saved by another tab survives unrelated preference edits',async()=>{
+  const h=await harness();try{
+    assert.equal(h.$('freesoundApiKey').value,'');
+    h.store.set('settings:global',{freesoundApiKey:'another-tab-key',plannerTokens:8192});
+    h.$('chunk').value='700';h.$('chunk').dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));
+    await until(()=>h.$('saveState').textContent==='Saved automatically');
+    assert.equal(h.store.get('settings:global').freesoundApiKey,'another-tab-key');
+    assert.equal(h.store.get('settings:global').plannerTokens,8192);
+    assert.equal(h.store.get('chat:chat-a').freesoundApiKey,'another-tab-key');
+    await h.reload();assert.equal(h.$('freesoundApiKey').value,'another-tab-key');
+    h.state.active='chat-new';h.subscriptions.get('chat.active')();
+    await until(()=>h.$('saveState').textContent==='Connection preferences restored');
+    assert.equal(h.$('freesoundApiKey').value,'another-tab-key');
+  }finally{await h.close();}
+});
+
+test('Freesound key supports intentional replacement and clearing',async()=>{
+  const h=await harness();try{
+    for(const key of ['first-test-key','replacement-test-key','']){
+      h.$('freesoundApiKey').value=key;h.$('freesoundApiKey').dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));
+      await until(()=>h.$('saveState').textContent==='Saved automatically');
+      assert.equal(h.store.get('settings:global').freesoundApiKey,key);
+      await h.reload();assert.equal(h.$('freesoundApiKey').value,key);
+    }
+  }finally{await h.close();}
+});
+
+test('queued preference edits can revert a value while the previous save is pending',async()=>{
+  const h=await harness();try{
+    h.state.configDelay=180;
+    h.$('chunk').value='700';h.$('chunk').dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));
+    await new Promise(resolve=>setTimeout(resolve,280));
+    h.$('chunk').value='500';h.$('chunk').dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));
+    await until(()=>h.$('saveState').textContent==='Saved automatically');
+    assert.equal(h.store.get('settings:global').chunk,500);
+  }finally{await h.close();}
+});
+
 const tick=()=>new Promise(resolve=>setTimeout(resolve,10));
 const until=async(predicate)=>{for(let i=0;i<250;i++){if(predicate())return;await tick();}throw Error('Timed out waiting for regression state');};
 
