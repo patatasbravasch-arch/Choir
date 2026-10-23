@@ -2399,12 +2399,111 @@ export async function setup(ctx) {
   for(const button of root.querySelectorAll('button'))button.type='button';
   const pending = new Map();
   let audioNamespace,audioNamespaceError;
-  try {
-    audioNamespace=await ctx.settings.get('audio:namespace');
-    if(!audioNamespace){audioNamespace=randomUuid();await ctx.settings.set('audio:namespace',audioNamespace);}
-  } catch(error){audioNamespaceError=error;}
-  let audioDatabase;
+  for(let attempt=0;attempt<2;attempt++){
+    try{
+      audioNamespace=await ctx.settings.get('audio:namespace');
+      if(!audioNamespace){audioNamespace=randomUuid();await ctx.settings.set('audio:namespace',audioNamespace);}
+      audioNamespaceError=null;break;
+    }catch(error){
+      audioNamespaceError=error;
+      if(attempt===0)await new Promise(resolve=>setTimeout(resolve,150));
+    }
+  }
+  let audioDatabase,audioDatabaseHandle;
   const sessionAudio=new Map();
+  function openRecordingDatabase(){
+    if(!audioDatabase){
+      const opening=new Promise((resolve,reject)=>{
+        const request=indexedDB.open('choir-recordings',1);
+        let settled=false;
+        const fail=error=>{if(settled)return;settled=true;reject(error);};
+        request.onupgradeneeded=()=>request.result.createObjectStore('recordings');
+        request.onsuccess=()=>{if(settled){try{request.result.close();}catch{}return;}settled=true;resolve(request.result);};
+        request.onerror=()=>fail(request.error || new Error('Device audio storage could not be opened.'));
+        request.onblocked=()=>fail(new Error('Close other Lumiverse tabs to enable recording storage.'));
+      });
+      audioDatabase=opening;
+      opening.then(db=>{
+        // A failed open is forgotten in the rejection handler, so a later call can retry.
+        if(audioDatabase!==opening){db.close();return;}
+        audioDatabaseHandle=db;
+        const forget=()=>{if(audioDatabaseHandle===db){audioDatabaseHandle=null;audioDatabase=null;}};
+        db.onversionchange=()=>{db.close();forget();};
+        db.onclose=forget;
+      },()=>{if(audioDatabase===opening)audioDatabase=null;});
+    }
+    return audioDatabase;
+  }
+  // A request error bubbles to the transaction before transaction.error is
+  // guaranteed to be populated. The event target always carries the request's
+  // error, so use it first and never reject with null.
+  const recordingFailure=(event,fallback)=>event?.target?.error || event?.target?.transaction?.error || event?.currentTarget?.error || fallback;
+  function runRecordingTransaction(db,operation,key,value){
+    return new Promise((resolve,reject)=>{
+      const transaction=db.transaction('recordings','readwrite');
+      const store=transaction.objectStore('recordings');
+      let result;
+      if(!['policy','prune','deleteChat'].includes(operation)){
+        const request=operation==='put'?store.put(value,key):operation==='delete'?store.delete(key):store.get(key);
+        request.onsuccess=()=>{result=request.result;if(operation==='get' && result?.expiresAt!=null && result.expiresAt<=Date.now()){store.delete(key);result=undefined;}};
+        transaction.oncomplete=()=>{if(operation==='put')sessionAudio.delete(key);resolve(result);};
+        transaction.onerror=event=>reject(recordingFailure(event,new Error('Recording storage failed.')));
+        transaction.onabort=event=>reject(recordingFailure(event,new Error('Recording storage failed.')));
+        return;
+      }
+      const cursorRequest=store.openCursor();
+      cursorRequest.onsuccess=()=>{
+        const cursor=cursorRequest.result;
+        if(cursor) {
+          let identity;try{identity=JSON.parse(cursor.key);}catch{}
+          if(identity?.[0]===audioNamespace) {
+            const record=cursor.value;
+            if(operation==='deleteChat' && identity[1]===JSON.parse(key)[1])cursor.delete();
+            else if(operation==='policy' && identity[1]===JSON.parse(key)[1]) {
+              record.createdAt ??= Date.now();
+              record.expiresAt=value.retention==='forever'?null:record.createdAt+Number(value.retention)*86400000;
+              if(value.retention==='session' || (record.expiresAt!==null && record.expiresAt<=Date.now()))cursor.delete();
+              else cursor.update(record);
+            } else if(record.expiresAt!=null && record.expiresAt<=Date.now())cursor.delete();
+          }
+          cursor.continue();return;
+        }
+        if(operation==='policy' || operation==='prune' || operation==='deleteChat')return;
+        const request=operation==='put'?store.put(value,key):operation==='delete'?store.delete(key):store.get(key);
+        request.onsuccess=()=>{result=request.result;};
+      };
+      transaction.oncomplete=()=>resolve(result);
+      transaction.onerror=event=>reject(recordingFailure(event,new Error('Recording storage failed.')));
+      transaction.onabort=event=>reject(recordingFailure(event,new Error('Recording storage failed.')));
+    });
+  }
+  function recordingInUse(key){
+    for(const entry of [activePlayback,planSource])if(entry && recordingKey(entry.chatId,entry.messageId)===key)return true;
+    return Boolean(chatId && messagePlaybackId && recordingKey(chatId,messagePlaybackId)===key);
+  }
+  // Only the selected retention policy may end a recording's life. Indefinite
+  // audio (expiresAt === null) and unexpired timed audio are never removed here.
+  function purgeExpiredRecordings(db,keepKey){
+    return new Promise((resolve,reject)=>{
+      const transaction=db.transaction('recordings','readwrite');
+      const store=transaction.objectStore('recordings');
+      let removed=0;
+      const request=store.openCursor();
+      request.onsuccess=()=>{
+        const cursor=request.result;
+        if(cursor){
+          let identity;try{identity=JSON.parse(cursor.key);}catch{}
+          const record=cursor.value;
+          const expired=record?.expiresAt!=null && record.expiresAt<=Date.now();
+          if(identity?.[0]===audioNamespace && cursor.key!==keepKey && !recordingInUse(cursor.key) && expired){store.delete(cursor.key);removed++;}
+          cursor.continue();
+        }
+      };
+      transaction.oncomplete=()=>resolve(removed);
+      transaction.onerror=event=>reject(recordingFailure(event,new Error('Recording storage cleanup failed.')));
+      transaction.onabort=event=>reject(recordingFailure(event,new Error('Recording storage cleanup failed.')));
+    });
+  }
   async function recordingStore(operation,key,value) {
     if(operation==='policy' && value.retention!=='session') {
       for(const [sessionKey,record] of [...sessionAudio]) {
@@ -2429,48 +2528,37 @@ export async function setup(ctx) {
     }
     if(audioNamespaceError)throw new Error(`Audio storage settings could not be loaded: ${audioNamespaceError.message}`);
     if(!globalThis.indexedDB)throw new Error('Device audio storage is unavailable in this browser.');
-    if(!audioDatabase)audioDatabase=new Promise((resolve,reject)=>{
-      const request=indexedDB.open('choir-recordings',1);
-      request.onupgradeneeded=()=>request.result.createObjectStore('recordings');
-      request.onsuccess=()=>resolve(request.result);
-      request.onerror=()=>reject(request.error);
-      request.onblocked=()=>reject(new Error('Close other Lumiverse tabs to enable recording storage.'));
-    });
-    const db=await audioDatabase;
-    return new Promise((resolve,reject)=>{
-      const transaction=db.transaction('recordings','readwrite');
-      const store=transaction.objectStore('recordings');
-      let result;
-      if(!['policy','prune','deleteChat'].includes(operation)){
-        const request=operation==='put'?store.put(value,key):operation==='delete'?store.delete(key):store.get(key);
-        request.onsuccess=()=>{result=request.result;if(operation==='get' && result?.expiresAt!=null && result.expiresAt<=Date.now()){store.delete(key);result=undefined;}};
-        transaction.oncomplete=()=>{if(operation==='put')sessionAudio.delete(key);resolve(result);};transaction.onerror=()=>reject(transaction.error);transaction.onabort=()=>reject(transaction.error || new Error('Recording storage failed.'));return;
+    let db=await openRecordingDatabase();
+    try{return await runRecordingTransaction(db,operation,key,value);}
+    catch(error){
+      error ||= new Error('Recording storage failed.');
+      if(error?.name==='InvalidStateError' || error?.name==='TransactionInactiveError'){
+        // The browser or another tab closed the connection. Reopen once instead of
+        // disabling saved audio for the rest of the session.
+        audioDatabaseHandle=null;audioDatabase=null;
+        db=await openRecordingDatabase();
+        return runRecordingTransaction(db,operation,key,value);
       }
-      const cursorRequest=store.openCursor();
-      cursorRequest.onsuccess=()=>{
-        const cursor=cursorRequest.result;
-        if(cursor) {
-          let identity;try{identity=JSON.parse(cursor.key);}catch{}
-          if(identity?.[0]===audioNamespace) {
-            const record=cursor.value;
-            if(operation==='deleteChat' && identity[1]===JSON.parse(key)[1])cursor.delete();
-            else if(operation==='policy' && identity[1]===JSON.parse(key)[1]) {
-              record.createdAt ??= Date.now();
-              record.expiresAt=value.retention==='forever'?null:record.createdAt+Number(value.retention)*86400000;
-              if(value.retention==='session' || (record.expiresAt!==null && record.expiresAt<=Date.now()))cursor.delete();
-              else cursor.update(record);
-            } else if(record.expiresAt!=null && record.expiresAt<=Date.now())cursor.delete();
-          }
-          cursor.continue();return;
+      if(operation==='put' && error?.name==='QuotaExceededError'){
+        let removed=0;
+        try{removed=await purgeExpiredRecordings(db,key);}
+        catch(purgeError){
+          if(purgeError?.name==='InvalidStateError' || purgeError?.name==='TransactionInactiveError')throw purgeError;
         }
-        if(operation==='policy' || operation==='prune' || operation==='deleteChat')return;
-        const request=operation==='put'?store.put(value,key):operation==='delete'?store.delete(key):store.get(key);
-        request.onsuccess=()=>{result=request.result;};
-      };
-      transaction.oncomplete=()=>resolve(result);
-      transaction.onerror=()=>reject(transaction.error);
-      transaction.onabort=()=>reject(transaction.error || new Error('Recording storage failed.'));
-    });
+        if(removed){
+          try{
+            const result=await runRecordingTransaction(db,operation,key,value);
+            status(`Storage was full. Removed ${removed} expired recording${removed===1?'':'s'}; audio kept indefinitely was not touched.`);
+            return result;
+          }catch(retryError){
+            if(retryError?.name!=='QuotaExceededError')throw retryError;
+            error=retryError;
+          }
+        }
+        throw new Error(`Device audio storage is full.${removed?` ${removed} expired recording${removed===1?' was':'s were'} removed, but the new audio still did not fit.`:' Choir does not delete audio saved with “Indefinitely” retention automatically.'} Clear saved audio for another message or chat, or choose a shorter retention period. (${error.message})`);
+      }
+      throw error;
+    }
   }
   const recordingKey=(chat,message)=>JSON.stringify([audioNamespace,chat,message]);
   const unsubs = [];
@@ -4953,7 +5041,7 @@ export async function setup(ctx) {
     }
     return new Blob([mixUnisonAudio(tracks,audioContext.sampleRate,{normalize:snapshot.normalizeLoudness})],{type:'audio/wav'});
   }
-  function createStreamingPlayer(snapshot,source,cached,ctrl,token) {
+  function createStreamingPlayer(snapshot,source,cached,ctrl,token,{pruneStale=false,retain=[]}={}) {
     const segments=[];
     const warnings=new Set();
     const warnFoley=error=>{warnings.add(error.message);if(token===revision)showFoleyStatus(`SFX skipped: ${[...warnings].join('; ')}. Speech continues.`);};
@@ -4983,8 +5071,31 @@ export async function setup(ctx) {
     const inflight=new Map();
     // Upgrade old complete recordings without discarding their audio.
     if(!cached?.passages)for(const [index,segment] of (cached?.segments || []).entries())if(cached.blobs?.[index] && (!segment.turns || segment.turns.length===1) && recordedSpeechMatches(cached,index,snapshot))passages[cacheKey(segment,snapshot)]=cached.blobs[index];
+    let currentKeys=null,savedKeys=null;
+    const currentPassageKeys=()=>currentKeys ||= (()=>{
+      const keys=new Set();
+      // `retain` is the unfiltered plan. It keeps audio for speakers currently
+      // set to No voice, so turning them back on can reuse what was cached.
+      for(const segment of [...segments,...retain]){
+        try{keys.add(cacheKey(segment,snapshot));}catch{}
+        if(segment.unison)for(const member of speechMembers(segment))try{keys.add(cacheKey(member,snapshot));}catch{}
+      }
+      return [...keys];
+    })();
+    const previousPassageKeys=()=>cached?.passageKeys || Object.keys(cached?.passages || {});
+    const savedPassageKeys=()=>savedKeys ||= pruneStale?currentPassageKeys():[...new Set([...previousPassageKeys(),...currentPassageKeys()])];
+    // A full replay keeps the current plan and the immediately previous
+    // generation, so one voice, route, mode or text change can be undone
+    // without paying for the same speech again. Older generations are dropped,
+    // which bounds the record at two plans. Section playback keeps every clip.
+    const pruneStalePassages=()=>{
+      if(!pruneStale)return;
+      const keep=new Set(currentPassageKeys());
+      for(const key of previousPassageKeys())keep.add(key);
+      for(const key of Object.keys(passages))if(!keep.has(key))delete passages[key];
+    };
     const persist=()=>{
-      const value={content:source.content,transcript:source.transcript,segments:[...segments],blobs:[...blobs],speechTexts:segments.map(segment=>recordingSpeechText(segment,snapshot)),passages:{...passages},sfxPlacement:SFX_PLACEMENT_VERSION,retention:snapshot.retention};
+      const value={content:source.content,transcript:source.transcript,segments:[...segments],blobs:[...blobs],speechTexts:segments.map(segment=>recordingSpeechText(segment,snapshot)),passages:{...passages},passageKeys:isDoneAdding?savedPassageKeys():(cached?.passageKeys || []),sfxPlacement:SFX_PLACEMENT_VERSION,retention:snapshot.retention};
       saveQueue=saveQueue.then(()=>recordingStore('put',recordingKey(source.chatId,source.messageId),value)).catch(error=>{saveError=error.message;});
       return saveQueue;
     };
@@ -5067,6 +5178,7 @@ export async function setup(ctx) {
       if(total)totalExpected=total;
       // Beds load as soon as they are known, so a new bed is ready when its marker plays.
       for(const s of newSegments){segments.push(s);if(isBed(s) && !s[s.kind].stop && !playbackExcluded(s))loadBed(segments.length-1).catch(()=>{});}
+      currentKeys=null;savedKeys=null;
       mixerPlaybackSegments=segments;
       if(!initialized && segments.length){initialized=true;if(source.resume){const start=segments.findIndex(segment=>segment.passageIndex>source.resume.passage || (segment.passageIndex===source.resume.passage && segment.chunkIndex>=(source.resume.chunk || 0)));playIdx=start<0?segments.length:start;nextToSynthesize=playIdx;}}
       pump();
@@ -5075,6 +5187,7 @@ export async function setup(ctx) {
 
     function finish() {
       isDoneAdding=true;
+      pruneStalePassages();
       wakePlayback?.();
     }
 
@@ -5112,7 +5225,7 @@ export async function setup(ctx) {
       }
       await saveQueue;
       if(saveError)status(`Audio could not be saved: ${saveError}`,true);
-      return {blobs,segments,warnings:[...warnings]};
+      return {blobs,segments,warnings:[...warnings],passages,passageKeys:savedPassageKeys()};
     })().finally(()=>{if(token===revision)fadeOutBeds();});
 
     // Observe failures immediately while the next planning section is pending.
@@ -5154,7 +5267,12 @@ export async function setup(ctx) {
     const resume=options.resume?await ctx.settings.get(`position:${chatId}`):null;
     if(token!==revision || ctrl.signal.aborted)throw abortError();
     const validResume=resume?.messageId===planSource.messageId && sameSpeech(resume.content,planSource.content) && !resume.complete?resume:null;
+    // Only a whole-message playback can safely discard other saved clips.
+    const fullPlayback=options.clip===undefined && options.indices===undefined;
     const selected=plan.segments.flatMap((segment,index)=>options.indices && !options.indices.includes(index)?[]:[{...segment,passageIndex:index}]);
+    // Keep every clip the plan can produce, including speakers and sound types
+    // currently switched off, so changing those controls can reuse cached audio.
+    const retain=fullPlayback?playbackBatches(selected,{...snapshot,enableSfx:true,enableAmbience:true,enableMusic:true},{filterMuted:false}):[];
     let segments=snapshot.batchSpeech?playbackBatches(selected,snapshot):selected.flatMap(segment=>playbackBatches([segment],snapshot));
     if(options.clip!==undefined){
       if(!snapshot.batchSpeech || !Number.isInteger(options.clip) || !segments[options.clip] || isBed(segments[options.clip]))throw new Error('This audio clip changed. Choose a current clip.');
@@ -5172,13 +5290,13 @@ export async function setup(ctx) {
     if(source.resume && cached?.signature!==signature && (snapshot.batchSpeech || cached?.segments?.some(segment=>segment.turns?.length>1) || outdatedSfxRecording(cached || {})))source.resume=null;
     setBusy(true);
     try {
-      const player=createStreamingPlayer(snapshot,source,cached,ctrl,token);
+      const player=createStreamingPlayer(snapshot,source,cached,ctrl,token,{pruneStale:fullPlayback,retain});
       player.push(segments,segments.length);
       player.finish();
-      const {blobs,warnings}=await player.playbackPromise;
+      const {blobs,warnings,passages,passageKeys}=await player.playbackPromise;
       {
         if(token!==revision || ctrl.signal.aborted)throw abortError();
-        try{const partial=await recordingStore('get',key);await recordingStore('put',key,{...partial,content:source.content,transcript:source.transcript,signature,segments,blobs,speechTexts:segments.map(segment=>recordingSpeechText(segment,snapshot)),sfxPlacement:SFX_PLACEMENT_VERSION,retention:snapshot.retention});storageError='';}
+        try{const partial=await recordingStore('get',key);await recordingStore('put',key,{...partial,content:source.content,transcript:source.transcript,signature,segments,blobs,passages,passageKeys,speechTexts:segments.map(segment=>recordingSpeechText(segment,snapshot)),sfxPlacement:SFX_PLACEMENT_VERSION,retention:snapshot.retention});storageError='';}
         catch(error){storageError=error.message;}
       }
       if(token===revision){renderMessages();status((storageError?`Playback finished. Audio could not be saved: ${storageError}`:snapshot.retention==='session'?'Playback finished. Audio kept for this session; Replay is available beside the message.':'Playback finished. Audio saved on this device; Replay is available beside the message.')+foleyWarning(warnings));}
@@ -5901,7 +6019,8 @@ const paragraphAudioCache = new Map();
     if(disposed)return;disposed=true;loadVersion++;cancelAutoReplies();saveOnLeave();stop(false);
     for(const done of [...pending.values()])done(abortError());
     unsubs.splice(0).forEach(fn=>fn());removeStyle();cleanupPlacements();
-    audioDatabase?.then(db=>db.close()).catch(()=>{});
+    try{audioDatabaseHandle?.close();}catch{}
+    audioDatabaseHandle=null;audioDatabase=null;
     sessionAudio.clear();
   };
   mixer.addEventListener('choir:replace',cleanup,{once:true});unsubs.push(()=>mixer.removeEventListener('choir:replace',cleanup));

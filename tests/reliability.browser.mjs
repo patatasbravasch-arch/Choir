@@ -2,7 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {JSDOM} from 'jsdom';
-import {IDBFactory} from 'fake-indexeddb';
+import {IDBFactory,IDBObjectStore} from 'fake-indexeddb';
 import {setup} from '../dist/frontend.js';
 import {validatePlan,speechSourceUnits,transcriptFromMessage} from '../src/core.js';
 import {speechPanel} from './fixtures/speech-panel.mjs';
@@ -48,12 +48,34 @@ test('queued preference edits can revert a value while the previous save is pend
 
 const tick=()=>new Promise(resolve=>setTimeout(resolve,10));
 const until=async(predicate)=>{for(let i=0;i<250;i++){if(predicate())return;await tick();}throw Error('Timed out waiting for regression state');};
+let failIdbOpen=0;
+const openRecordings=()=>new Promise((resolve,reject)=>{const request=globalThis.indexedDB.open('choir-recordings',1);request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);});
+async function recordings(){
+  const database=await openRecordings();
+  const rows=await new Promise((resolve,reject)=>{
+    const transaction=database.transaction('recordings','readonly'),request=transaction.objectStore('recordings').openCursor(),items=[];
+    request.onsuccess=()=>{const cursor=request.result;if(cursor){items.push({key:cursor.key,value:cursor.value});cursor.continue();}};
+    transaction.oncomplete=()=>resolve(items);transaction.onerror=()=>reject(transaction.error);
+  });
+  database.close();return rows;
+}
+const recordingFor=async content=>(await recordings()).find(row=>row.value?.content===content)?.value || null;
 
 async function harness(mixerPreferences,mobile=false){
   const dom=new JSDOM('<body><nav><button>Another extension</button><div data-choir-toolbar></div></nav><main></main><footer></footer></body>',{url:'https://lumiverse.test'});
   const layoutListeners=new Set(),channelLayout={matches:mobile,addEventListener:(_,fn)=>layoutListeners.add(fn),removeEventListener:(_,fn)=>layoutListeners.delete(fn)};dom.window.matchMedia=()=>channelLayout;
   const original={document:globalThis.document,Audio:globalThis.Audio,fetch:globalThis.fetch,indexedDB:globalThis.indexedDB};
-  globalThis.document=dom.window.document;globalThis.indexedDB=new IDBFactory();
+  const factory=new IDBFactory(),open=factory.open.bind(factory);
+  factory.open=(...args)=>{
+    if(failIdbOpen>0){
+      failIdbOpen--;
+      const request={error:Object.assign(new Error('Device audio storage is blocked.'),{name:'UnknownError'})};
+      setTimeout(()=>request.onerror?.(),0);
+      return request;
+    }
+    return open(...args);
+  };
+  globalThis.document=dom.window.document;globalThis.indexedDB=factory;
   const root=document.querySelector('main'),footer=document.querySelector('footer'),toolbar=document.querySelector('[data-choir-toolbar]');
   const state={active:'chat-a',blockAudio:false,failVoice:null,delay:0,held:false,aborted:0,previewFetches:[],bedFetches:[],previewAborted:0},store=new Map(),requests=[],synthesis=[],audios=[],audioBlobs=[],events=new Map(),subscriptions=new Map(),heldPlans=[],toolbarActions=new Map();
   const createObjectURL=URL.createObjectURL;URL.createObjectURL=blob=>{audioBlobs.push(blob);return createObjectURL(blob);};
@@ -2439,6 +2461,146 @@ test('storage failure preserves generated audio in the session and reports the p
     await h.click('play',text=>text.includes('Audio could not be saved'));
     assert.equal(h.synthesis.length,4);assert.match(h.$('status').textContent,/unavailable/);
     await h.click('play',text=>text.includes('Audio could not be saved'));assert.equal(h.synthesis.length,4);
+  }finally{await h.close();}
+});
+
+test('a transient audio-storage open failure is retried without disabling saved recordings',async()=>{
+  let h;try{
+    failIdbOpen=1;h=await harness();
+    await h.plan();await h.play();
+    assert.match(h.$('status').textContent,/Audio saved on this device/);
+    assert.ok(await recordingFor(h.message.content));
+  }finally{failIdbOpen=0;if(h)await h.close();}
+});
+
+test('a full replay keeps the current and previous passage generations but drops older ones',async()=>{
+  const h=await harness();try{
+    await h.plan();await h.play();
+    const first=await recordingFor(h.message.content),firstKeys=Object.keys(first.passages || {});
+    assert.ok(firstKeys.length>=4);
+    h.connections.forEach(connection=>{connection.default_parameters={speed:1.2};});
+    await h.reload();await h.play();
+    const second=await recordingFor(h.message.content),secondKeys=Object.keys(second.passages || {});
+    const secondGeneration=secondKeys.filter(key=>!firstKeys.includes(key));
+    assert.equal(h.synthesis.length,8);
+    assert.equal(second.blobs.length,second.segments.length);
+    assert.equal(secondKeys.length,8);
+    assert.ok(firstKeys.every(key=>secondKeys.includes(key)));
+    h.connections.forEach(connection=>{connection.default_parameters={speed:1.4};});
+    await h.reload();await h.play();
+    const third=await recordingFor(h.message.content),thirdKeys=Object.keys(third.passages || {});
+    assert.equal(h.synthesis.length,12);
+    assert.equal(thirdKeys.length,8);
+    assert.equal(firstKeys.filter(key=>thirdKeys.includes(key)).length,0);
+    assert.ok(secondGeneration.every(key=>thirdKeys.includes(key)));
+    assert.equal(third.blobs.length,third.segments.length);
+  }finally{await h.close();}
+});
+
+test('playing one section does not discard the rest of a message’s saved audio',async()=>{
+  const h=await harness();try{
+    await toggle(h,'sectionButtons',true);await h.plan();await h.play();
+    const first=await recordingFor(h.message.content),saved=Object.keys(first.passages || {}).length;
+    assert.ok(saved>=4);
+    await until(()=>h.footer.querySelectorAll('[data-choir-section]').length>=3);
+    h.footer.querySelector('[data-choir-section]').click();
+    await until(()=>h.$('status').textContent.includes('Playback finished'));
+    const second=await recordingFor(h.message.content);
+    assert.ok(Object.keys(second.passages || {}).length>=saved);
+    assert.equal(second.segments.length,1);
+  }finally{await h.close();}
+});
+
+const insertRecordings=async rows=>{
+  const database=await openRecordings();
+  await new Promise((resolve,reject)=>{
+    const transaction=database.transaction('recordings','readwrite'),store=transaction.objectStore('recordings');
+    for(const row of rows)store.put(row.value,row.key);
+    transaction.oncomplete=resolve;transaction.onerror=()=>reject(transaction.error);
+  });
+  database.close();
+};
+const failRecordingPuts=()=>{
+  const put=IDBObjectStore.prototype.put;
+  IDBObjectStore.prototype.put=function(...args){
+    if(this.name==='recordings')throw Object.assign(new Error('The quota has been exceeded.'),{name:'QuotaExceededError'});
+    return put.apply(this,args);
+  };
+  return ()=>{IDBObjectStore.prototype.put=put;};
+};
+
+test('a quota failure never deletes audio saved with indefinite retention and reports the limit',async()=>{
+  const h=await harness();try{
+    const namespace=h.store.get('audio:namespace'),key=JSON.stringify([namespace,'chat-old','message-old']);
+    await insertRecordings([{key,value:{content:'Old reply',createdAt:1,retention:'forever',expiresAt:null,segments:[],blobs:[],passages:{}}}]);
+    const restore=failRecordingPuts();
+    try{await h.plan();await h.play();}finally{restore();}
+    assert.match(h.$('status').textContent,/storage is full/i);
+    assert.match(h.$('status').textContent,/Indefinitely/i);
+    assert.ok((await recordings()).some(row=>row.key===key));
+  }finally{await h.close();}
+});
+
+test('quota cleanup removes only expired recordings and keeps indefinite and unexpired audio',async()=>{
+  const h=await harness();try{
+    const namespace=h.store.get('audio:namespace'),now=Date.now();
+    await insertRecordings([
+      {key:JSON.stringify([namespace,'chat-old','expired']),value:{content:'Expired reply',createdAt:1,retention:'1',expiresAt:now-1000,segments:[],blobs:[],passages:{}}},
+      {key:JSON.stringify([namespace,'chat-old','forever']),value:{content:'Forever reply',createdAt:2,retention:'forever',expiresAt:null,segments:[],blobs:[],passages:{}}},
+      {key:JSON.stringify([namespace,'chat-old','later']),value:{content:'Later reply',createdAt:3,retention:'7',expiresAt:now+86400000,segments:[],blobs:[],passages:{}}}
+    ]);
+    const restore=failRecordingPuts();
+    try{await h.plan();await h.play();}finally{restore();}
+    const identities=(await recordings()).map(row=>JSON.parse(row.key)[2]);
+    assert.equal(identities.includes('expired'),false);
+    assert.ok(identities.includes('forever'));
+    assert.ok(identities.includes('later'));
+  }finally{await h.close();}
+});
+
+test('quota cleanup keeps the recording for the message being played',async()=>{
+  const h=await harness();try{
+    await h.plan();await h.play();
+    const current=(await recordings()).find(row=>row.value?.content===h.message.content);
+    assert.ok(current);
+    h.connections.forEach(connection=>{connection.default_parameters={speed:1.2};});
+    const restore=failRecordingPuts();
+    try{await h.play();}finally{restore();}
+    assert.match(h.$('status').textContent,/storage is full/i);
+    const saved=(await recordings()).find(row=>row.key===current.key);
+    assert.ok(saved);
+    assert.deepEqual(saved.value.blobs,current.value.blobs);
+  }finally{await h.close();}
+});
+
+test('an asynchronous quota error is reported without a null message and recovers',async()=>{
+  const h=await harness();try{
+    const namespace=h.store.get('audio:namespace'),now=Date.now();
+    const currentKey=JSON.stringify([namespace,'chat-a','message-a']);
+    await insertRecordings([
+      {key:currentKey,value:{content:'Old version',createdAt:1,retention:'forever',expiresAt:null,segments:[],blobs:[],passages:{}}},
+      {key:JSON.stringify([namespace,'chat-old','expired']),value:{content:'Expired reply',createdAt:2,retention:'1',expiresAt:now-1000,segments:[],blobs:[],passages:{}}}
+    ]);
+    const put=IDBObjectStore.prototype.put,add=IDBObjectStore.prototype.add;
+    const quotaError=Object.assign(new Error('The quota has been exceeded.'),{name:'QuotaExceededError'});
+    let first=true;
+    IDBObjectStore.prototype.put=function(...args){
+      if(first && this.name==='recordings'){
+        first=false;
+        // A real asynchronous request error (duplicate key), relabelled as the
+        // quota failure the browser reports through the transaction event.
+        const request=add.call(this,...args);
+        Object.defineProperty(request,'error',{configurable:true,get:()=>quotaError,set:()=>{}});
+        return request;
+      }
+      return put.apply(this,args);
+    };
+    try{await h.plan();await h.play();}finally{IDBObjectStore.prototype.put=put;}
+    assert.doesNotMatch(h.$('status').textContent,/Cannot read properties of null/);
+    assert.match(h.$('status').textContent,/Audio saved on this device/);
+    const rows=await recordings();
+    assert.ok(rows.some(row=>row.key===currentKey));
+    assert.equal(rows.some(row=>JSON.parse(row.key)[2]==='expired'),false);
   }finally{await h.close();}
 });
 
