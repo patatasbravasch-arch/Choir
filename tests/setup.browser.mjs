@@ -113,6 +113,69 @@ test('Fish setup guide distinguishes credentials from voices and never offers re
   assert.match(guide.textContent,/API key.*voice ID/s);assert.match(guide.textContent,/Refresh connections/);assert.equal(h.calls.filter(call=>['synthesis','planner'].includes(call[0])).length,0);assert.equal(h.store.size,0);h.wizard.dispose();
 });
 
+function checkIllustratedGuide(h,id,expectedSteps,secret){
+  const guide=h.root().querySelector(`[data-setup-guide="${id}"]`);assert.ok(guide,`Missing ${id} illustrated guide`);guide.open=true;
+  const steps=[...guide.querySelectorAll('ol.cs-guide-steps > li')];
+  assert.deepEqual(steps.map(step=>step.dataset.guideStep),expectedSteps);
+  assert.equal(guide.querySelectorAll('figure').length,expectedSteps.length);
+  assert.equal(guide.querySelectorAll('img').length,expectedSteps.length);
+  for(const step of steps){
+    const title=step.querySelector('h4').textContent,picture=step.querySelector('.cs-guide-picture'),image=picture.querySelector('img'),caption=step.querySelector('figcaption');
+    assert.ok(image.alt.length>25,`Missing descriptive alternative text for ${title}`);
+    assert.match(image.src,/^data:image\/svg\+xml;charset=utf-8,/);assert.equal(image.loading,'lazy');
+    const svg=decodeURIComponent(image.src.split(',').slice(1).join(','));
+    assert.match(svg,/<svg\b/);assert.doesNotMatch(svg,/<script\b|<foreignObject\b|(?:href|src)=["']https?:/i);
+    assert.ok(!svg.includes(secret));assert.ok(!image.alt.includes(secret));assert.ok(!step.outerHTML.includes(secret));
+    assert.ok(caption.textContent.trim());assert.equal(picture.getAttribute('aria-describedby'),caption.id);
+    const toggle=step.querySelector('button');assert.equal(toggle.getAttribute('aria-label'),`Enlarge picture: ${title}`);assert.equal(toggle.getAttribute('aria-expanded'),'false');
+    toggle.click();assert.ok(picture.classList.contains('cs-picture-large'));assert.equal(toggle.getAttribute('aria-expanded'),'true');
+    assert.equal(toggle.getAttribute('aria-label'),`Reduce picture: ${title}`);assert.equal(h.dom.window.document.activeElement,picture);
+    toggle.click();assert.equal(picture.classList.contains('cs-picture-large'),false);assert.equal(toggle.getAttribute('aria-expanded'),'false');
+    assert.equal(toggle.getAttribute('aria-label'),`Enlarge picture: ${title}`);
+  }
+  const links=[...guide.querySelectorAll('a')];assert.ok(links.length);assert.ok(links.every(link=>link.target==='_blank'&&link.rel.includes('noopener')));
+  return guide;
+}
+
+test('Fish Audio illustrated guide has an offline picture for every step and enlarges without provider requests or saving',async()=>{
+  const secret='fish-guide-private-draft-key',h=uiHarness({config:{...base(),freesoundApiKey:secret}});
+  try{
+    await h.wizard.start();h.click('Next');await tick();const before=h.calls.map(call=>call[0]);
+    const guide=checkIllustratedGuide(h,'fish',['fish-account','fish-api-key','fish-lumiverse','fish-choose-connection','fish-voice-id','fish-test'],secret);
+    assert.equal(guide.querySelector('summary').textContent,'How to connect Fish Audio');
+    assert.match(guide.textContent,/Create New Key/);assert.match(guide.textContent,/Connect.*TTS.*New TTS Connection/);
+    assert.match(guide.textContent,/API URL empty/);assert.match(guide.textContent,/Refresh connections/);
+    assert.match(guide.textContent,/voice ID is different from an API key/);assert.match(guide.textContent,/Test narrator voice/);
+    assert.match(guide.textContent,/illustrated examples, not screenshots/);
+    const urls=[...guide.querySelectorAll('a')].map(link=>link.href);
+    assert.ok(urls.some(url=>/^https:\/\/fish\.audio\/app\/api-keys\/?$/.test(url)));
+    assert.ok(urls.includes('https://docs.fish.audio/developer-guide/getting-started/api-key'));
+    assert.ok(urls.includes('https://docs.fish.audio/developer-guide/getting-started/quickstart'));
+    await tick();assert.deepEqual(h.calls.map(call=>call[0]),before);assert.equal(h.store.size,0);
+    assert.equal(h.label('Default TTS connection').value,'tts');assert.equal(h.root().querySelector('h2').textContent,'Connections');
+  }finally{h.wizard.dispose();h.dom.window.close();}
+});
+
+test('Freesound illustrated guide explains the secret and sound cue LLM while keeping draft credentials out of pictures',async()=>{
+  const secret='freesound-guide-private-draft-key',h=uiHarness({config:{...base(),freesoundApiKey:secret}});
+  try{
+    await h.wizard.start();h.click('Next');h.click('Next');h.click('Next');await tick();
+    h.input('Freesound API key',secret+'-edited');const before=h.calls.map(call=>call[0]);
+    const guide=checkIllustratedGuide(h,'freesound',['freesound-account','freesound-apply','freesound-secret','freesound-paste','freesound-enable','freesound-finish'],secret);
+    assert.equal(guide.querySelector('summary').textContent,'How to get a Freesound API key');
+    assert.match(guide.textContent,/Client secret\/Api key/);assert.match(guide.textContent,/Do not copy Client ID/);
+    assert.match(guide.textContent,/Sound effects and\/or Ambient sound/);assert.match(guide.textContent,/Sound cue LLM connection/);
+    assert.match(guide.textContent,/Finish setup/);assert.match(guide.textContent,/Plan latest/);assert.match(guide.textContent,/do not need to set up an OAuth/);
+    const urls=[...guide.querySelectorAll('a')].map(link=>link.href);
+    assert.ok(urls.includes('https://freesound.org/apiv2/apply/'));
+    assert.ok(urls.includes('https://freesound.org/docs/api/authentication.html#token-authentication'));
+    await tick();assert.deepEqual(h.calls.map(call=>call[0]),before);assert.equal(h.store.size,0);
+    assert.equal(h.label('Freesound API key').value,secret+'-edited');assert.equal(h.label('Freesound API key').type,'password');
+    assert.equal(h.label('Sound effects').checked,false);assert.equal(h.label('Ambient sound').checked,false);
+    assert.equal(h.root().querySelector('h2').textContent,'Optional Features');
+  }finally{h.wizard.dispose();h.dom.window.close();}
+});
+
 test('deleted saved actor and NPC routes can be reached and repaired on the voices step',async()=>{
   const config={...base(),npcPolicy:{mode:'single',route:'native:deleted',voice:'old'}};
   config.fixed[0].route='native:deleted';

@@ -47,6 +47,27 @@ const server=createServer(async(request,response)=>{
 await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
 let browser;
 const errors=[];
+async function checkIllustratedGuide(page,wizard,id,screenshot){
+  const guide=wizard.locator(`[data-setup-guide="${id}"]`);
+  if(!await guide.evaluate(node=>node.open))await guide.locator(':scope > summary').click();
+  const images=guide.locator('img');assert.equal(await images.count(),6);
+  for(const image of await images.all()){
+    await image.scrollIntoViewIfNeeded();
+    await image.evaluate(node=>node.decode());
+    assert.equal(await image.evaluate(node=>node.complete && node.naturalWidth===360 && node.naturalHeight===240),true);
+    assert.match(await image.getAttribute('src'),/^data:image\/svg\+xml/);
+  }
+  const enlarge=guide.getByRole('button',{name:/^Enlarge picture:/}).first();
+  await enlarge.scrollIntoViewIfNeeded();await enlarge.focus();await page.keyboard.press('Enter');
+  const picture=guide.locator('.cs-picture-large');assert.equal(await picture.count(),1);
+  assert.equal(await picture.evaluate(node=>document.activeElement===node && node.scrollWidth>node.clientWidth),true);
+  assert.equal(await wizard.evaluate(node=>node.scrollWidth<=node.clientWidth+1),true);
+  const reduce=guide.getByRole('button',{name:/^Reduce picture:/}).first();await reduce.click();
+  assert.equal(await guide.locator('.cs-picture-large').count(),0);
+  await guide.locator('[data-guide-step]').first().scrollIntoViewIfNeeded();
+  if(screenshot)await wizard.screenshot({path:screenshot});
+  assert.equal(await page.evaluate(()=>window.calls.length),0);
+}
 try{
   browser=await chromium.launch({headless:true,channel:process.env.CHOIR_BROWSER_CHANNEL || 'chrome',args:['--no-proxy-server']});
   const page=await browser.newPage({viewport:{width:1280,height:1000}});page.on('pageerror',error=>errors.push(error.message));
@@ -55,11 +76,12 @@ try{
   await wizard.getByRole('button',{name:'Next',exact:true}).click();await wizard.getByText('How to connect Fish Audio',{exact:true}).click();
   assert.equal(await wizard.getByRole('link',{name:'Open API Keys',exact:true}).getAttribute('href'),'https://fish.audio/app/api-keys');
   assert.equal(await wizard.getByLabel('Speech mode',{exact:true}).count(),0);assert.equal(await page.evaluate(()=>window.calls.length),0);
-  if(process.env.CHOIR_SETUP_SCREENSHOT)await wizard.screenshot({path:process.env.CHOIR_SETUP_SCREENSHOT});
+  await checkIllustratedGuide(page,wizard,'fish',process.env.CHOIR_SETUP_SCREENSHOT);
   await wizard.getByRole('button',{name:'Next',exact:true}).click();await wizard.getByLabel('Narrator voice gender',{exact:true}).selectOption('female');
   assert.match(await wizard.getByLabel('Narrator voice',{exact:true}).textContent(),/Gender unknown/);
   assert.equal(await wizard.getByLabel('Voices the planner picks from',{exact:true}).inputValue(),'community');
   await wizard.getByRole('button',{name:'Next',exact:true}).click();
+  await checkIllustratedGuide(page,wizard,'freesound',process.env.CHOIR_FREESOUND_SCREENSHOT);
   await wizard.getByText('Buffering and request limits',{exact:true}).click();
   await wizard.getByLabel('Prefetch passages',{exact:true}).fill('2');await wizard.getByLabel('Concurrent TTS requests',{exact:true}).fill('2');
   await wizard.getByLabel('Audio retention for new recordings',{exact:true}).selectOption('7');
@@ -107,10 +129,11 @@ try{
   await rich.evaluate(()=>window.cleanup());await rich.close();
   const mobile=await browser.newPage({viewport:{width:320,height:700},isMobile:true,hasTouch:true});mobile.on('pageerror',error=>errors.push(error.message));await mobile.goto(`http://127.0.0.1:${server.address().port}`);await mobile.waitForFunction(()=>window.ready);
   const compact=mobile.getByRole('dialog',{name:'Set up Choir',exact:true});await compact.getByRole('button',{name:'Next',exact:true}).click();await compact.getByText('How to connect Fish Audio',{exact:true}).click();
+  await checkIllustratedGuide(mobile,compact,'fish',process.env.CHOIR_SETUP_MOBILE_SCREENSHOT);
   assert.equal(await compact.evaluate(node=>node.scrollWidth<=node.clientWidth+1),true);
   const actions=await compact.locator('.cs-actions button').evaluateAll(nodes=>nodes.map(node=>{const rect=node.getBoundingClientRect();return {left:rect.left,right:rect.right,height:rect.height};}));assert.ok(actions.every(rect=>rect.left>=0 && rect.right<=320 && rect.height<=50),JSON.stringify(actions));
-  if(process.env.CHOIR_SETUP_MOBILE_SCREENSHOT)await compact.screenshot({path:process.env.CHOIR_SETUP_MOBILE_SCREENSHOT});
   await compact.getByRole('button',{name:'Next',exact:true}).click();await compact.getByRole('button',{name:'Next',exact:true}).click();
+  await checkIllustratedGuide(mobile,compact,'freesound',process.env.CHOIR_FREESOUND_MOBILE_SCREENSHOT);
   await compact.getByText('Buffering and request limits',{exact:true}).click();await compact.getByText('Drawer and message controls',{exact:true}).click();
   await compact.getByLabel('Prefetch passages',{exact:true}).scrollIntoViewIfNeeded();
   assert.equal(await compact.evaluate(node=>node.scrollWidth<=node.clientWidth+1 && [...node.querySelectorAll('input,select,textarea')].every(field=>field.getBoundingClientRect().right<=320)),true);
@@ -118,5 +141,5 @@ try{
   if(process.env.CHOIR_WIZARD_MOBILE_SCREENSHOT)await compact.screenshot({path:process.env.CHOIR_WIZARD_MOBILE_SCREENSHOT});
   await mobile.keyboard.press('Escape');await mobile.waitForFunction(()=>window.fixtureStore.get('onboarding:state')?.deferred);await mobile.locator('[data-et="setupWizard"]').click();await compact.waitFor();await compact.getByRole('button',{name:'Skip for now',exact:true}).click();
   await mobile.evaluate(()=>window.cleanup());await mobile.close();assert.deepEqual(errors,[]);
-  console.log('PASS: Chrome setup, Fish guide, voice gender, saved buffering/retention settings, reading settings, actual-name audition, Richter alias pronunciation, respelled narration/dialogue, original text highlights, and expanded 320px modal layout. No external provider requests.');
+  console.log('PASS: Chrome setup, 12 offline Fish/Freesound illustrations on desktop and 320px mobile, keyboard picture enlargement, voice gender, saved buffering/retention settings, reading settings, actual-name audition, Richter alias pronunciation, respelled narration/dialogue, original text highlights, and expanded 320px modal layout. No external provider requests.');
 }finally{await browser?.close();await new Promise(resolve=>server.close(resolve));}

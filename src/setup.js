@@ -1,5 +1,6 @@
 // Onboarding owns a draft only. All provider, voice and storage operations are
 // supplied by Choir's frontend so the wizard cannot diverge from playback.
+import { SETUP_GUIDES } from './setup-guides.js';
 export const ONBOARDING_KEY = 'onboarding:state';
 export const SETUP_STEPS = ['Welcome', 'Connections', 'TTS & Voices', 'Optional Features', 'Review'];
 
@@ -124,6 +125,19 @@ export function createSetupWizard(ctx, adapter) {
     .choir-setup .cs-guide ol{padding-left:22px;margin:12px 0;list-style:decimal}
     .choir-setup .cs-guide li{display:list-item;list-style:decimal;margin:8px 0;overflow-wrap:anywhere}
     .choir-setup .cs-guide a{color:var(--lumiverse-primary,inherit);text-decoration:underline;text-underline-offset:3px}
+    .choir-setup .cs-guide-steps{display:grid;gap:16px}
+    .choir-setup .cs-guide-steps>li{margin:0;padding:12px;border:1px solid var(--lumiverse-border,#8884);border-radius:10px;min-width:0}
+    .choir-setup .cs-guide-steps h4{font-size:1em;margin:0 0 8px}
+    .choir-setup .cs-guide-steps p{margin:8px 0}
+    .choir-setup .cs-guide figure{margin:12px 0 0;min-width:0}
+    .choir-setup .cs-guide-picture{overflow:auto;max-height:440px;border-radius:8px}
+    .choir-setup .cs-guide-picture img{display:block;width:100%;max-width:360px;height:auto;margin:auto}
+    .choir-setup .cs-guide-picture.cs-picture-large img{width:720px;max-width:none;margin:0}
+    .choir-setup .cs-guide figcaption{font-size:.8em;color:var(--lumiverse-text-muted,inherit);margin:6px 0}
+    .choir-setup .cs-guide .cs-picture-toggle{font-size:.82em;padding:5px 10px;min-height:36px}
+    .choir-setup .cs-guide-links{display:flex;flex-wrap:wrap;gap:8px 14px;margin:8px 0}
+    .choir-setup .cs-guide .cs-guide-help{padding-left:20px;list-style:disc}
+    .choir-setup .cs-guide .cs-guide-help li{list-style:disc}
     .choir-setup label{display:flex;flex-direction:column;gap:6px;margin:8px 0;font-size:.92em;min-width:0}
     .choir-setup input,.choir-setup select,.choir-setup textarea{font:inherit;width:100%;min-width:0;min-height:42px;padding:8px 10px;border:1px solid var(--lumiverse-border,#8886);border-radius:8px;background:var(--lumiverse-bg-elevated,transparent);color:inherit}
     .choir-setup option{background:var(--lumiverse-bg,Canvas);color:var(--lumiverse-text,CanvasText)}
@@ -318,17 +332,29 @@ export function createSetupWizard(ctx, adapter) {
     function externalLink(parent,title,url) {
       const node=element('a',title,parent);node.href=url;node.target='_blank';node.rel='noopener noreferrer';return node;
     }
-    function fishGuide(parent) {
-      const guide=element('details','',parent);guide.className='cs-guide';element('summary','How to connect Fish Audio',guide);
-      const steps=element('ol','',guide);
-      const account=element('li','',steps);externalLink(account,'Sign in to Fish Audio','https://fish.audio/auth/signup');account.append(' or create an account.');
-      const key=element('li','',steps);externalLink(key,'Open API Keys','https://fish.audio/app/api-keys');key.append(' and create a key with a name such as Choir. Copy the key when Fish shows it.');
-      element('li','In Lumiverse, open Connect → TTS, add a Fish Audio connection, paste the API key, choose a model available to your account, and save.',steps);
-      element('li','Return to this wizard and choose Refresh connections, then select your saved Fish Audio connection above.',steps);
-      element('li','On TTS & Voices, choose a voice and use Test narrator voice to check that speech plays.',steps);
-      element('p','The API key gives Lumiverse access to Fish Audio. A voice ID selects a particular voice; they are different values. Keep the API key in the Lumiverse connection, not the voice ID field.',guide).className='cs-hint';
-      element('p','If a test fails, check the reported error: an invalid key, account access or balance, and an unavailable voice require different fixes.',guide).className='cs-hint';
-      externalLink(guide,'Official Fish Audio getting-started guide','https://docs.fish.audio/developer-guide/getting-started/quickstart');
+    function illustratedGuide(parent,id) {
+      const data=SETUP_GUIDES[id],guide=element('details','',parent);guide.className='cs-guide';guide.dataset.setupGuide=id;
+      element('summary',data.title,guide);
+      element('p',data.intro,guide);element('p',data.note,guide).className='cs-hint';
+      const steps=element('ol','',guide);steps.className='cs-guide-steps';
+      for(const step of data.steps){
+        const item=element('li','',steps);item.dataset.guideStep=step.id;
+        element('h4',step.title,item);element('p',step.body,item);
+        if(step.links?.length){const links=element('div','',item);links.className='cs-guide-links';for(const link of step.links)externalLink(links,link.label,link.url);}
+        const figure=element('figure','',item),picture=element('div','',figure);picture.className='cs-guide-picture';
+        const image=element('img','',picture);image.src=step.picture;image.alt=step.alt;image.width=360;image.height=240;image.loading='lazy';image.decoding='async';
+        const caption=element('figcaption',step.caption,figure);caption.id=`cs-${step.id}-caption`;picture.setAttribute('aria-describedby',caption.id);
+        const toggle=button('Enlarge picture',figure,()=>{
+          const enlarged=picture.classList.toggle('cs-picture-large');toggle.textContent=enlarged?'Reduce picture':'Enlarge picture';
+          toggle.setAttribute('aria-expanded',String(enlarged));toggle.setAttribute('aria-label',`${enlarged?'Reduce':'Enlarge'} picture: ${step.title}`);
+          picture.tabIndex=enlarged?0:-1;if(enlarged)picture.focus();
+        });
+        toggle.className='cs-picture-toggle';toggle.setAttribute('aria-expanded','false');toggle.setAttribute('aria-label',`Enlarge picture: ${step.title}`);
+      }
+      const help=disclosure('If something does not work',guide),items=element('ul','',help);items.className='cs-guide-help';
+      for(const message of data.troubleshooting)element('li',message,items);
+      const sources=element('div','',guide);sources.className='cs-guide-links';
+      for(const link of data.sources)externalLink(sources,link.label,link.url);
     }
     function render() {
       ++renderId;body.replaceChildren();
@@ -351,7 +377,7 @@ export function createSetupWizard(ctx, adapter) {
       } else if(step===1){
         element('p','Choose a speech connection saved in Lumiverse. Your API key and model are managed in Lumiverse’s Connect panel.',body);
         select('Default TTS connection',[['','Choose a connection'],...connections.tts.map(item=>[item.id,`${item.name} · ${item.provider} · ${item.model || 'no model'}`])],draft.connection,body,value=>changeSpeechRouting(()=>{draft.connection=value;}));
-        fishGuide(body);
+        illustratedGuide(body,'fish');
         select('Planner engine',[['heuristic','Heuristic · local, no planner API'],['jev','Jev · Decision classification'],['llm','Standard LLM planner']],draft.plannerMode,body,value=>{draft.plannerMode=value;draft.useFastClassifier=value==='heuristic';draft.useJev=value==='jev';tests.delete('planner');render();});
         element('p',draft.plannerMode==='heuristic'?'Heuristic attribution works locally for narration and simple dialogue. Ambiguous speakers can stop planning. Assign voices explicitly; use Jev or LLM for complex scenes. Speech still uses your TTS provider.':draft.plannerMode==='jev'?'Jev classifies dialogue through a Decision connection. Tests and classification can incur charges.':'An LLM identifies speakers and chooses voices. Planning and connection tests can incur charges.',body).className='cs-hint';
         if(draft.plannerMode==='jev'){
@@ -407,15 +433,7 @@ export function createSetupWizard(ctx, adapter) {
         element('p','Start with speech, then add the extras you want. Unconfigured features should stay off.',body);
         const sound=element('div','',body);sound.className='cs-card';element('h3','A soundscape for your story',sound);
         input('Freesound API key',draft.freesoundApiKey,sound,value=>{draft.freesoundApiKey=value;},{password:true,hint:'Saved in Choir’s existing preferences. Sound effects and ambience need this key plus an LLM for cue selection.'});
-        const guide=element('details','',sound);guide.className='cs-guide';element('summary','How to get a Freesound API key',guide);
-        const link=(parent,title,url)=>{const node=element('a',title,parent);node.href=url;node.target='_blank';node.rel='noopener noreferrer';return node;};
-        const steps=element('ol','',guide);
-        const account=element('li','',steps);link(account,'Sign in to Freesound','https://freesound.org/');account.append(' or create an account. Verify your email if Freesound asks.');
-        const apply=element('li','',steps);link(apply,'Open the API key page','https://freesound.org/apiv2/apply/');apply.append(' and request an API credential for your Choir setup. Suggested application name: Choir. Describe your use, such as sound effects and ambience for personal story playback.');
-        element('li','Copy the value labelled “Client secret/Api key” from your credentials. The Client ID is a different value; Choir needs the API key.',steps);
-        element('li','Return here, paste the key above, enable Sound effects and/or Ambient sound, and choose a Sound cue LLM connection. Select Finish setup on Review to save.',steps);
-        element('p','You can leave these features off and finish without a key. Choir uses the key to search sounds and play previews; no OAuth setup is needed.',guide).className='cs-hint';
-        link(guide,'Official Freesound key instructions','https://freesound.org/docs/api/authentication.html#token-authentication');
+        illustratedGuide(sound,'freesound');
         check('Sound effects',draft.enableSfx,sound,value=>{draft.enableSfx=value;});
         check('Ambient sound',draft.enableAmbience,sound,value=>{draft.enableAmbience=value;});
         check('Background music',draft.enableMusic,sound,value=>{draft.enableMusic=value;loop.hidden=!value;},'Music uses Choir’s existing library and attribution. Sound cue planning uses your LLM and may incur charges.');

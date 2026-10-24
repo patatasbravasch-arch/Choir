@@ -163,6 +163,8 @@ The extension includes pre-built bundles in `dist/`. No build step is required t
 
 ## Configuration
 
+New to Fish Audio or Freesound? Follow the [step-by-step illustrated setup guides](docs/setup-guides.md). The same pictures are available in **Set up Choir → Connections → How to connect Fish Audio** and **Optional Features → How to get a Freesound API key**. Pictures use example fields and masked keys; **Enlarge picture** makes them easier to read on phones.
+
 Open **Choir** from the drawer or its input-bar action.
 
 ### TTS connections
