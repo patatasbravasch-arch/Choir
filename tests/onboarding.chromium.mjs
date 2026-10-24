@@ -53,11 +53,21 @@ try{
   assert.equal(await wizard.getByRole('link',{name:'Open API Keys',exact:true}).getAttribute('href'),'https://fish.audio/app/api-keys');
   assert.equal(await wizard.getByLabel('Speech mode',{exact:true}).count(),0);assert.equal(await page.evaluate(()=>window.calls.length),0);
   if(process.env.CHOIR_SETUP_SCREENSHOT)await wizard.screenshot({path:process.env.CHOIR_SETUP_SCREENSHOT});
-  await wizard.getByRole('button',{name:'Next',exact:true}).click();await wizard.getByRole('button',{name:'Next',exact:true}).click();
+  await wizard.getByRole('button',{name:'Next',exact:true}).click();await wizard.getByLabel('Narrator voice gender',{exact:true}).selectOption('female');
+  assert.match(await wizard.getByLabel('Narrator voice',{exact:true}).textContent(),/Gender unknown/);
+  assert.equal(await wizard.getByLabel('Voices the planner picks from',{exact:true}).inputValue(),'community');
+  await wizard.getByRole('button',{name:'Next',exact:true}).click();
+  await wizard.getByText('Buffering and request limits',{exact:true}).click();
+  await wizard.getByLabel('Prefetch passages',{exact:true}).fill('2');await wizard.getByLabel('Concurrent TTS requests',{exact:true}).fill('2');
+  await wizard.getByLabel('Audio retention for new recordings',{exact:true}).selectOption('7');
+  await wizard.getByText('Playback & saved audio',{exact:true}).scrollIntoViewIfNeeded();
+  if(process.env.CHOIR_WIZARD_PLAYBACK_SCREENSHOT)await wizard.screenshot({path:process.env.CHOIR_WIZARD_PLAYBACK_SCREENSHOT});
   await wizard.getByLabel('Skip tags and blocks',{exact:true}).fill('.tracker');await wizard.getByLabel('Highlight spoken text',{exact:true}).selectOption('word');
   await wizard.getByRole('button',{name:'Next',exact:true}).click();await wizard.getByRole('button',{name:'Finish setup',exact:true}).click();
   await wizard.getByText('Setup completed successfully.',{exact:true}).waitFor();await wizard.getByRole('button',{name:'Close',exact:true}).click();
   assert.equal(await page.evaluate(()=>window.fixtureStore.get('settings:global').ignoredTags),'.tracker');assert.equal(await page.evaluate(()=>window.calls.length),0);
+  assert.equal(await page.evaluate(()=>window.fixtureStore.get('settings:global').prefetch),2);assert.equal(await page.evaluate(()=>window.fixtureStore.get('settings:global').concurrency),2);
+  assert.equal(await page.evaluate(()=>window.fixtureStore.get('settings:global').retention),'7');assert.equal(await page.evaluate(()=>window.fixtureStore.get('settings:captured-defaults').leadVoices[0].gender),'female');
   await page.getByRole('button',{name:'Edit Eliza',exact:true}).click();const spelling=page.locator('[data-et="fixed"] [data-choir-say-as]').nth(2);await spelling.fill('Eh-Lee-Zah');
   await page.waitForFunction(()=>document.querySelector('[data-et="saveState"]').textContent==='Saved automatically');
   await page.getByRole('button',{name:'Test pronunciation of Eliza',exact:true}).click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent==='Audition finished.');
@@ -78,7 +88,13 @@ try{
   assert.equal(await compact.evaluate(node=>node.scrollWidth<=node.clientWidth+1),true);
   const actions=await compact.locator('.cs-actions button').evaluateAll(nodes=>nodes.map(node=>{const rect=node.getBoundingClientRect();return {left:rect.left,right:rect.right,height:rect.height};}));assert.ok(actions.every(rect=>rect.left>=0 && rect.right<=320 && rect.height<=50),JSON.stringify(actions));
   if(process.env.CHOIR_SETUP_MOBILE_SCREENSHOT)await compact.screenshot({path:process.env.CHOIR_SETUP_MOBILE_SCREENSHOT});
+  await compact.getByRole('button',{name:'Next',exact:true}).click();await compact.getByRole('button',{name:'Next',exact:true}).click();
+  await compact.getByText('Buffering and request limits',{exact:true}).click();await compact.getByText('Drawer and message controls',{exact:true}).click();
+  await compact.getByLabel('Prefetch passages',{exact:true}).scrollIntoViewIfNeeded();
+  assert.equal(await compact.evaluate(node=>node.scrollWidth<=node.clientWidth+1 && [...node.querySelectorAll('input,select,textarea')].every(field=>field.getBoundingClientRect().right<=320)),true);
+  const footer=await compact.locator('.cs-actions').boundingBox();assert.ok(footer.y>=0 && footer.y+footer.height<=700,JSON.stringify(footer));
+  if(process.env.CHOIR_WIZARD_MOBILE_SCREENSHOT)await compact.screenshot({path:process.env.CHOIR_WIZARD_MOBILE_SCREENSHOT});
   await mobile.keyboard.press('Escape');await mobile.waitForFunction(()=>window.fixtureStore.get('onboarding:state')?.deferred);await mobile.locator('[data-et="setupWizard"]').click();await compact.waitFor();await compact.getByRole('button',{name:'Skip for now',exact:true}).click();
   await mobile.evaluate(()=>window.cleanup());await mobile.close();assert.deepEqual(errors,[]);
-  console.log('PASS: Chrome setup, Fish guide, reading settings, actual-name audition, respelled narration/dialogue, original text highlights, and 320px modal layout. No external provider requests.');
+  console.log('PASS: Chrome setup, Fish guide, voice gender, saved buffering/retention settings, reading settings, actual-name audition, respelled narration/dialogue, original text highlights, and expanded 320px modal layout. No external provider requests.');
 }finally{await browser?.close();await new Promise(resolve=>server.close(resolve));}

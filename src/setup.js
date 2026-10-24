@@ -9,13 +9,15 @@ export function shouldOpenSetup(state) {
 
 export function setupDraft(value, preset, existing) {
   const draft = structuredClone(value);
+  for (const [key, fallback] of Object.entries({chunk:1800, prefetch:1, concurrency:1, retention:'forever',
+    normalizeLoudness:true, batchSpeech:false, fishVoiceSource:'community'})) draft[key] ??= fallback;
   draft.fixed = ['Narrator','Persona','Character'].map((speaker,index)=>draft.fixed[index] || {speaker,voice:'',style:''});
   if (preset?.leadVoices) draft.fixed = draft.fixed.map((actor, index) => ({...actor, ...preset.leadVoices[index]}));
   if (preset?.npcPolicy) draft.npcPolicy = structuredClone(preset.npcPolicy);
   // Legacy defaults enable Foley without a key. New installations opt in.
   if (!existing) {
     Object.assign(draft, {enableSfx:false, enableAmbience:false, enableMusic:false, autoDesignNPCs:false,
-      auto:false, autoPlan:false, plannerMode:'heuristic', useFastClassifier:true, useJev:false});
+      auto:false, autoPlan:false, allowLlmFallback:false, enableMixer:true, plannerMode:'heuristic', useFastClassifier:true, useJev:false});
     draft.npcPolicy = {...draft.npcPolicy, mode:'skip'};
   }
   delete draft.jevApiKey;
@@ -38,7 +40,9 @@ export function setupIssues(draft, connections, session = {}) {
   if (!['heuristic','jev','llm'].includes(draft.plannerMode)) issues.push({step:1,message:'Choose a planner engine.'});
   if (draft.plannerMode === 'llm' && !llm?.model) issues.push({step:1,message:'Choose an available Planner LLM connection with a model.'});
   if (draft.plannerMode === 'jev' && !decision && !(connections.directJev && session.jev)) issues.push({step:1,message:connections.directJev?'Choose a Decision connection or provide a session Jev key.':'Choose an available Decision connection in Lumiverse’s Connect panel.'});
+  if (draft.plannerMode === 'jev' && draft.allowLlmFallback && !llm?.model) issues.push({step:1,message:'LLM fallback needs an available Planner LLM connection with a model.'});
   for (const actor of draft.fixed) {
+    if (actor.gender != null && !['auto','female','male','neutral'].includes(actor.gender)) issues.push({step:2,message:`Choose a valid voice gender preference for ${actor.speaker}.`});
     if (actor.excluded) continue;
     requireRoute(draft.connectionMode === 'one' ? route : actor.route || route, actor.speaker, 2);
     if (!actor.voice && draft.plannerMode==='heuristic') issues.push({step:2,message:`Choose a voice for ${actor.speaker}, turn off that voice, or switch to Standard LLM on Connections to let the LLM choose. Heuristic attribution needs an assigned voice.`});
@@ -51,14 +55,23 @@ export function setupIssues(draft, connections, session = {}) {
   if (policy.mode === 'llm' && draft.plannerMode === 'heuristic') issues.push({step:2,message:'Automatic NPC voice selection needs Jev or an LLM planner. Choose shared, preferred, or disabled NPC speech.'});
   if ((draft.enableSfx || draft.enableAmbience) && !draft.freesoundApiKey?.trim()) issues.push({step:3,message:'Sound effects and ambient sound need a Freesound API key.'});
   if ((draft.enableSfx || draft.enableAmbience || draft.enableMusic) && !llm?.model) issues.push({step:3,message:'Sound effects, ambience, and music need a Planner LLM connection for cue selection.'});
+  if (draft.fishVoiceSource != null && !['community','own','both'].includes(draft.fishVoiceSource)) issues.push({step:2,message:'Choose a valid Fish voice source.'});
+  if (draft.retention != null && !['session','1','7','30','forever'].includes(draft.retention)) issues.push({step:3,message:'Choose a valid audio retention policy.'});
+  for (const [key,min,max,label] of [['prefetch',0,4,'Prefetch passages'],['concurrency',1,4,'Concurrent TTS requests'],['chunk',80,10000,'Max characters per request']]) {
+    if (draft[key] != null && (!Number.isInteger(draft[key]) || draft[key]<min || draft[key]>max)) issues.push({step:3,message:`${label} must be a whole number from ${min} to ${max}.`});
+  }
   return issues.filter((item,index,all) => all.findIndex(other => other.message === item.message) === index);
+}
+
+function isFishConnection(connection) {
+  return connection?.provider==='fish_audio' || connection?.provider==='openrouter_tts' && /fish-audio\//i.test(connection.model || '');
 }
 
 function jevNeedsNarratorVoice(draft, connections) {
   if(draft.plannerMode!=='jev')return false;
   const route=draft.connectionMode==='one'?`native:${draft.connection}`:draft.fixed[0]?.route || `native:${draft.connection}`;
   const connection=connections.tts.find(item=>`native:${item.id}`===route);
-  const community=connection?.provider==='fish_audio' || connection?.provider==='openrouter_tts' && /fish-audio\//i.test(connection.model || '');
+  const community=isFishConnection(connection);
   return !community || draft.fishVoiceSource==='own';
 }
 
@@ -227,15 +240,23 @@ export function createSetupWizard(ctx, adapter) {
       const wrap=element('label','',parent);wrap.className='cs-check';node.setAttribute('aria-label',label);wrap.append(node);element('span',label,wrap);
       if(hint)element('p',hint,parent).className='cs-hint';return node;
     }
+    function number(label,key,min,max,parent,hint) {
+      const node=element('input');node.type='number';node.min=min;node.max=max;node.step=1;node.value=draft[key];
+      node.oninput=()=>{draft[key]=node.value===''?NaN:Number(node.value);};return field(label,node,parent,hint);
+    }
+    function disclosure(title,parent) {
+      const node=element('details','',parent);node.className='cs-guide';element('summary',title,node);return node;
+    }
     const defaultRoute = () => `native:${draft.connection}`;
     const effectiveRoute = actor => draft.connectionMode==='one'?defaultRoute():actor.route || defaultRoute();
+    const hasFishRoute = () => [...draft.fixed.filter(actor=>!actor.excluded),...(draft.npcPolicy.mode!=='skip'?[draft.npcPolicy]:[])].some(actor=>isFishConnection(connections.tts.find(item=>`native:${item.id}`===effectiveRoute(actor))));
     function changeSpeechRouting(change) {
       const actors=[...draft.fixed,draft.npcPolicy],before=actors.map(effectiveRoute);change();
       actors.forEach((actor,index)=>{if(before[index]!==effectiveRoute(actor)){actor.voice='';if(actor===draft.npcPolicy)actor.voices=[];}});
       tests.delete('tts');render();
     }
     const routes = () => [['','Use default speech connection'],...connections.tts.map(item=>[`native:${item.id}`,`${item.name} · ${item.provider} · ${item.model || 'no model'}`])];
-    const signature = kind => JSON.stringify(kind==='planner'?[draft.plannerMode,draft.planner,draft.decisionConnection,Boolean(session().jev)]:[defaultRoute(),draft.connectionMode,draft.fixed[0]?.route,draft.fixed[0]?.voice]);
+    const signature = kind => JSON.stringify(kind==='planner'?[draft.plannerMode,draft.planner,draft.decisionConnection,draft.allowLlmFallback,Boolean(session().jev)]:[defaultRoute(),draft.connectionMode,draft.fixed[0]?.route,draft.fixed[0]?.voice]);
     function navigate(target) {
       if(busy || completed || target<0 || target>4)return;
       if(target>step){
@@ -262,23 +283,35 @@ export function createSetupWizard(ctx, adapter) {
       const effective=()=>draft.connectionMode==='one'?defaultRoute():actor.route || defaultRoute();
       const automaticLabel=draft.plannerMode==='jev'?'Let Choir choose (Jev)':'Let the LLM choose';
       const emptyLabel=allowAutomatic?automaticLabel:'Choose a voice';
-      let voiceId;
-      const choices=select(`${label} voice`,[['',emptyLabel]],actor.voice,row,value=>{actor.voice=value;if(voiceId)voiceId.value=value;changed?.();});
+      let voiceId,catalogue=[];
+      const isLead=draft.fixed.includes(actor);
+      if(isLead)select(`${label} voice gender`,[['auto','Any / automatic'],['female','Female'],['male','Male'],['neutral','Neutral']],actor.gender || 'auto',row,value=>{actor.gender=value;populate();},'Guides automatic casting and filters known voices. Unknown metadata stays visible; changing this keeps your selected voice.');
+      const choices=select(`${label} voice`,[['',emptyLabel]],actor.voice,row,value=>{actor.voice=value;if(voiceId)voiceId.value=value;populate();changed?.();});
       const note=element('small','Loading voices…',row);
+      function populate() {
+        const known=new Map(catalogue.map(item=>[item.id,item])),gender=isLead?actor.gender || 'auto':'auto';
+        choices.replaceChildren();const empty=element('option',emptyLabel,choices);empty.value='';
+        for(const item of known.values()){
+          const metadata=['female','male','neutral'].includes(item.gender)?item.gender:'';
+          const mismatch=gender!=='auto' && metadata && metadata!==gender;
+          if(mismatch && item.id!==actor.voice)continue;
+          const description=metadata?metadata[0].toUpperCase()+metadata.slice(1):'Gender unknown';
+          const option=element('option',`${item.name || item.id} · ${description}${mismatch?' · selected voice differs from preference':''}`,choices);option.value=item.id;
+        }
+        if(actor.voice && !known.has(actor.voice)){const option=element('option',`${actor.voice} · custom or saved ID`,choices);option.value=actor.voice;}
+        choices.value=actor.voice || '';
+        const selected=known.get(actor.voice),mismatch=gender!=='auto' && ['female','male','neutral'].includes(selected?.gender) && selected.gender!==gender;
+        note.textContent=[selected?.description,mismatch?'Your selected voice differs from the gender preference. Choose another voice if needed.':'', 'Voice IDs belong to this connection. Test before relying on them.'].filter(Boolean).join(' ');
+      }
       if(allowAutomatic)element('small',draft.plannerMode==='heuristic'?'Let the LLM choose requires switching the planner to Standard LLM on Connections.':'Automatic selection happens during planning, using this connection’s catalogue and Choir’s existing casting logic. Planner calls may incur charges.',row);
       const custom=element('details','',row);element('summary','Use a provider voice ID',custom);
       voiceId=input(`${label} voice ID`,actor.voice,custom,value=>{
-        actor.voice=value;if(value && ![...choices.options].some(item=>item.value===value)){const entry=element('option',`${value} · custom ID`,choices);entry.value=value;}
-        choices.value=value;changed?.();
+        actor.voice=value;populate();changed?.();
       },{hint:'Use an ID from this provider. Choir validates it with the selected route; a successful test confirms synthesis.'});
       const token=effective();
-      void adapter.voices(token).then(catalogue=>{
+      void adapter.voices(token).then(list=>{
         if(closed || id!==renderId || token!==effective())return;
-        const known=new Map(catalogue.map(item=>[item.id,item]));
-        choices.replaceChildren();const empty=element('option',emptyLabel,choices);empty.value='';
-        for(const item of known.values()){const option=element('option',item.name || item.id,choices);option.value=item.id;}
-        if(actor.voice && !known.has(actor.voice)){const option=element('option',`${actor.voice} · custom or saved ID`,choices);option.value=actor.voice;}
-        choices.value=actor.voice || '';note.textContent='Voice IDs belong to this connection. Test before relying on them.';
+        catalogue=list;populate();
       }).catch(error=>{if(!closed && id===renderId){note.textContent=`Voice list unavailable: ${safeError(error)}. Retry or enter a provider voice ID.`;button('Retry voice list',row,()=>{render();});}});
       return choices;
     }
@@ -304,6 +337,7 @@ export function createSetupWizard(ctx, adapter) {
       if(completed){
         element('div','♪',body).className='cs-mark';
         element('p','Your setup is saved. New chats will use these cast defaults. Existing chats keep their voices.',body);
+        element('p','Use Plan latest, then Play in the voice mixer. Open a character’s editor in Lead cast to adjust names, aliases, or “Say name as” pronunciation.',body).className='cs-hint';
         button('Test final playback',body,()=>testVoice());element('p','Optional: this synthesizes and plays one short narrator sample and may incur provider charges.',body).className='cs-hint';lock();return;
       }
       if(step===0){
@@ -319,9 +353,10 @@ export function createSetupWizard(ctx, adapter) {
         select('Default TTS connection',[['','Choose a connection'],...connections.tts.map(item=>[item.id,`${item.name} · ${item.provider} · ${item.model || 'no model'}`])],draft.connection,body,value=>changeSpeechRouting(()=>{draft.connection=value;}));
         fishGuide(body);
         select('Planner engine',[['heuristic','Heuristic · local, no planner API'],['jev','Jev · Decision classification'],['llm','Standard LLM planner']],draft.plannerMode,body,value=>{draft.plannerMode=value;draft.useFastClassifier=value==='heuristic';draft.useJev=value==='jev';tests.delete('planner');render();});
-        element('p',draft.plannerMode==='heuristic'?'Heuristic attribution works locally for narration and simple dialogue. Ambiguous speakers can stop planning. Assign voices explicitly; use Jev or LLM for complex scenes. Speech still uses your TTS provider.':draft.plannerMode==='jev'?'Jev classifies dialogue through a Decision connection. LLM fallback stays controlled by your existing Choir preference. Tests and classification can incur charges.':'An LLM identifies speakers and chooses voices. Planning and connection tests can incur charges.',body).className='cs-hint';
+        element('p',draft.plannerMode==='heuristic'?'Heuristic attribution works locally for narration and simple dialogue. Ambiguous speakers can stop planning. Assign voices explicitly; use Jev or LLM for complex scenes. Speech still uses your TTS provider.':draft.plannerMode==='jev'?'Jev classifies dialogue through a Decision connection. Tests and classification can incur charges.':'An LLM identifies speakers and chooses voices. Planning and connection tests can incur charges.',body).className='cs-hint';
         if(draft.plannerMode==='jev'){
           select('Decision connection',[['','Default Decision connection'],...connections.decision.map(item=>[item.id,`${item.name} · ${item.provider} · ${item.model || 'Jev'}`])],draft.decisionConnection,body,value=>{draft.decisionConnection=value;tests.delete('planner');});
+          check('Allow LLM fallback after Jev fails',draft.allowLlmFallback,body,value=>{draft.allowLlmFallback=value;tests.delete('planner');},'Retries failed Jev classification with your Planner LLM. This can add a paid request.');
           if(connections.directJev){
             const advanced=element('details','',body);element('summary','Session Jev key for older Lumiverse hosts',advanced);
             input('Jev session API key',session().jev,advanced,value=>{adapter.setSession('jev',value);tests.delete('planner');},{password:true,hint:'Used by Choir’s existing fallback on hosts without Decision APIs. Never saved.'});
@@ -353,9 +388,11 @@ export function createSetupWizard(ctx, adapter) {
           const name=['Narrator','Persona','Main character'][index],card=element('div','',grid);card.className='cs-card';element('h3',name,card);
           if(draft.connectionMode==='several') select(`${name} connection`,routes(),actor.route || '',card,value=>{actor.route=value;actor.voice='';tests.delete('tts');render();});
           voiceField(actor,card,name,()=>tests.delete('tts'),index!==0 || !jevNeedsNarratorVoice(draft,connections));
-          check(`Enable ${name.toLowerCase()} speech`,!actor.excluded,card,value=>{actor.excluded=!value;});
+          check(`Enable ${name.toLowerCase()} speech`,!actor.excluded,card,value=>{actor.excluded=!value;fishSourceWrap.hidden=!hasFishRoute();});
           button(`Test ${name.toLowerCase()} voice`,card,()=>testVoice(actor));
         });
+        const fishSourceWrap=element('div','',body);fishSourceWrap.hidden=!hasFishRoute();
+        select('Voices the planner picks from',[['community','Fish community library'],['own','My Fish voices'],['both','Both']],draft.fishVoiceSource,fishSourceWrap,value=>{draft.fishVoiceSource=value;render();},'Applies to automatic Fish casting. “My Fish voices” uses your assigned and added voices; add custom IDs in the drawer. Explicit voice assignments stay unchanged.');
         const npc=element('div','',body);npc.className='cs-card';element('h3','NPC casting',npc);
         const policy=draft.npcPolicy;
         select('NPC casting',[['skip','Disabled'],['single','Shared voice'],['preferred','Preferred voices'],['llm','Automatic selection']],policy.mode,npc,value=>{policy.mode=value;render();});
@@ -381,7 +418,9 @@ export function createSetupWizard(ctx, adapter) {
         link(guide,'Official Freesound key instructions','https://freesound.org/docs/api/authentication.html#token-authentication');
         check('Sound effects',draft.enableSfx,sound,value=>{draft.enableSfx=value;});
         check('Ambient sound',draft.enableAmbience,sound,value=>{draft.enableAmbience=value;});
-        check('Background music',draft.enableMusic,sound,value=>{draft.enableMusic=value;},'Music uses Choir’s existing library and attribution. Sound cue planning uses your LLM and may incur charges.');
+        check('Background music',draft.enableMusic,sound,value=>{draft.enableMusic=value;loop.hidden=!value;},'Music uses Choir’s existing library and attribution. Sound cue planning uses your LLM and may incur charges.');
+        const loop=element('div','',sound);loop.hidden=!draft.enableMusic;
+        check('Loop music between replies',draft.loopMusic,loop,value=>{draft.loopMusic=value;},'Keep music playing between replies while the music channel is active.');
         select('Sound cue LLM connection',[['','Default LLM connection'],...connections.llm.map(item=>[item.id,`${item.name} · ${item.model || 'no model'}`])],draft.planner,sound,value=>{draft.planner=value;tests.delete('planner');});
         const reading=element('div','',body);reading.className='cs-card';element('h3','Reading',reading);
         check('Skip non-story blocks',draft.skipMeta!==false,reading,value=>{draft.skipMeta=value;},'Keep automatic filtering of trackers, recaps and interface panels. LLM and Jev modes can also use your planner to find non-story text.');
@@ -390,9 +429,20 @@ export function createSetupWizard(ctx, adapter) {
         select('Highlight spoken text',[['off','Off'],['passage','Passage'],['word','Word by word']],draft.readAlong || 'off',reading,value=>{draft.readAlong=value;});
         check('Follow narration',Boolean(draft.followNarration),reading,value=>{draft.followNarration=value;});
         element('p','Set name pronunciation in the character’s editor after setup. “Say name as” applies when any voice says that name in the chat.',reading).className='cs-hint';
+        const playback=element('div','',body);playback.className='cs-card';element('h3','Playback & saved audio',playback);
+        check('Floating audio mixer',draft.enableMixer,playback,value=>{draft.enableMixer=value;},'Show playback, speed and volume controls over the chat. Adjust speed and volume there after setup.');
+        check('Match passage loudness',draft.normalizeLoudness,playback,value=>{draft.normalizeLoudness=value;},'Reduce volume differences between generated speech passages.');
+        select('Audio retention for new recordings',[['session','This session only'],['1','1 day'],['7','7 days'],['30','30 days'],['forever','Indefinitely']],draft.retention,playback,value=>{draft.retention=value;},'Existing recordings keep their current retention policy. Manage or clear saved audio in the drawer.');
+        const buffering=disclosure('Buffering and request limits',playback);
+        element('p','Prefetch prepares speech ahead of playback. More requests can reduce gaps but increase provider load and generate unused audio. Fast playback can still catch up to a slow provider.',buffering).className='cs-hint';
+        number('Prefetch passages','prefetch',0,4,buffering,'0 disables lookahead. A value of 1–2 is a useful starting point; higher values may generate more unused speech if you stop.');
+        number('Concurrent TTS requests','concurrency',1,4,buffering,'Limit simultaneous speech requests. Your provider may enforce a lower rate limit.');
+        number('Max characters per request','chunk',80,10000,buffering,'Long passages are split at this limit. Smaller requests can start sooner but require more calls.');
+        check('Group speech requests',draft.batchSpeech,buffering,value=>{draft.batchSpeech=value;},'Used only by compatible providers and models, with compatible voice levels and speeds and no added voice gap.');
+        const controls=disclosure('Drawer and message controls',playback);
+        check('Show message play controls',draft.sectionButtons,controls,value=>{draft.sectionButtons=value;});
+        check('Show automatic planning shortcut',draft.showAutoPlanAction,controls,value=>{draft.showAutoPlanAction=value;},'Shows a shortcut for the Auto-plan preference. Showing it does not turn automatic planning on.');
         const automation=element('div','',body);automation.className='cs-card';element('h3','Automation',automation);
-        const previousPolicy=draft.npcPolicy.mode==='llm'?'skip':draft.npcPolicy.mode;
-        check('Automatic NPC voice casting',draft.npcPolicy.mode==='llm',automation,value=>{draft.npcPolicy.mode=value?'llm':previousPolicy;},'Chooses NPC voices with your Jev or LLM planner. It may use paid planner calls; local heuristic attribution needs shared, preferred, or disabled NPC speech.');
         check('Auto-plan new replies',draft.autoPlan,automation,value=>{draft.autoPlan=value;},'Plans incoming replies automatically. LLM or Jev calls may incur charges.');
         check('Auto-play new replies',draft.auto,automation,value=>{draft.auto=value;},'Automatically generates speech for new replies. Provider charges and browser playback restrictions can apply.');
         element('p','Automatic voice selection is controlled by NPC casting on the previous step. Nothing plays or calls a planner as part of saving setup.',body).className='cs-hint';
@@ -406,10 +456,12 @@ export function createSetupWizard(ctx, adapter) {
         review('Speech',`${tts?.name || 'Missing TTS connection'} · ${tts?.provider || ''} · ${tts?.model || 'no model'}`,1,issues.some(item=>item.step===1)?'Needs Attention':'Ready');
         const plannerConnection=(draft.plannerMode==='jev'?connections.decision:connections.llm).find(item=>draft.plannerMode==='jev'?(draft.decisionConnection?item.id===draft.decisionConnection:item.is_default):(draft.planner?item.id===draft.planner:item.is_default));
         const plannerDetail=draft.plannerMode==='heuristic'?'Local heuristic · ambiguous dialogue may need manual help':`${draft.plannerMode==='jev'?'Jev':'Standard LLM'} · ${plannerConnection?.name || (draft.plannerMode==='jev' && connections.directJev && session().jev?'Session Jev connection':'Missing planner connection')}${plannerConnection?.model?` · ${plannerConnection.model}`:''}`;
-        review('Planner',plannerDetail,1,issues.some(item=>item.step===1)?'Needs Attention':'Ready');
-        review('Cast defaults',draft.fixed.map((actor,index)=>`${['Narrator','Persona','Main character'][index]}: ${actor.excluded?'disabled':actor.voice || (draft.plannerMode==='llm'?'LLM chooses during planning':draft.plannerMode==='jev'?'Choir chooses with Jev':'needs a voice')}`).join(' · ')+` · NPCs: ${draft.npcPolicy.mode}`,2,issues.some(item=>item.step===2)?'Needs Attention':'Ready');
-        review('Optional features',[['Sound effects',draft.enableSfx],['Ambience',draft.enableAmbience],['Music',draft.enableMusic],['Auto-plan',draft.autoPlan],['Auto-play',draft.auto]].filter(item=>item[1]).map(item=>item[0]).join(', ') || 'All optional features are off',3,issues.some(item=>item.step===3)?'Needs Attention':'Optional');
-        review('Reading',`Custom skip rules: ${draft.ignoredTags || 'none'} · Automatic non-story filtering: ${draft.skipMeta===false?'off':'on'} · Highlight: ${draft.readAlong || 'off'}`,3,'Optional');
+        review('Planner',plannerDetail+(draft.plannerMode==='jev'?` · LLM fallback: ${draft.allowLlmFallback?'on':'off'}`:''),1,issues.some(item=>item.step===1)?'Needs Attention':'Ready');
+        review('Cast defaults',draft.fixed.map((actor,index)=>`${['Narrator','Persona','Main character'][index]}: ${actor.excluded?'disabled':(actor.voice || (draft.plannerMode==='llm'?'LLM chooses during planning':draft.plannerMode==='jev'?'Choir chooses with Jev':'needs a voice'))+` (gender preference: ${actor.gender || 'auto'})`}`).join(' · ')+` · NPCs: ${draft.npcPolicy.mode}`+(hasFishRoute()?` · Fish voice source: ${draft.fishVoiceSource}`:''),2,issues.some(item=>item.step===2)?'Needs Attention':'Ready');
+        review('Optional features',[['Sound effects',draft.enableSfx],['Ambience',draft.enableAmbience],[draft.loopMusic?'Music (loop between replies)':'Music',draft.enableMusic],['Auto-plan',draft.autoPlan],['Auto-play',draft.auto]].filter(item=>item[1]).map(item=>item[0]).join(', ') || 'All optional features are off',3,issues.some(item=>item.step===3)?'Needs Attention':'Optional');
+        review('Reading',`Custom skip rules: ${draft.ignoredTags || 'none'} · Automatic non-story filtering: ${draft.skipMeta===false?'off':'on'} · Highlight: ${draft.readAlong || 'off'} · Follow narration: ${draft.followNarration?'on':'off'} · Message controls: ${draft.sectionButtons?'on':'off'} · Auto-plan shortcut: ${draft.showAutoPlanAction?'shown':'hidden'}`,3,'Optional');
+        const retentionLabel={session:'this session only',1:'1 day',7:'7 days',30:'30 days',forever:'indefinitely'}[draft.retention] || 'invalid';
+        review('Playback & saved audio',`Mixer: ${draft.enableMixer?'on':'off'} · Loudness matching: ${draft.normalizeLoudness?'on':'off'} · New recordings: ${retentionLabel} · Prefetch: ${draft.prefetch} · Concurrent TTS: ${draft.concurrency} · Request size: ${draft.chunk} · Group speech: ${draft.batchSpeech?'on':'off'}`,3,issues.some(item=>item.step===3)?'Needs Attention':'Ready');
         for(const kind of ['tts','planner']){const test=tests.get(kind);element('p',test?.key===signature(kind)?`${kind==='tts'?'Speech':'Planner'} test passed: ${test.message}`:`${kind==='tts'?'Speech':'Planner'} connection has not been tested with these choices.`,body).className='cs-hint';}
         if(issues.length)say(issues.map(item=>item.message).join('\n'),true);
         element('p','Finish saves shared Speech & Planner preferences and defaults for new chats. Existing chat voice choices remain intact. You can run setup again from Choir settings.',body).className='cs-hint';

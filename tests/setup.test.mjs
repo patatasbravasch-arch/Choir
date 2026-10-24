@@ -13,9 +13,10 @@ test('first run opens once; completed and explicitly deferred users remain quiet
 });
 
 test('new installations opt out of all optional paid automation; existing users preserve every preference',()=>{
-  const initial={...value(),enableSfx:true,enableAmbience:true,enableMusic:true,autoDesignNPCs:true,auto:true,autoPlan:true,plannerMode:'jev',jevApiKey:'session-secret'};
+  const initial={...value(),enableSfx:true,enableAmbience:true,enableMusic:true,autoDesignNPCs:true,auto:true,autoPlan:true,allowLlmFallback:true,enableMixer:false,plannerMode:'jev',jevApiKey:'session-secret'};
   const original=structuredClone(initial),fresh=setupDraft(initial,null,false),existing=setupDraft(initial,null,true);
-  for(const key of ['enableSfx','enableAmbience','enableMusic','auto','autoPlan']){assert.equal(fresh[key],false);assert.equal(existing[key],true);}
+  for(const key of ['enableSfx','enableAmbience','enableMusic','auto','autoPlan','allowLlmFallback']){assert.equal(fresh[key],false);assert.equal(existing[key],true);}
+  assert.equal(fresh.enableMixer,true);assert.equal(existing.enableMixer,false);
   for(const key of ['mode','model','autoDesignNPCs','apiKey','jevApiKey'])assert.equal(Object.hasOwn(existing,key),false);
   assert.equal(fresh.plannerMode,'heuristic');assert.equal(existing.plannerMode,'jev');assert.equal(fresh.npcPolicy.mode,'skip');
   assert.ok(!JSON.stringify(existing).includes('session-secret'));assert.deepEqual(initial,original);
