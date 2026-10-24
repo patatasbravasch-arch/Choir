@@ -1,4 +1,4 @@
-import { characterCardRoleDiscovery, namePronunciation, namePronunciations, respellNames } from './core.js';
+import { characterCardRoleDiscovery, namePronunciation, namePronunciationTarget, namePronunciations, respellNames } from './core.js';
 import { createSetupWizard, saveSetupSettings } from './setup.js';
 import { ABYSSAL_THEME_CSS } from './abyssal-theme.js';
 import { randomUuid, sha256Hex, GEMINI_VOICES, OPENAI_VOICES, additionalVoices, apiErrorMessage, MAX_SPEECH_CHARS, MAX_CHANNEL_VOLUME, speechProviderFamily, speechRequestLimits, normalizeName, normalizeVoiceCatalogue, characterCardRoles, validateCardRoles, reconcileCardCast, unisonSpeakers, speechSourceUnits, mixUnisonAudio, transcriptFromMessage, readableText, readAlongIndex, locatePassages, spokenLength, validateCastConfig, validatePlan, npcCastActor, parsePlanJson, speechBatches, groupedSpeechBatches, audioBytes, fastClassifyPlan, resolvePlannerMode, attributionPlan, restoreAttribution, passageKey, mixerVolume, loudnessGain, castExport, castImport, applySoundCues, cueOffset, sfxCueOffset, transcriptLines, withoutLines } from './core.js';
@@ -1953,7 +1953,30 @@ export async function setup(ctx) {
     const style=document.createElement('input');style.value=actor.style || '';style.maxLength=600;
     const aliases=document.createElement('input');aliases.value=(actor.aliases || []).join(', ');aliases.maxLength=3000;
     const pronunciation=document.createElement('input');pronunciation.value=actor.pronunciation || '';pronunciation.maxLength=300;pronunciation.placeholder='Optional instruction for supported providers';
+    const sayAsName=document.createElement('select');sayAsName.dataset.choirSayAsName='';sayAsName.setAttribute('aria-label','Name spelling to pronounce');
+    const refreshPronunciationTargets=()=>{
+      const selected=sayAsName.options.length?sayAsName.value:actor.sayAsName || '',written=name.value.trim();sayAsName.replaceChildren();option(sayAsName,'',written);
+      const variants=[...new Map(aliases.value.split(',').map(value=>value.trim()).filter(value=>value && normalizeName(value)!==normalizeName(written)).map(value=>[normalizeName(value),value])).values()];
+      for(const alias of variants)option(sayAsName,alias,alias);
+      if(selected && !variants.includes(selected))option(sayAsName,selected,`${selected} · saved spelling`);
+      sayAsName.value=selected;
+    };
+    refreshPronunciationTargets();
     const sayAs=document.createElement('input');sayAs.value=namePronunciation(actor);sayAs.maxLength=120;sayAs.placeholder='e.g. Eh-Lee-Zah';sayAs.dataset.choirSayAs='';
+    const pronunciationHint=document.createElement('small');pronunciationHint.dataset.choirPronunciationHint='';
+    const updatePronunciationHint=()=>{
+      const spelling=sayAs.value.trim(),written=namePronunciationTarget({speaker:name.value,sayAsName:sayAsName.value});
+      pronunciationHint.textContent=(spelling?`Every voice says “${written}” as “${spelling}”. `:`Enter how to say the written name “${written}”. `)+'Choose the name or alias used in the story under Name spelling to pronounce. Story text stays unchanged. Leave Say name as blank to use its written spelling.';
+    };
+    // An explicit edit of the older field must not silently disappear just
+    // because this editor has already written an empty sayAs property.
+    const promoteNameMapping=()=>{
+      if(!reserved){const spelling=namePronunciation({speaker:name.value.trim(),sayAsName:sayAsName.value,pronunciation:pronunciation.value});if(spelling)sayAs.value=spelling;}
+      updatePronunciationHint();
+    };
+    pronunciation.addEventListener('input',promoteNameMapping);pronunciation.addEventListener('change',promoteNameMapping);
+    sayAs.addEventListener('input',updatePronunciationHint);sayAsName.addEventListener('change',updatePronunciationHint);
+    for(const node of [name,aliases])node.addEventListener('input',()=>{refreshPronunciationTargets();updatePronunciationHint();});updatePronunciationHint();
     const accent=document.createElement('input');accent.value=actor.accent || '';accent.maxLength=300;accent.placeholder='Used only when the provider supports accent or instructions';
     const excluded=document.createElement('input');excluded.type='checkbox';excluded.checked=Boolean(actor.excluded);
 
@@ -1994,11 +2017,11 @@ export async function setup(ctx) {
     voiceSearchRow.append(voiceSearchInput,searchCommBtn,voiceIdBtn,auditionRowBtn);
     voiceWrap.append(voiceSearchRow,voice,voiceIdEditor);
 
-    for (const [label,node] of [['TTS connection',route],['Voice gender filter',gender],['Voice',voiceWrap],['Base delivery style',style],['Aliases (comma separated)',aliases],['Say name as',sayAs],['Speaking instruction',pronunciation],['Accent preference',accent]]) {
+    for (const [label,node] of [['TTS connection',route],['Voice gender filter',gender],['Voice',voiceWrap],['Base delivery style',style],['Aliases (comma separated)',aliases],['Name spelling to pronounce',sayAsName],['Say name as',sayAs],['Speaking instruction',pronunciation],['Accent preference',accent]]) {
       if(node!==route)(node===voiceWrap?voice:node).dataset.choirPersist='';
       const wrap=document.createElement('label');wrap.textContent=label;wrap.append(node);editor.append(wrap);
       if(node===route)wrap.hidden=single;
-      if(node===sayAs)wrap.hidden=reserved;
+      if(node===sayAs || node===sayAsName)wrap.hidden=reserved;
       if(node===pronunciation)wrap.title='Used only when the speech provider supports instructions. Use Say name as for name pronunciation.';
       if(node===gender || node===style)wrap.hidden=true;
       if(node===voiceWrap)wrap.style.cssText='grid-column:1 / -1;margin-top:2px';
@@ -2016,9 +2039,8 @@ export async function setup(ctx) {
     speedSlot.append(speed.root,followButton);speedSection.append(speedHeading,speedSlot);editor.append(speedSection);
     if(!reserved){
       const tools=document.createElement('div');tools.style.gridColumn='1 / -1';
-      const hint=document.createElement('small');hint.textContent='Say name as changes how every voice says this name in this chat. Story text stays unchanged. Leave blank to use its written spelling.';
       const test=document.createElement('button');test.type='button';test.className='et-btn-subtle';test.textContent='Test pronunciation';test.dataset.choirPronunciationTest='';test.setAttribute('aria-label',`Test pronunciation of ${actor.speaker}`);
-      test.onclick=()=>audition(`${name.value.trim()} opened the door.`);tools.append(hint,document.createElement('br'),test);editor.append(tools);
+      test.onclick=()=>audition(`${namePronunciationTarget({speaker:name.value,sayAsName:sayAsName.value})} opened the door.`);tools.append(pronunciationHint,document.createElement('br'),test);editor.append(tools);
     }
     if(!required){
       const move=document.createElement('button');move.type='button';move.className='et-btn-subtle';
@@ -2036,7 +2058,7 @@ export async function setup(ctx) {
     container.append(row);
     paintSpeakerSpeeds();
     updateCardProviderControls();
-    return {row,voiceChoice:()=>[name.value.trim(),voice.value],setExcluded:value=>{excluded.checked=value;},read:()=>({speaker:name.value.trim(),voice:single?actor.voice || '':voice.value,route:single?actor.route || '':route.value,gender:gender.value,style:style.value.trim(),aliases:aliases.value.split(',').map(a=>a.trim()).filter((a,i,list)=>a && normalizeName(a)!==normalizeName(name.value) && list.findIndex(b=>normalizeName(b)===normalizeName(a))===i),pronunciation:pronunciation.value.trim(),sayAs:sayAs.value.trim(),accent:accent.value.trim(),excluded:excluded.checked})};
+    return {row,voiceChoice:()=>[name.value.trim(),voice.value],setExcluded:value=>{excluded.checked=value;},read:()=>({speaker:name.value.trim(),voice:single?actor.voice || '':voice.value,route:single?actor.route || '':route.value,gender:gender.value,style:style.value.trim(),aliases:aliases.value.split(',').map(a=>a.trim()).filter((a,i,list)=>a && normalizeName(a)!==normalizeName(name.value) && list.findIndex(b=>normalizeName(b)===normalizeName(a))===i),pronunciation:pronunciation.value.trim(),sayAs:sayAs.value.trim(),sayAsName:sayAsName.value,accent:accent.value.trim(),excluded:excluded.checked})};
   }
   function renderCast() {
     $('fixed').replaceChildren();$('npcs').replaceChildren();
@@ -2122,6 +2144,7 @@ export async function setup(ctx) {
   }
   function validateNumericSettings(c){
     for(const actor of [...(c.fixed || []),...Object.values(c.casts || {}).flat()])if(actor.sayAs!==undefined && (typeof actor.sayAs!=='string' || actor.sayAs.length>120 || /[<>\[\]\r\n]/u.test(actor.sayAs)))throw new Error('Say name as must be plain pronunciation spelling, up to 120 characters.');
+    for(const actor of [...(c.fixed || []),...Object.values(c.casts || {}).flat()])if(actor.sayAsName!==undefined && (typeof actor.sayAsName!=='string' || actor.sayAsName.length>100 || /[<>\r\n]/u.test(actor.sayAsName)))throw new Error('Name spelling to pronounce must be plain text, up to 100 characters.');
     if(!Number.isInteger(c.chunk) || c.chunk<80 || c.chunk>MAX_SPEECH_CHARS)throw new Error('Max characters per request must be a whole number from 80 to 10000 (default: 1800).');
     if(!Number.isInteger(c.concurrency) || c.concurrency<1 || c.concurrency>4)throw new Error('Choose 1–4 concurrent TTS requests.');
     if(!Number.isInteger(c.prefetch) || c.prefetch<0 || c.prefetch>4)throw new Error('Prefetch must be 0–4 passages.');
@@ -2473,7 +2496,7 @@ export async function setup(ctx) {
         const existing=value.fixed.find(actor=>matchesRole(actor,role));
         if(existing){mergeAliases(existing,role);continue;}
         const prior=Object.values(value.casts || {}).flat().find(actor=>matchesRole(actor,role));
-        const added={...template,...prior,speaker:role.name,voice:prior?.voice || '',aliases:role.aliases || [],pronunciation:prior?.pronunciation || '',sayAs:prior?namePronunciation(prior):''};
+        const added={...template,...prior,speaker:role.name,voice:prior?.voice || '',aliases:role.aliases || [],pronunciation:prior?.pronunciation || '',sayAs:prior?namePronunciation(prior):'',sayAsName:prior?.sayAsName || ''};
         transferChoices(prior,added);value.fixed.push(added);renamed=true;
       }
       const names=new Set(value.fixed.flatMap(actor=>[actor.speaker,...(actor.aliases || [])]).map(normalizeName));
@@ -2484,7 +2507,7 @@ export async function setup(ctx) {
       const template=value.fixed[2],occupied=new Set(value.fixed.filter((_,index)=>index!==2).map(actor=>normalizeName(actor.speaker)));
       const leads=roles.filter(role=>!occupied.has(normalizeName(role.name))).map((role,index)=>{
         const prior=Object.values(value.casts || {}).flat().find(actor=>matchesRole(actor,role));
-        const added={...template,...prior,speaker:role.name,voice:prior?.voice || (index===0?template.voice:''),aliases:[...new Set([...(roles.length===1?template.aliases || []:[]),...(role.aliases || [])])],pronunciation:prior?.pronunciation || (roles.length===1?template.pronunciation:'') || '',sayAs:prior?namePronunciation(prior):roles.length===1?namePronunciation(template):''};
+        const added={...template,...prior,speaker:role.name,voice:prior?.voice || (index===0?template.voice:''),aliases:[...new Set([...(roles.length===1?template.aliases || []:[]),...(role.aliases || [])])],pronunciation:prior?.pronunciation || (roles.length===1?template.pronunciation:'') || '',sayAs:prior?namePronunciation(prior):roles.length===1?namePronunciation(template):'',sayAsName:prior?prior.sayAsName || '':roles.length===1?template.sayAsName || '':''};
         transferChoices(prior,added);if(index===0)transferChoices(template,added);
         return added;
       });
@@ -2889,8 +2912,8 @@ export async function setup(ctx) {
     const prefix=actor?.style?`${actor.style}. `:'',style=segment.style || '';
     return {...segment,style:prefix && style.startsWith(prefix)?style.slice(prefix.length):style===actor?.style?'':style,...(segment.unison?{unison:segment.unison.map(member=>withoutBase(member,cast))}:{})};
   };
-  const actorFor=(segment,snapshot)=>[...(snapshot.fixed || []),...(snapshot.casts?.[scope(snapshot)] || [])].find(actor=>normalizeName(actor.speaker)===normalizeName(segment.speaker));
-  const pronunciationActors=snapshot=>[...(snapshot.fixed || []),...(snapshot.casts?.[scope(snapshot)] || snapshot.npcs || [])];
+  const pronunciationActors=snapshot=>[...(snapshot.fixed || []),...(snapshot.npcs ?? snapshot.casts?.[scope(snapshot)] ?? [])];
+  const actorFor=(segment,snapshot)=>pronunciationActors(snapshot).find(actor=>normalizeName(actor.speaker)===normalizeName(segment.speaker));
   const speechTextOptions=snapshot=>({speechText:text=>respellNames(text,pronunciationActors(snapshot)),atomicWords:namePronunciations(pronunciationActors(snapshot)).map(rule=>rule.name)});
   function recordingSpeechText(segment,snapshot){return segment.kind?null:speechMembers(segment).map(member=>respellNames(member.text,pronunciationActors(snapshot)));}
   function recordedSpeechMatches(recording,index,snapshot){
@@ -2916,7 +2939,7 @@ export async function setup(ctx) {
       if(Array.isArray(allowed) && !allowed.includes(actor.accent))throw new Error(`Accent ${actor.accent} is not supported by ${connection.name}. Supported accents: ${allowed.join(', ')}.`);
       parameters.accent=actor.accent;
     }
-    const legacyMapping=actor && namePronunciation({speaker:actor.speaker,pronunciation:actor.pronunciation});
+    const legacyMapping=actor && namePronunciation({speaker:actor.speaker,sayAsName:actor.sayAsName,pronunciation:actor.pronunciation});
     const instructions=[snapshot.useStyle?segment.style:'',legacyMapping?'':actor?.pronunciation,actor?.accent && !supported.accent?`Accent: ${actor.accent}`:''].filter(Boolean).join('. ');
     if(styleParam && instructions)parameters[styleParam]=instructions;
     return {segment:{...segment,text:respellNames(segment.text,pronunciationActors(snapshot)),route,style:openRouterStyle?instructions:family==='fish_audio' && snapshot.useStyle?segment.style:''},connection,parameters};

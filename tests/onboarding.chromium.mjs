@@ -16,8 +16,11 @@ import {setup} from '/dist/frontend.js';
 import {validatePlan,speechSourceUnits} from '/src/core.js';
 const store=new Map(),events=new Map(),root=document.querySelector('main'),footer=document.querySelector('footer');let backend;
 window.calls=[];window.plans=0;window.errors=[];
-const message={id:'reply',name:'Eliza',content:'<p>Eliza opened the door.</p><aside class="tracker">Hidden tracker.</aside><p>"Hello, Eliza."</p><p>The evening was quiet.</p>'};
-store.set('chat:fixture',{connection:'fish',plannerMode:'llm',skipMeta:false,enableSfx:false,enableAmbience:false,enableMixer:true,styleParam:'',prefetch:0,concurrency:1,chunk:500,normalizeLoudness:false,fixed:[{speaker:'Narrator',voice:'n',style:''},{speaker:'You',voice:'p',style:''},{speaker:'Eliza',voice:'e',style:''}],casts:{'native:fish':[]}});
+const richter=new URLSearchParams(location.search).has('richter'),leadName=richter?'Richter Vane (Callsign: Grim)':'Eliza';
+const message={id:'reply',name:leadName,content:'<p>Eliza opened the door.</p><aside class="tracker">Hidden tracker.</aside><p>"Hello, Eliza."</p><p>The evening was quiet.</p>'};
+if(richter)message.content='<p>Richter Vane opened the door.</p><p>"Hello, Richter."</p><p>The evening was quiet.</p>';
+document.querySelector('[data-component="MessageContent"]').innerHTML=message.content;
+store.set('chat:fixture',{connection:'fish',plannerMode:'llm',skipMeta:false,enableSfx:false,enableAmbience:false,enableMixer:true,styleParam:'',prefetch:0,concurrency:1,chunk:500,normalizeLoudness:false,fixed:[{speaker:'Narrator',voice:'n',style:''},{speaker:'You',voice:'p',style:''},{speaker:leadName,voice:'e',style:'',aliases:richter?['Richter']:[]}],casts:{'native:fish':[]}});
 const voices=['n','p','e','g'].map((id,index)=>({id,name:['Storyteller','Player','Eliza voice','Supporting voice'][index]}));
 function wav(){const count=12000,buffer=new ArrayBuffer(44+count*2),view=new DataView(buffer);function text(offset,value){for(let i=0;i<value.length;i++)view.setUint8(offset+i,value.charCodeAt(i));}text(0,'RIFF');view.setUint32(4,36+count*2,true);text(8,'WAVE');text(12,'fmt ');view.setUint32(16,16,true);view.setUint16(20,1,true);view.setUint16(22,1,true);view.setUint32(24,12000,true);view.setUint32(28,24000,true);view.setUint16(32,2,true);view.setUint16(34,16,true);text(36,'data');view.setUint32(40,count*2,true);for(let i=0;i<count;i++)view.setInt16(44+i*2,Math.sin(i*2*Math.PI*220/12000)*1200,true);return buffer;}
 window.fetch=async(url,options={})=>{
@@ -30,14 +33,14 @@ window.fetch=async(url,options={})=>{
  if(url.includes('/connections?'))return Response.json({data:[{id:'planner',name:'Story planner',provider:'test',model:'text-model',is_default:true}]});
  return Response.json({});
 };
-const ctx={settings:{get:async key=>structuredClone(store.get(key)??null),set:async(key,value)=>store.set(key,structuredClone(value)),remove:async key=>store.delete(key)},messages:{getRecent:()=>[message],getContent:()=>message.content},state:{subscribe:()=>()=>{}},events:{on:(name,fn)=>{events.set(name,fn);return()=>events.delete(name);}},getActiveChat:()=>({chatId:'fixture',characterId:'eliza'}),characters:{get:async()=>({name:'Eliza'})},dom:{addStyle:css=>{const style=document.createElement('style');style.textContent=css;document.head.append(style);return()=>style.remove();},findMessageElement:()=>document.querySelector('[data-message-id="reply"]')},ui:{
+const ctx={settings:{get:async key=>structuredClone(store.get(key)??null),set:async(key,value)=>store.set(key,structuredClone(value)),remove:async key=>store.delete(key)},messages:{getRecent:()=>[message],getContent:()=>message.content},state:{subscribe:()=>()=>{}},events:{on:(name,fn)=>{events.set(name,fn);return()=>events.delete(name);}},getActiveChat:()=>({chatId:'fixture',characterId:'eliza'}),characters:{get:async()=>({name:leadName})},dom:{addStyle:css=>{const style=document.createElement('style');style.textContent=css;document.head.append(style);return()=>style.remove();},findMessageElement:()=>document.querySelector('[data-message-id="reply"]')},ui:{
  registerDrawerTab:()=>({root,activate(){},destroy(){root.replaceChildren();}}),registerInputBarAction:()=>({onClick(){},destroy(){}}),registerDomDecorator:options=>options.render(footer,{messageId:'reply'}),
  showModal:options=>{const dialog=document.createElement('dialog'),heading=document.createElement('h1'),content=document.createElement('section'),close=document.createElement('button');heading.textContent=options.title;close.textContent='×';close.className='modal-close';close.setAttribute('aria-label','Close setup');dialog.setAttribute('aria-label',options.title);dialog.append(close,heading,content);document.body.append(dialog);let onDismiss;const dismiss=()=>{dialog.close();dialog.remove();onDismiss?.();};close.onclick=dismiss;dialog.oncancel=event=>{event.preventDefault();dismiss();};dialog.showModal();return {root:content,onDismiss(fn){onDismiss=fn;return()=>onDismiss=null;},dismiss};}
-},onBackendMessage:fn=>{backend=fn;return()=>backend=null;},sendToBackend:request=>{if(request.action==='cancel')return;setTimeout(()=>{let result;if(request.action==='ping')result={ready:true,decisionsAvailable:true};else if(request.action==='skipCheck')result={skip:[]};else if(request.action==='plan'){window.plans++;result=validatePlan({segments:speechSourceUnits(request.input.transcript).map(unit=>({speaker:unit.kind==='dialogue'?'Eliza':'Narrator',voice:unit.kind==='dialogue'?'e':'n',text:unit.text,style:''}))},request.input.transcript,request.input.config);}else if(request.action==='testPlanner')result={provider:'Fixture',model:'text-model',response:'READY'};backend?.({namespace:'choir',id:request.id,result});},5);}};
+},onBackendMessage:fn=>{backend=fn;return()=>backend=null;},sendToBackend:request=>{if(request.action==='cancel')return;setTimeout(()=>{let result;if(request.action==='ping')result={ready:true,decisionsAvailable:true};else if(request.action==='skipCheck')result={skip:[]};else if(request.action==='plan'){window.plans++;result=validatePlan({segments:speechSourceUnits(request.input.transcript).map(unit=>({speaker:unit.kind==='dialogue'?leadName:'Narrator',voice:unit.kind==='dialogue'?'e':'n',text:unit.text,style:''}))},request.input.transcript,request.input.config);}else if(request.action==='testPlanner')result={provider:'Fixture',model:'text-model',response:'READY'};backend?.({namespace:'choir',id:request.id,result});},5);}};
 window.fixtureStore=store;window.fixtureMessage=message;window.cleanup=await setup(ctx);window.ready=true;
 </script></body></html>`;
 const server=createServer(async(request,response)=>{
-  if(request.url==='/'){response.setHeader('Content-Type','text/html');response.end(html);return;}
+  if(new URL(request.url,'http://fixture').pathname==='/'){response.setHeader('Content-Type','text/html');response.end(html);return;}
   if(!/^\/(src|dist)\/[a-z]+\.js$/.test(request.url)){response.writeHead(404);response.end();return;}
   try{response.setHeader('Content-Type','text/javascript');response.end(await readFile(new URL(`..${request.url}`,import.meta.url)));}catch{response.writeHead(404);response.end();}
 });
@@ -83,6 +86,25 @@ try{
   const spoken=await page.evaluate(()=>window.calls.slice(1));assert.equal(spoken.length,3);assert.ok(spoken.filter(input=>input.text.includes('Eh-Lee-Zah')).length===2);assert.ok(spoken.every(input=>!input.text.includes('Eliza')));
   assert.equal(await page.locator('[data-component="MessageContent"]').innerHTML(),original);assert.ok((await page.evaluate(()=>window.highlightLog)).includes('Eliza'));
   await page.evaluate(()=>cancelAnimationFrame(window.highlightFrame));await page.evaluate(()=>window.cleanup());await page.close();
+  const rich=await browser.newPage({viewport:{width:440,height:900}});rich.on('pageerror',error=>errors.push(error.message));
+  await rich.goto('http://127.0.0.1:'+server.address().port+'/?richter');await rich.waitForFunction(()=>window.ready);
+  await rich.getByRole('button',{name:'Skip for now',exact:true}).click();
+  await rich.getByRole('button',{name:'Edit Richter Vane (Callsign: Grim)',exact:true}).click();
+  const richRow=rich.locator('[data-et="fixed"] .et-card').nth(2);
+  await richRow.locator('[data-choir-say-as]').fill('Rish-ter');await richRow.getByLabel('Name spelling to pronounce',{exact:true}).selectOption('Richter');
+  await rich.waitForFunction(()=>document.querySelector('[data-et="saveState"]').textContent==='Saved automatically');
+  assert.equal(await rich.evaluate(()=>window.fixtureStore.get('chat:fixture').fixed[2].sayAsName),'Richter');
+  await richRow.getByRole('button',{name:'Test pronunciation of Richter Vane (Callsign: Grim)',exact:true}).click();
+  await rich.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent==='Audition finished.');
+  assert.match(await rich.evaluate(()=>window.calls[0].text),/Rish-ter opened the door/);
+  assert.match(await richRow.locator('[data-choir-pronunciation-hint]').textContent(),/“Richter” as “Rish-ter”/);
+  if(process.env.CHOIR_RICHTER_SCREENSHOT)await richRow.screenshot({path:process.env.CHOIR_RICHTER_SCREENSHOT});
+  await rich.locator('[data-et="latest"]').click();await rich.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Ready:'));
+  await rich.getByRole('button',{name:'Open Choir voice mixer',exact:true}).click();await rich.locator('[data-choir-action="playback"]').click();
+  await rich.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.includes('Playback finished'));
+  const richSpeech=await rich.evaluate(()=>window.calls.slice(1));assert.equal(richSpeech.length,3);assert.ok(richSpeech.some(input=>input.text.includes('Rish-ter Vane')));assert.ok(richSpeech.some(input=>input.text.includes('Hello, Rish-ter.')));
+  assert.equal(await rich.evaluate(()=>window.fixtureMessage.name),'Richter Vane (Callsign: Grim)');assert.equal(await rich.evaluate(()=>window.plans),1);
+  await rich.evaluate(()=>window.cleanup());await rich.close();
   const mobile=await browser.newPage({viewport:{width:320,height:700},isMobile:true,hasTouch:true});mobile.on('pageerror',error=>errors.push(error.message));await mobile.goto(`http://127.0.0.1:${server.address().port}`);await mobile.waitForFunction(()=>window.ready);
   const compact=mobile.getByRole('dialog',{name:'Set up Choir',exact:true});await compact.getByRole('button',{name:'Next',exact:true}).click();await compact.getByText('How to connect Fish Audio',{exact:true}).click();
   assert.equal(await compact.evaluate(node=>node.scrollWidth<=node.clientWidth+1),true);
@@ -96,5 +118,5 @@ try{
   if(process.env.CHOIR_WIZARD_MOBILE_SCREENSHOT)await compact.screenshot({path:process.env.CHOIR_WIZARD_MOBILE_SCREENSHOT});
   await mobile.keyboard.press('Escape');await mobile.waitForFunction(()=>window.fixtureStore.get('onboarding:state')?.deferred);await mobile.locator('[data-et="setupWizard"]').click();await compact.waitFor();await compact.getByRole('button',{name:'Skip for now',exact:true}).click();
   await mobile.evaluate(()=>window.cleanup());await mobile.close();assert.deepEqual(errors,[]);
-  console.log('PASS: Chrome setup, Fish guide, voice gender, saved buffering/retention settings, reading settings, actual-name audition, respelled narration/dialogue, original text highlights, and expanded 320px modal layout. No external provider requests.');
+  console.log('PASS: Chrome setup, Fish guide, voice gender, saved buffering/retention settings, reading settings, actual-name audition, Richter alias pronunciation, respelled narration/dialogue, original text highlights, and expanded 320px modal layout. No external provider requests.');
 }finally{await browser?.close();await new Promise(resolve=>server.close(resolve));}

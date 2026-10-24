@@ -96,10 +96,14 @@ const escapePattern = value => value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
 
 // Preserve older free-form instructions. Only unambiguous name mappings and
 // hyphenated respellings are interpreted as pronunciation rules.
+function namePronunciationTarget(actor) {
+  return actor.sayAsName?.trim() || actor.speaker?.trim() || '';
+}
+
 function namePronunciation(actor) {
   if(Object.hasOwn(actor,'sayAs'))return typeof actor.sayAs==='string'?actor.sayAs.trim():'';
   const legacy=actor.pronunciation?.trim() || '';
-  const name=escapePattern(actor.speaker || '');
+  const name=escapePattern(namePronunciationTarget(actor));
   const explicit=name && legacy.match(new RegExp(`^(?:pronounce\\s+)?${name}\\s*(?::|=|is pronounced as|is pronounced|as)\\s*["“']?(.+?)["”']?\\.?$`,'iu'));
   const spelling=(explicit?.[1] || (/^[\p{L}\p{M}]+(?:[-‐‑][\p{L}\p{M}]+)+$/u.test(legacy)?legacy:'')).trim();
   return spelling.length<=120 && !/[<>\[\]\r\n]/u.test(spelling)?spelling:'';
@@ -108,14 +112,20 @@ function namePronunciation(actor) {
 function namePronunciations(actors=[]) {
   const rules=new Map();
   for(const actor of actors){
-    const name=actor.speaker?.trim(),sayAs=namePronunciation(actor);
-    if(name && normalizeName(name)!=='narrator' && sayAs && sayAs!==name)rules.set(normalizeName(name),{name,sayAs});
+    const name=namePronunciationTarget(actor),sayAs=namePronunciation(actor);
+    if(name && normalizeName(actor.speaker)!=='narrator' && sayAs && sayAs!==name)rules.set(normalizeName(name),{name,sayAs});
   }
   return [...rules.values()].sort((a,b)=>b.name.length-a.name.length || a.name.localeCompare(b.name));
 }
 
 function wholeNamePattern(names) {
-  return names.length?new RegExp(`(?<![\\p{L}\\p{M}\\p{N}_-])(?:${names.map(escapePattern).join('|')})(?![\\p{L}\\p{M}\\p{N}_-])`,'giu'):null;
+  // Match the same written name through HTML spacing and equivalent accent
+  // encodings, while keeping unrelated source text byte-for-byte intact.
+  const pattern=name=>name.trim().split(/\s+/u).map(word=>[...word.normalize('NFC')].map(letter=>{
+    const composed=escapePattern(letter),decomposed=escapePattern(letter.normalize('NFD'));
+    return composed===decomposed?composed:`(?:${composed}|${decomposed})`;
+  }).join('')).join('\\s+');
+  return names.length?new RegExp(`(?<![\\p{L}\\p{M}\\p{N}_-])(?:${names.map(pattern).join('|')})(?![\\p{L}\\p{M}\\p{N}_-])`,'giu'):null;
 }
 
 function respellNames(text,actors=[]) {
@@ -499,6 +509,7 @@ function validateCastConfig(config) {
     }
     for(const field of ['pronunciation','accent'])if(actor[field] !== undefined && (typeof actor[field]!=='string' || actor[field].length>300))throw new Error(`Invalid ${field} preference.`);
     if(actor.sayAs!==undefined && (typeof actor.sayAs!=='string' || actor.sayAs.length>120 || /[<>\[\]\r\n]/u.test(actor.sayAs)))throw new Error('Say name as must be plain pronunciation spelling, up to 120 characters.');
+    if(actor.sayAsName!==undefined && (typeof actor.sayAsName!=='string' || actor.sayAsName.length>100 || /[<>\r\n]/u.test(actor.sayAsName)))throw new Error('Name spelling to pronounce must be plain text, up to 100 characters.');
     if(actor.excluded !== undefined && typeof actor.excluded!=='boolean')throw new Error('Invalid character exclusion.');
   }
   return config;
@@ -789,7 +800,8 @@ function castImport(raw) {
   const clean=actor=>{
     if(!actor || typeof actor.speaker!=='string' || typeof actor.voice!=='string' || typeof actor.style!=='string')throw new Error('Invalid imported cast row.');
     if(actor.sayAs!==undefined && (typeof actor.sayAs!=='string' || actor.sayAs.length>120 || /[<>\[\]\r\n]/u.test(actor.sayAs)))throw new Error('Invalid imported name pronunciation.');
-    return Object.fromEntries(['speaker','voice','style','route','gender','aliases','pronunciation','sayAs','accent','excluded'].filter(key=>actor[key]!==undefined).map(key=>[key,structuredClone(actor[key])]));
+    if(actor.sayAsName!==undefined && (typeof actor.sayAsName!=='string' || actor.sayAsName.length>100 || /[<>\r\n]/u.test(actor.sayAsName)))throw new Error('Invalid imported name pronunciation target.');
+    return Object.fromEntries(['speaker','voice','style','route','gender','aliases','pronunciation','sayAs','sayAsName','accent','excluded'].filter(key=>actor[key]!==undefined).map(key=>[key,structuredClone(actor[key])]));
   };
   return {...routing,fixed:raw.fixed.map(clean),casts:Object.fromEntries(Object.entries(raw.casts).map(([route,actors])=>{
     if(!Array.isArray(actors) || actors.length>500 || !/^native:[\w.-]+$/.test(route))throw new Error('Invalid imported cast provider.');

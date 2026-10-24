@@ -293,6 +293,90 @@ test('name pronunciation updates legacy Replay without seeding stale audio under
   }finally{await h.close();}
 });
 
+test('pronunciation regression: shared-connection companion uses inherited NPC name spelling and delivery preferences',async()=>{
+  const h=await harness();try{
+    const saved=h.store.get('chat:chat-a');
+    Object.assign(saved,{connection:'b',connectionMode:'one',useStyle:false,skipMeta:false,enableSfx:false,enableAmbience:false,plannerMode:'heuristic',useFastClassifier:true});
+    saved.casts={'native:a':[{speaker:'Guard',voice:'g',style:'',sayAs:'Gahrd',pronunciation:'Speak softly.',accent:'Irish'}],'native:b':[]};
+    h.store.set('chat:chat-a',saved);await h.reload();
+    assert.deepEqual(globalThis.__CHOIR_API__.getConfig().casts['native:b'],[]);
+    const text='Guard opened the gate. "Hello, Guard."';
+    await globalThis.__CHOIR_API__.playParagraph({text,speaker:'Guard'});
+    assert.ok(h.synthesis.length>=2);assert.ok(h.synthesis.every(input=>input.text.includes('Gahrd')),JSON.stringify(h.synthesis));
+    const npc=h.synthesis.find(input=>input.voice==='g');assert.ok(npc);assert.equal(npc.connectionId,'b');assert.equal(npc.parameters.accent,'Irish');assert.match(npc.parameters.instructions,/Speak softly/);
+    const count=h.synthesis.length;await globalThis.__CHOIR_API__.playParagraph({text,speaker:'Guard'});assert.equal(h.synthesis.length,count);
+    assert.equal(h.requests.filter(request=>request.action==='plan').length,0);
+  }finally{await h.close();}
+});
+
+test('pronunciation regression: equivalent accented multiword names update cached lead speech without replanning',async()=>{
+  const h=await harness();try{
+    const name='Zoë Jane';h.state.character={name};h.state.leadSpeaker=name;h.message.name=name;
+    h.message.content='Zoe\u0308\u00a0Jane arrived. "Hello, Zoe\u0308 Jane." "Wait, Zoë  Jane." The gate closed.';
+    const saved=h.store.get('chat:chat-a');Object.assign(saved,{useStyle:false,skipMeta:false,enableSfx:false,enableAmbience:false,batchSpeech:false});
+    saved.fixed[2]={...saved.fixed[2],speaker:name,sayAs:'Zoh-ee Jayne',pronunciation:'',aliases:[],accent:''};h.store.set('chat:chat-a',saved);await h.reload();
+    const original=h.message.content;await h.plan();await h.play();assert.equal(h.synthesis.length,4);
+    assert.ok(h.synthesis.slice(0,3).every(input=>input.text.includes('Zoh-ee Jayne')),JSON.stringify(h.synthesis));
+    await editNamePronunciation(h,'Zo Ee Jeyn');await h.play();assert.equal(h.synthesis.length,7);assert.ok(h.synthesis.slice(4).every(input=>input.text.includes('Zo Ee Jeyn')));
+    assert.equal(h.message.content,original);assert.equal(h.requests.filter(request=>request.action==='plan').length,1);
+    await h.reload();await h.play();assert.equal(h.synthesis.length,7);
+  }finally{await h.close();}
+});
+
+test('pronunciation regression: editing an NPC name spelling refreshes Replay for every voice that says it',async()=>{
+  const h=await harness();try{
+    h.message.content='Guard arrived. "Hello, Guard." "Wait, Guard." The gate closed.';
+    const saved=h.store.get('chat:chat-a');Object.assign(saved,{useStyle:false,skipMeta:false,enableSfx:false,enableAmbience:false,batchSpeech:false});
+    saved.casts['native:a'][0].sayAs='Gahrd';h.store.set('chat:chat-a',saved);await h.reload();await h.plan();await h.play();assert.equal(h.synthesis.length,4);
+    assert.ok(h.synthesis.slice(0,3).every(input=>input.text.includes('Gahrd')));
+    const input=h.$('npcs').querySelector('[data-choir-say-as]');assert.ok(input);input.value='Garrd';input.dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));await until(()=>h.$('saveState').textContent==='Saved automatically');
+    [...h.$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay').click();await until(()=>h.$('status').textContent.includes('Name pronunciation updated'));
+    assert.equal(h.synthesis.length,7);assert.ok(h.synthesis.slice(4).every(input=>input.text.includes('Garrd')));assert.equal(h.requests.filter(request=>request.action==='plan').length,1);
+    [...h.$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay').click();await until(()=>h.$('status').textContent==='Replay finished.');assert.equal(h.synthesis.length,7);
+    assert.equal(h.store.get('chat:chat-a').casts['native:a'][0].sayAs,'Garrd');
+  }finally{await h.close();}
+});
+
+test('pronunciation regression: editing a legacy speaking mapping promotes it to Say name as and clearing stays deliberate',async()=>{
+  const h=await harness();try{
+    await elizaFixture(h);
+    const input=h.$('fixed').querySelectorAll('[data-choir-say-as]')[2];assert.ok(input);assert.equal(input.value,'');
+    const row=input.closest('.et-card');assert.ok(row);const instruction=[...row.querySelectorAll('label')].find(label=>label.firstChild.textContent==='Speaking instruction')?.querySelector('input');assert.ok(instruction);
+    instruction.value='Pronounce Eliza as Eh-Lee-Zah';instruction.dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));instruction.dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));
+    await until(()=>h.$('saveState').textContent==='Saved automatically');assert.equal(input.value,'Eh-Lee-Zah');
+    row.querySelector('[data-choir-pronunciation-test]').click();await until(()=>h.$('status').textContent==='Audition finished.');assert.match(h.synthesis.at(-1).text,/Eh-Lee-Zah opened the door/);
+    await editNamePronunciation(h,'');await h.reload();assert.equal(h.$('fixed').querySelectorAll('[data-choir-say-as]')[2].value,'');
+    h.$('fixed').querySelector('[aria-label="Test pronunciation of Eliza"]').click();await until(()=>h.$('status').textContent==='Audition finished.');assert.match(h.synthesis.at(-1).text,/Eliza opened the door/);
+  }finally{await h.close();}
+});
+
+test('pronunciation regression: selecting Richter targets the displayed alias and refreshes narration dialogue Replay and audition',async()=>{
+  const h=await harness();try{
+    const name='Richter Vane (Callsign: Grim)';h.state.character={name};h.state.leadSpeaker=name;h.message.name=name;
+    h.message.content='Richter Vane arrived. "Hello, Richter." "Wait, Richter." The gate closed.';
+    const original=h.message.content,saved=h.store.get('chat:chat-a');Object.assign(saved,{useStyle:false,skipMeta:false,enableSfx:false,enableAmbience:false,batchSpeech:false});
+    saved.fixed[2]={...saved.fixed[2],speaker:name,aliases:['Richter'],sayAs:'Rish-ter',pronunciation:'',accent:''};h.store.set('chat:chat-a',saved);await h.reload();
+    let target=h.$('fixed').querySelectorAll('[data-choir-say-as-name]')[2];assert.ok(target);assert.equal(target.value,'');assert.ok([...target.options].some(option=>option.value==='Richter'));
+    await h.plan();await h.play();assert.equal(h.synthesis.length,4);assert.ok(h.synthesis.slice(0,3).every(input=>input.text.includes('Richter')));
+    target=h.$('fixed').querySelectorAll('[data-choir-say-as-name]')[2];
+    target.value='Richter';target.dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));await until(()=>h.$('saveState').textContent==='Saved automatically');
+    await h.play();assert.equal(h.synthesis.length,7);assert.ok(h.synthesis.slice(4).every(input=>input.text.includes('Rish-ter')));assert.match(h.synthesis[4].text,/Rish-ter Vane arrived/);
+    const actor=h.store.get('chat:chat-a').fixed[2];assert.equal(actor.speaker,name);assert.deepEqual(actor.aliases,['Richter']);assert.equal(actor.sayAsName,'Richter');assert.match(h.$('planJson').value,/Richter Vane \(Callsign: Grim\)/);
+    [...h.$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay').click();await until(()=>h.$('status').textContent==='Replay finished.');assert.equal(h.synthesis.length,7);
+    h.$('fixed').querySelectorAll('[data-choir-say-as]')[2].closest('.et-card').querySelector('[data-choir-pronunciation-test]').click();await until(()=>h.$('status').textContent==='Audition finished.');assert.equal(h.synthesis.at(-1).text,'Rish-ter opened the door.');assert.equal(h.synthesis.length,8);
+    await editNamePronunciation(h,'Rish-turr');
+    [...h.$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay').click();await until(()=>h.$('status').textContent.includes('Name pronunciation updated'));
+    assert.equal(h.synthesis.length,11);assert.ok(h.synthesis.slice(8).every(input=>input.text.includes('Rish-turr')));assert.match(h.synthesis[8].text,/Rish-turr Vane arrived/);
+    await h.reload();assert.equal(h.$('fixed').querySelectorAll('[data-choir-say-as-name]')[2].value,'Richter');await h.play();assert.equal(h.synthesis.length,11);
+    h.$('fixed').querySelectorAll('[data-choir-say-as]')[2].closest('.et-card').querySelector('[data-choir-pronunciation-test]').click();await until(()=>h.$('status').textContent==='Audition finished.');assert.equal(h.synthesis.at(-1).text,'Rish-turr opened the door.');
+    assert.equal(h.message.content,original);assert.equal(h.requests.filter(request=>request.action==='plan').length,1);assert.equal(h.store.get('chat:chat-a').fixed[2].speaker,name);
+    target=h.$('fixed').querySelectorAll('[data-choir-say-as-name]')[2];target.value='';target.dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));await until(()=>h.$('saveState').textContent==='Saved automatically');
+    const aliases=[...target.closest('.et-card').querySelectorAll('label')].find(label=>label.firstChild.textContent==='Aliases (comma separated)')?.querySelector('input');assert.ok(aliases);
+    aliases.value='Richter, Grim';aliases.dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));await until(()=>h.$('saveState').textContent==='Saved automatically');assert.equal(target.value,'');assert.equal(h.store.get('chat:chat-a').fixed[2].sayAsName,'');
+    await h.reload();assert.equal(h.$('fixed').querySelectorAll('[data-choir-say-as-name]')[2].value,'');
+  }finally{await h.close();}
+});
+
 test('reading skip preview uses visible custom rules while preserving story text and making no planner or speech call',async()=>{
   const h=await harness();try{
     h.message.content='<p>Eliza arrived.</p><aside class="skip-this">Hidden tracker.</aside><p>The story continues.</p>';
