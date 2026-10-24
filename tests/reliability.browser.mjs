@@ -3809,3 +3809,65 @@ test('speed prefetch skips background markers before the next spoken passage',as
   }finally{await h.close();}
  }
 });
+
+test('progress counter starts at the first audible clip after leading music and ambience, including cached replay',async()=>{
+ const h=await harness();try{
+  await configureFoley(h);await toggle(h,'enableMusic',true);
+  h.message.content='Rain drummed on the roof. "Hello."';
+  h.state.soundCues={cues:[],ambience:[{segment:0,trigger:'Rain drummed',query:'rain'}],music:[{segment:0,trigger:'Rain drummed',feels:['Dark'],genres:['Soundtrack'],keywords:['piano']}]};
+  await h.plan();h.state.blockAudio=true;h.state.delay=100;h.$('play').click();
+  await until(()=>h.synthesis.length===1);
+  assert.match(h.$('status').textContent,/^Synthesizing 1\/2: Narrator/);
+  assert.equal(h.synthesis[0].text,'Rain drummed on the roof.','the opening narration must be synthesized and heard');
+  await until(()=>voices(h).length===1 && !voices(h)[0].paused);
+  assert.match(h.$('status').textContent,/^Playing 1\/2: Narrator/);
+  voices(h)[0].onended();await until(()=>voices(h).length===2 && !voices(h)[1].paused);
+  assert.match(h.$('status').textContent,/^Playing 2\/2: Mira/);
+  voices(h)[1].onended();await until(()=>h.$('status').textContent.includes('Playback finished'));
+  const recording=await recordingFor(h.message.content);
+  assert.deepEqual(recording.segments.slice(0,2).map(segment=>segment.kind).sort(),['ambience','music'],'fixture must contain two real leading background markers');
+  const generated=h.synthesis.length,start=voices(h).length;
+  [...h.$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay').click();
+  await until(()=>voices(h).length===start+1 && !voices(h).at(-1).paused);
+  assert.match(h.$('status').textContent,/^Replaying 1\/2: Narrator/);
+  voices(h).at(-1).onended();await until(()=>voices(h).length===start+2 && !voices(h).at(-1).paused);
+  assert.match(h.$('status').textContent,/^Replaying 2\/2: Mira/);
+  voices(h).at(-1).onended();await until(()=>h.$('status').textContent==='Replay finished.');
+  assert.equal(h.synthesis.length,generated,'cached replay must not synthesize any speech again');
+ }finally{await h.close();}
+});
+
+test('progress counter excludes a leading actor set to No voice',async()=>{
+ const h=await harness();try{
+  h.message.content='Opening narration. "Hello."';await h.plan();
+  document.querySelector('[aria-label="Narrator no voice"]').click();
+  await until(()=>h.store.get('chat:chat-a').fixed.find(actor=>actor.speaker==='Narrator').excluded);
+  h.state.blockAudio=true;h.$('play').click();await until(()=>voices(h).length===1 && !voices(h)[0].paused);
+  assert.match(h.$('status').textContent,/^Playing 1\/1: Mira/);
+  assert.equal(h.synthesis.length,1);assert.equal(h.synthesis[0].voice,'m');assert.equal(h.synthesis[0].text,'"Hello."');
+  voices(h)[0].onended();await until(()=>h.$('status').textContent.includes('Playback finished'));
+ }finally{await h.close();}
+});
+
+test('progress counter keeps the actual resumed clip and seek position after leading background markers',async()=>{
+ const h=await harness();try{
+  await configureFoley(h);await toggle(h,'enableMusic',true);
+  h.message.content='Rain drummed on the roof. "Hello." "Wait."';
+  h.state.soundCues={cues:[],ambience:[{segment:0,trigger:'Rain drummed',query:'rain'}],music:[{segment:0,trigger:'Rain drummed',feels:['Dark'],genres:['Soundtrack'],keywords:['piano']}]};
+  await h.plan();h.state.blockAudio=true;h.$('play').click();await until(()=>voices(h).length===1 && !h.$('next').disabled);
+  h.$('next').click();await until(()=>voices(h).length===2 && !voices(h).at(-1).paused && !h.$('next').disabled);
+  assert.match(h.$('status').textContent,/^Playing 2\/3: Mira/);
+  voices(h).at(-1).currentTime=7.25;voices(h).at(-1).ontimeupdate();h.$('stop').click();
+  await until(()=>h.store.get('position:chat-a')?.seconds===7.25);
+  assert.equal(h.store.get('position:chat-a').passage,1);
+  const generated=h.synthesis.length,start=voices(h).length;await h.reload();h.$('play').click();
+  await until(()=>voices(h).length===start+1 && !voices(h).at(-1).paused && !h.$('next').disabled);
+  assert.match(h.$('status').textContent,/^Playing 2\/3: Mira/,'resuming the second clip must keep its ordinal within the full playback');
+  assert.equal(voices(h).at(-1).currentTime,7.25);assert.equal(h.store.get('position:chat-a').passage,1);
+  assert.equal(h.synthesis.length,generated,'resume must reuse the saved second clip');
+  h.$('previous').click();await until(()=>voices(h).length===start+2 && !voices(h).at(-1).paused);
+  assert.match(h.$('status').textContent,/^Playing 1\/3: Narrator/);
+  assert.equal(voices(h).at(-1).currentTime,0,'previous must not inherit the resumed seek offset');
+  assert.equal(h.synthesis.length,generated);
+ }finally{await h.close();}
+});

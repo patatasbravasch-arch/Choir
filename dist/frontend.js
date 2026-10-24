@@ -3131,6 +3131,16 @@ export async function setup(ctx) {
   }
   function speakerExcluded(speaker){return normalizeName(speaker)==='narrator' && Boolean(config?.muteNarrator) || [...(config?.fixed || []),...Object.values(config?.casts || {}).flat()].some(actor=>normalizeName(actor.speaker)===normalizeName(speaker) && actor.excluded) || config?.npcPolicy?.mode==='skip' && Object.values(config.casts || {}).flat().some(actor=>normalizeName(actor.speaker)===normalizeName(speaker));}
   function playbackExcluded(segment){return (segment.unison?segment.unison.every(member=>speakerExcluded(member.speaker)):speakerExcluded(segment.speaker)) || segment.kind==='sfx' && config?.enableSfx===false || segment.kind==='ambience' && config?.enableAmbience===false || segment.kind==='music' && config?.enableMusic!==true;}
+  // Background markers have no standalone playback duration. Keep the display
+  // in audible clips while cache, resume and navigation retain plan indexes.
+  function audioProgress(items,index){
+    let current=0,total=0;
+    for(let i=0;i<items.length;i++){
+      if(isBed(items[i]) || playbackExcluded(items[i]))continue;
+      total++;if(i<=index)current++;
+    }
+    return `${current}/${total}`;
+  }
   function syncAmbiencePlayback(){if(!$('enableAmbience').checked)stopBeds('ambience');showFoleyStatus();updateTransport();}
   function syncMusicPlayback(){if(!$('enableMusic').checked)stopBeds('music');updateTransport();}
   function syncSfxPlayback(){showFoleyStatus();generationPolicyChanged?.();if(config?.enableSfx===false && currentSpeaker==='SFX')skipAudio?.();applyVolume();}
@@ -5267,13 +5277,12 @@ export async function setup(ctx) {
     const ready=new Map();
     const resolvers=new Map();
     const synthesisStages=new Map();
-    const synthesisStatus=(index,message)=>{synthesisStages.set(index,message);if(token===revision && index===playIdx && !currentAudio)status(message);};
+    const synthesisStatus=(index,format)=>{synthesisStages.set(index,format);if(token===revision && index===playIdx && !currentAudio)status(format());};
     let nextToSynthesize=0;
     let activeWorkers=0;
     let isDoneAdding=false;
     let wakePlayback=null;
     const blobs=[];
-    let totalExpected=0;
     let playIdx=0,failed=false,saveError='',saveQueue=Promise.resolve();
     const waitForSaves=()=>new Promise((resolve,reject)=>{
       const cancel=()=>reject(abortError());
@@ -5372,13 +5381,13 @@ export async function setup(ctx) {
           try {
             const seg=segments[idx];
             if(ctrl.signal.aborted)throw abortError();
-            synthesisStatus(idx,`Synthesizing ${idx+1}/${totalExpected || segments.length}: ${seg.speaker} · ${seg.voice}`);
+            synthesisStatus(idx,()=>`Synthesizing ${audioProgress(segments,idx)}: ${seg.speaker} · ${seg.voice}`);
             const request=synthesisSettings(seg,snapshot),key=cacheKey(seg,snapshot);
             let blob=passages[key];
             if(!blob && inflight.has(key))blob=await inflight.get(key);
             if(!blob){flightKey=key;const promise=new Promise((resolve,reject)=>{resolveFlight=resolve;rejectFlight=reject;});promise.catch(()=>{});inflight.set(key,promise);}
             if(blob) {
-              synthesisStatus(idx,`Loading cached audio ${idx+1}/${totalExpected || segments.length}: ${seg.speaker}`);
+              synthesisStatus(idx,()=>`Loading cached audio ${audioProgress(segments,idx)}: ${seg.speaker}`);
             } else if(seg.kind==='sfx') {
               blob=await fetchFoleyAudio(seg,snapshot,ctrl.signal);
             } else if(seg.unison){
@@ -5411,8 +5420,7 @@ export async function setup(ctx) {
       }
     }
 
-    function push(newSegments,total) {
-      if(total)totalExpected=total;
+    function push(newSegments) {
       // Beds load as soon as they are known, so a new bed is ready when its marker plays.
       for(const s of newSegments){segments.push(s);if(isBed(s) && !s[s.kind].stop && !playbackExcluded(s))loadBed(segments.length-1).catch(()=>{});}
       currentKeys=null;savedKeys=null;
@@ -5438,7 +5446,7 @@ export async function setup(ctx) {
         }
         if(playbackExcluded(segments[playIdx]) || isBed(segments[playIdx])){playIdx++;nextToSynthesize=Math.max(nextToSynthesize,playIdx);pump();continue;}
         ensureSlot(playIdx);pump();
-        status(synthesisStages.get(playIdx) || `Waiting for audio ${playIdx+1}/${totalExpected || segments.length}: ${segments[playIdx].speaker}`);updateTransport();
+        status(synthesisStages.get(playIdx)?.() || `Waiting for audio ${audioProgress(segments,playIdx)}: ${segments[playIdx].speaker}`);updateTransport();
         const outcome=await Promise.race([ready.get(playIdx),new Promise(resolve=>{wakePolicy=resolve;})]);wakePolicy=null;
         if(outcome.policy)continue;
         if(token!==revision || ctrl.signal.aborted)throw abortError();
@@ -5446,7 +5454,7 @@ export async function setup(ctx) {
         if(outcome.error){await waitForSaves();throw new Error(`${outcome.error.message} Completed passages were retained.${saveError?` Storage failed: ${saveError}`:''}`);}
         const blob=outcome.blob;
         const seg=segments[playIdx];
-        status(`Playing ${playIdx+1}/${totalExpected || segments.length}: ${seg.speaker}`);
+        status(`Playing ${audioProgress(segments,playIdx)}: ${seg.speaker}`);
         activePlayback={chatId:source.chatId,messageId:source.messageId,content:source.content,passage:seg.passageIndex ?? playIdx,chunk:seg.chunkIndex ?? 0};
         const offset=resumePending && source.resume.passage===activePlayback.passage && source.resume.chunk===activePlayback.chunk?source.resume.seconds:0;resumePending=false;
         const paused=pauseNext;pauseNext=false;
@@ -5528,7 +5536,7 @@ export async function setup(ctx) {
     setBusy(true);
     try {
       const player=createStreamingPlayer(snapshot,source,cached,ctrl,token,{pruneStale:fullPlayback,retain});
-      player.push(segments,segments.length);
+      player.push(segments);
       player.finish();
       const {blobs,warnings,passages,passageKeys}=await player.playbackPromise;
       {
@@ -5564,7 +5572,7 @@ export async function setup(ctx) {
         status('Updating pronunciation in saved speech…');
         const source={chatId:targetChat,messageId,content:recording.content,transcript:recording.transcript};
         const player=createStreamingPlayer(snapshot,source,recording,ctrl,token);
-        player.push(recording.segments,recording.segments.length);player.finish();
+        player.push(recording.segments);player.finish();
         const {warnings}=await player.playbackPromise;
         if(token===revision)status('Playback finished. Name pronunciation updated.'+foleyWarning(warnings));
         return;
@@ -5583,7 +5591,7 @@ export async function setup(ctx) {
           if(playbackExcluded(recording.segments[next]) || isBed(recording.segments[next]))continue;
           preparePlayback(recording.blobs[next],recording.segments[next],snapshot);ahead++;
         }
-        status(`Replaying ${index+1}/${recording.blobs.length}: ${recording.segments[index].speaker}`);
+        status(`Replaying ${audioProgress(recording.segments,index)}: ${recording.segments[index].speaker}`);
         const segment=recording.segments[index];
         let nextIndex=index+1;
         advancePlayback=(direction=1)=>{if(!skipAudio || ctrl.signal.aborted || token!==revision)return;const passage=segment.passageIndex ?? index;if(direction<0){let start=index;while(start>0 && (recording.segments[start-1].passageIndex ?? start-1)===passage)start--;nextIndex=Math.max(0,start-1);const previous=recording.segments[nextIndex].passageIndex ?? nextIndex;while(nextIndex>0 && (recording.segments[nextIndex-1].passageIndex ?? nextIndex-1)===previous)nextIndex--;}else while(nextIndex<recording.segments.length && (recording.segments[nextIndex].passageIndex ?? nextIndex)===passage)nextIndex++;pauseNext=heldPaused();skipAudio();};
