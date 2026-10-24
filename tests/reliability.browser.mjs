@@ -3392,10 +3392,21 @@ test('ambience beds keep normal speed while the spoken block plays at the saved 
 
 test('excluded opening dialogue adds no voice gap before the first audible speaker',async()=>{
  const h=await harness({enabled:true,voiceGapMs:1500});try{
-  h.message.content='"Hello." "Wait."';await h.plan();document.querySelector('[aria-label="Mira no voice"]').click();await tick();h.state.blockAudio=true;
-  const began=Date.now();h.$('play').click();await until(()=>voices(h).length && !voices(h)[0].paused);
-  assert.ok(voices(h)[0].playedAt-began<700,`first audible voice waited ${voices(h)[0].playedAt-began}ms with no earlier speech`);
-  assert.equal(h.synthesis[0].voice,'g');
+  h.message.content='"Hello." "Wait." The gate closed.';await h.plan();document.querySelector('[aria-label="Mira no voice"]').click();await tick();h.state.blockAudio=true;
+  // A gap is a long timer. Record those instead of timing the whole JSDOM startup
+  // path, whose planning, storage and rendering work varies independently of gaps.
+  const gapTimers=[],nativeSetTimeout=globalThis.setTimeout;
+  globalThis.setTimeout=(fn,delay,...args)=>{if(delay===1500)gapTimers.push(delay);return nativeSetTimeout(fn,delay,...args);};
+  try{
+   h.$('play').click();await until(()=>voices(h).length && (gapTimers.length || voices(h)[0].playedAt));
+   assert.deepEqual(gapTimers,[],'no voice gap may be scheduled before the first audible voice');
+   await until(()=>voices(h)[0].playedAt);
+   assert.equal(h.synthesis[0].voice,'g');
+   // Positive control: the same gap must still separate the next audible speaker.
+   const first=voices(h)[0];h.state.blockAudio=false;first.onended();
+   await until(()=>voices(h).length===2 && gapTimers.length===1);
+   assert.deepEqual(gapTimers,[1500],'the saved gap still separates consecutive audible speakers');
+  }finally{globalThis.setTimeout=nativeSetTimeout;}
  }finally{await h.close();}
 });
 
