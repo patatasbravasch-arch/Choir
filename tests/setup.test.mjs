@@ -31,7 +31,7 @@ test('captured voice defaults seed the draft without mutating an existing chat c
 test('configuration validation distinguishes missing routes, voices, session keys, planners and optional dependencies',()=>{
   assert.deepEqual(setupIssues(value(),connections),[]);
   const draft=value();draft.connection='deleted';assert.ok(setupIssues(draft,connections).some(issue=>issue.step===1));
-  draft.connection='tts';draft.fixed[0].route='gemini';assert.ok(setupIssues(draft,connections,{gemini:'secret'}).some(issue=>issue.step===1));
+  draft.connection='tts';draft.fixed[0].route='gemini';assert.ok(setupIssues(draft,connections,{gemini:'secret'}).some(issue=>issue.step===2));
   draft.fixed[0].route='native:tts';assert.deepEqual(setupIssues(draft,connections),[]);
   draft.fixed[0].voice='';assert.ok(setupIssues(draft,connections,{gemini:'secret'}).some(issue=>issue.step===2));
   draft.fixed[0].excluded=true;assert.ok(!setupIssues(draft,connections,{gemini:'secret'}).some(issue=>/Narrator/.test(issue.message)));
@@ -55,15 +55,24 @@ test('shared and preferred NPC voices have contextual validation',()=>{
   const draft=value();draft.npcPolicy={mode:'single',voice:''};assert.ok(setupIssues(draft,connections).some(issue=>/shared NPC/.test(issue.message)));
   draft.npcPolicy={mode:'preferred',voices:[]};assert.ok(setupIssues(draft,connections).some(issue=>/preferred NPC/.test(issue.message)));
   draft.npcPolicy.voices=['voice'];assert.deepEqual(setupIssues(draft,connections),[]);
-  draft.npcPolicy.route='gemini';assert.ok(setupIssues(draft,connections).some(issue=>issue.step===1));
+  draft.npcPolicy.route='gemini';assert.ok(setupIssues(draft,connections).some(issue=>issue.step===2));
 });
 
 test('automatic lead casting uses existing empty IDs with LLM and Jev; local heuristic still requires voices',()=>{
   const draft=value();draft.fixed.forEach(actor=>actor.voice='');
   assert.equal(setupIssues(draft,connections).filter(issue=>issue.step===2).length,3);
   draft.plannerMode='llm';assert.deepEqual(setupIssues(draft,connections),[]);
-  draft.plannerMode='jev';draft.decisionConnection='decision';assert.deepEqual(setupIssues(draft,connections),[]);
+  draft.plannerMode='jev';draft.decisionConnection='decision';assert.match(setupIssues(draft,connections)[0].message,/narrator voice for Jev/);
+  draft.fixed[0].voice='voice';assert.deepEqual(setupIssues(draft,connections),[]);
   draft.plannerMode='llm';draft.planner='missing';assert.ok(setupIssues(draft,connections).some(issue=>issue.step===1));
+});
+
+test('Jev automatic narration remains available for community Fish routes and disabled narrators',()=>{
+  const draft=value();draft.plannerMode='jev';draft.decisionConnection='decision';draft.fixed[0].voice='';
+  const native={...connections,tts:[{id:'tts',provider:'fish_audio',model:'s2'}]};assert.deepEqual(setupIssues(draft,native),[]);
+  const relay={...connections,tts:[{id:'tts',provider:'openrouter_tts',model:'fish-audio/s2:free'}]};assert.deepEqual(setupIssues(draft,relay),[]);
+  draft.fishVoiceSource='own';assert.match(setupIssues(draft,native)[0].message,/narrator voice for Jev/);
+  draft.fixed[0].excluded=true;assert.deepEqual(setupIssues(draft,native),[]);
 });
 
 test('successful settings save completes last and never writes any chat key',async()=>{

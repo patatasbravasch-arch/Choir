@@ -3710,3 +3710,18 @@ test('the reported case: a master speed of 4 times with a character at 0.25 time
   h.$('stop').click();
  }finally{await h.close();}
 });
+
+
+test('speed prefetch skips background markers before the next spoken passage',async()=>{
+ for(const rate of [1.5,2]){
+  const h=await harness({enabled:true,playbackRate:rate});try{
+   const saved=h.store.get('chat:chat-a');Object.assign(saved,{prefetch:1,concurrency:1,enableAmbience:true,enableSfx:false,enableMusic:true,freesoundApiKey:'fixture-key'});
+   h.store.set('chat:chat-a',saved);await h.reload();
+   h.message.content='At dawn. Rain drummed on the roof. "Hello."';h.state.blockAudio=true;h.state.delay=120;
+   h.state.soundCues={cues:[],ambience:[{segment:0,trigger:'Rain drummed',query:'rain'}],music:[{segment:0,trigger:'Rain drummed',feels:['Dark'],genres:['Soundtrack'],keywords:['piano']}]};
+   await h.plan();h.$('play').click();await until(()=>voices(h).length===1 && !voices(h)[0].paused);
+   await new Promise(resolve=>setTimeout(resolve,70));
+   assert.equal(h.synthesis.length,2,'the next speech should synthesize while the first plays even when music and ambience markers lie between them');
+  }finally{await h.close();}
+ }
+});

@@ -571,7 +571,7 @@ export async function setup(ctx) {
   let activeCharacterCard=null,activePersonaName='',activeCardKey='';
   const autoReplyQueue=new Map(),seenAutoGenerations=new Set();let autoReplyTimer=null,autoReplyActive=null;
   let voices=[...GEMINI_VOICES], nativeConnections=[], nativeProviders=[], castRows=[], npcRows=[], voiceIdEditorCount=0;
-  const voiceCatalogues=new Map();
+  const voiceCatalogues=new Map();let voiceCatalogueRevision=0;
   let controller=null, currentAudio=null, finishAudio=null, objectUrl=null;
   const defaults = () => ({planner:'',connection:'',decisionConnection:'',styleParam:'',apiBase:'/api/v1',chunk:1800,batchSpeech:false,concurrency:1,plannerTokens:8192,
     prefetch:1,normalizeLoudness:true,skipMeta:true,allowLlmFallback:false,sectionButtons:false,connectionMode:'several',enableMixer:false,singleVoices:{},
@@ -1098,6 +1098,7 @@ export async function setup(ctx) {
   async function ensureCatalogue(route,version=loadVersion) {
     if(disposed || version!==loadVersion)return [];
     if(voiceCatalogues.has(route))return voiceCatalogues.get(route);
+    const catalogueRevision=voiceCatalogueRevision;
     scopeLegacyExtraVoices();
     let extra=[...additionalVoices(config.extraVoices).filter(voice=>extraVoiceRoutes(voice.id).includes(route)),...(capturedDefaults?.voiceCatalogue || []).filter(voice=>voice.route===route)];
     const connectionId=route.startsWith('native:')?route.slice(7):'';
@@ -1112,8 +1113,15 @@ export async function setup(ctx) {
     const fallback=nativeProviders.find(item=>item.id===conn.provider)?.capabilities?.staticVoices || [];
     let data;
     try{data=await api(`/tts-connections/${encodeURIComponent(connectionId)}/voices`).then(response=>response.json());}
-    catch(error){if(!fallback.length && !extra.length && provider!=='openai_tts')throw error;data={voices:[]};}
+    catch(error){
+      if(disposed || version!==loadVersion)return [];
+      if(catalogueRevision!==voiceCatalogueRevision)return ensureCatalogue(route,version);
+      if(!fallback.length && !extra.length && provider!=='openai_tts')throw error;data={voices:[]};
+    }
     if(disposed || version!==loadVersion)return [];
+    // A refreshed connection may keep its ID while changing models or voices.
+    // Late responses must retry against the current connection, never cache the old list.
+    if(catalogueRevision!==voiceCatalogueRevision)return ensureCatalogue(route,version);
     let baseVoices=data.voices || [];
     if(!baseVoices.length)baseVoices=fallback.length?fallback:provider==='openai_tts'?OPENAI_VOICES:[];
     if(conn.provider==='openrouter_tts'){
@@ -1156,7 +1164,7 @@ export async function setup(ctx) {
   // The wizard uses the same connections, catalogue, synthesis, and default
   // format as the settings panel. It never persists a chat cast.
   let setupTestController=null,setupAutoStarted=false;
-  const wizardConnections=async(signal)=>{
+  const wizardConnections=async(signal,refresh=false)=>{
     const paths=['/tts-connections?limit=200','/connections?limit=200','/decision-connections?limit=200'];
     const results=await Promise.allSettled([...paths.map(path=>api(path,{signal}).then(response=>response.json())),rpc('ping',{},signal,8000)]);
     if(signal?.aborted)throw abortError();
@@ -1165,8 +1173,20 @@ export async function setup(ctx) {
       if(results[index].status==='fulfilled')result[kind]=results[index].value.data || [];
       else result.errors.push(`Could not load ${kind==='tts'?'TTS':kind==='llm'?'LLM':'Decision'} connections: ${results[index].reason.message}. Refresh to retry.`);
     });
-    // Use the fresh TTS list for every catalogue and synthesis lookup.
-    if(results[0].status==='fulfilled')nativeConnections=result.tts;
+    // Connection IDs survive edits to their provider/model. Refresh the voice
+    // lists too, including cached routes used by playback after setup closes.
+    if(results[0].status==='fulfilled'){
+      const previous=new Map(nativeConnections.map(connection=>[connection.id,JSON.stringify(connection)]));
+      const changed=refresh || result.tts.length!==nativeConnections.length || result.tts.some(connection=>previous.get(connection.id)!==JSON.stringify(connection));
+      nativeConnections=result.tts;
+      if(changed){
+        const cachedRoutes=[...voiceCatalogues.keys()].filter(route=>nativeConnections.some(connection=>route===`native:${connection.id}`));
+        ++voiceCatalogueRevision;voiceCatalogues.clear();
+        await Promise.allSettled(cachedRoutes.map(route=>ensureCatalogue(route)));
+        if(disposed || signal?.aborted)throw abortError();
+        voices=voiceCatalogues.get(scope(config)) || [];
+      }
+    }
     result.directJev=results[3].status==='fulfilled' && results[3].value.decisionsAvailable===false;
     return result;
   };
@@ -1186,7 +1206,7 @@ export async function setup(ctx) {
     report:message=>status(message,true),
     session:()=>({jev:$('jevKey').value.trim()}),
     setSession:(kind,value)=>{if(kind==='jev')$('jevKey').value=value;},
-    connections:wizardConnections,
+    connections:signal=>wizardConnections(signal,true),
     voices:route=>ensureCatalogue(route),
     stopTest:()=>{if(setupTestController){setupTestController.abort();setupTestController=null;stop(false);}},
     connectionGuide:()=>{tab.activate?.();status('Open Lumiverse’s Connect panel, then TTS, LLM, or Decision to configure a connection. Return to Choir, run setup again, and refresh connections.');},
@@ -1213,13 +1233,13 @@ export async function setup(ctx) {
       if(testSignal.aborted)throw abortError();
       await playBlob(blob,testSignal,actor.speaker || 'NPC',0,draft.normalizeLoudness);
     }),
-    save:async(draft,initial,signal)=>{
+    save:async(draft,initial,signal,onCommit)=>{
       await flushSettings();if(disposed || signal.aborted)throw abortError();
       const route=scope(draft),fixed=draft.fixed.map(actor=>({...actor,route:draft.connectionMode==='one'?route:actor.route || route}));
       const policy={...draft.npcPolicy,route:draft.connectionMode==='one'?'':draft.npcPolicy.route || ''};
       const selected=fixed.filter(actor=>!actor.excluded).map(actor=>({id:actor.voice,route:actor.route}));
       if(['single','preferred'].includes(policy.mode))selected.push(...(policy.mode==='single'?[policy.voice]:policy.voices).map(id=>({id,route:policy.route || route})));
-      const routes=[...new Set([route,...fixed.map(actor=>actor.route),...(policy.mode==='skip'?[]:[policy.route || route])])];
+      const routes=[...new Set([route,...fixed.filter(actor=>!actor.excluded).map(actor=>actor.route),...(policy.mode==='skip'?[]:[policy.route || route])])];
       const lists=await Promise.all(routes.map(async route=>{
         let list;
         try{list=await ensureCatalogue(route);}
@@ -1237,7 +1257,9 @@ export async function setup(ctx) {
         catalogue.set(JSON.stringify([voice.route,voice.id]),{...voice,name:voice.id});
       }
       validateNumericSettings(draft);
-      validateCastConfig({fixed:fixed.map(actor=>actor.excluded?{...actor,voice:''}:actor),npcs:[],voices:[...catalogue.values()],defaultRoute:route,npcPolicy:policy,useStyle:draft.useStyle});
+      // Disabled roles keep their saved choices, but need no catalogue from a
+      // removed connection. Validate their identity on the available default route.
+      validateCastConfig({fixed:fixed.map(actor=>actor.excluded?{...actor,voice:'',route}:actor),npcs:[],voices:[...catalogue.values()],defaultRoute:route,npcPolicy:policy,useStyle:draft.useStyle});
       if(disposed || signal.aborted)throw abortError();
       const [global,preset]=await Promise.all([ctx.settings.get(GLOBAL_SETTINGS_KEY),ctx.settings.get(CAPTURED_DEFAULTS_KEY)]);
       const choices=preferenceSnapshot(draft),baseline=preferenceSnapshot(initial);
@@ -1245,6 +1267,8 @@ export async function setup(ctx) {
       const changes=Object.fromEntries(Object.entries(choices).filter(([name,value])=>!Object.hasOwn(global || {},name) || JSON.stringify(value)!==JSON.stringify(baseline[name])));
       const defaultsPreset={...(preset || {}),version:2,npcPolicy:structuredClone(policy),leadVoices:fixed.map(actor=>Object.fromEntries(defaultVoiceFields.filter(name=>Object.hasOwn(actor,name)).map(name=>[name,actor[name]]))),
         voiceCatalogue:[...new Map([...(preset?.voiceCatalogue || []),...selected.filter(voice=>voice.id).map(voice=>catalogue.get(JSON.stringify([voice.route,voice.id])))].map(voice=>[JSON.stringify([voice.route,voice.id]),voice])).values()]};
+      if(disposed || signal.aborted)throw abortError();
+      onCommit?.();
       await saveSetupSettings(ctx.settings,[[GLOBAL_SETTINGS_KEY,{...(global || {}),...changes}],[CAPTURED_DEFAULTS_KEY,defaultsPreset]],{version:1,completed:true,deferred:false});
       capturedDefaults=defaultsPreset;++defaultsRevision;
       if(!disposed){
@@ -2243,7 +2267,7 @@ export async function setup(ctx) {
   }
   async function loadVoices(version=loadVersion) {
     cataloguesReady=false;
-    voiceCatalogues.clear();
+    ++voiceCatalogueRevision;voiceCatalogues.clear();
     // Keep saved editors available even if the catalogue request fails.
     renderCast();
     const catalogue=await ensureCatalogue(scope(config),version);
@@ -3149,7 +3173,15 @@ export async function setup(ctx) {
 
     function pump() {
       const concurrency=Math.max(1,Number(snapshot.concurrency)||1);
-      while(!failed && !ctrl.signal.aborted && activeWorkers<concurrency && nextToSynthesize<segments.length && nextToSynthesize<=playIdx+Number(snapshot.prefetch ?? 1)) {
+      // Background markers never occupy playback time. Count audible passages
+      // for lookahead, so a music/ambience marker cannot postpone the next TTS
+      // request until the playing clip ends, especially at faster speeds.
+      let prefetchEnd=playIdx, audibleAhead=0;
+      for(;prefetchEnd<segments.length;prefetchEnd++){
+        if(isBed(segments[prefetchEnd]) || playbackExcluded(segments[prefetchEnd]))continue;
+        if(audibleAhead++>=Number(snapshot.prefetch ?? 1))break;
+      }
+      while(!failed && !ctrl.signal.aborted && activeWorkers<concurrency && nextToSynthesize<segments.length && nextToSynthesize<=prefetchEnd) {
         const idx=nextToSynthesize++;
         if(playbackExcluded(segments[idx]))continue;
         if(isBed(segments[idx])){if(!segments[idx][segments[idx].kind].stop)loadBed(idx).catch(()=>{});continue;}

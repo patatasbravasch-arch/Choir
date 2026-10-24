@@ -1590,9 +1590,9 @@ function setupDraft(value, preset, existing) {
 function setupIssues(draft, connections, session = {}) {
   const issues = [];
   const route = `native:${draft.connection}`;
-  const requireRoute = (selected, label) => {
+  const requireRoute = (selected, label, step = 1) => {
     const connection = connections.tts.find(item => `native:${item.id}` === selected);
-    if (!connection?.model) issues.push({step:1, message:`Choose an available TTS connection with a model for ${label}.`});
+    if (!connection?.model) issues.push({step, message:`Choose an available TTS connection with a model for ${label}.`});
   };
   requireRoute(route, 'Default speech');
   const llm = connections.llm.find(item => draft.planner ? item.id === draft.planner : item.is_default);
@@ -1602,17 +1602,26 @@ function setupIssues(draft, connections, session = {}) {
   if (draft.plannerMode === 'jev' && !decision && !(connections.directJev && session.jev)) issues.push({step:1,message:connections.directJev?'Choose a Decision connection or provide a session Jev key.':'Choose an available Decision connection in Lumiverse’s Connect panel.'});
   for (const actor of draft.fixed) {
     if (actor.excluded) continue;
-    requireRoute(draft.connectionMode === 'one' ? route : actor.route || route, actor.speaker);
+    requireRoute(draft.connectionMode === 'one' ? route : actor.route || route, actor.speaker, 2);
     if (!actor.voice && draft.plannerMode==='heuristic') issues.push({step:2,message:`Choose a voice for ${actor.speaker}, turn off that voice, or switch to Standard LLM on Connections to let the LLM choose. Heuristic attribution needs an assigned voice.`});
+    if (actor===draft.fixed[0] && !actor.voice && jevNeedsNarratorVoice(draft,connections)) issues.push({step:2,message:'Choose a narrator voice for Jev on this connection, turn off narrator speech, or switch to the Standard LLM planner.'});
   }
   const policy = draft.npcPolicy || {mode:'skip'};
-  if (policy.mode !== 'skip') requireRoute(draft.connectionMode === 'one' ? route : policy.route || route, 'NPC speech');
+  if (policy.mode !== 'skip') requireRoute(draft.connectionMode === 'one' ? route : policy.route || route, 'NPC speech', 2);
   if (policy.mode === 'single' && !policy.voice) issues.push({step:2,message:'Choose a shared NPC voice.'});
   if (policy.mode === 'preferred' && !policy.voices?.length) issues.push({step:2,message:'Select at least one preferred NPC voice.'});
   if (policy.mode === 'llm' && draft.plannerMode === 'heuristic') issues.push({step:2,message:'Automatic NPC voice selection needs Jev or an LLM planner. Choose shared, preferred, or disabled NPC speech.'});
   if ((draft.enableSfx || draft.enableAmbience) && !draft.freesoundApiKey?.trim()) issues.push({step:3,message:'Sound effects and ambient sound need a Freesound API key.'});
   if ((draft.enableSfx || draft.enableAmbience || draft.enableMusic) && !llm?.model) issues.push({step:3,message:'Sound effects, ambience, and music need a Planner LLM connection for cue selection.'});
   return issues.filter((item,index,all) => all.findIndex(other => other.message === item.message) === index);
+}
+
+function jevNeedsNarratorVoice(draft, connections) {
+  if(draft.plannerMode!=='jev')return false;
+  const route=draft.connectionMode==='one'?`native:${draft.connection}`:draft.fixed[0]?.route || `native:${draft.connection}`;
+  const connection=connections.tts.find(item=>`native:${item.id}`===route);
+  const community=connection?.provider==='fish_audio' || connection?.provider==='openrouter_tts' && /fish-audio\//i.test(connection.model || '');
+  return !community || draft.fishVoiceSource==='own';
 }
 
 // Spindle settings writes are separate requests. Complete last, compensate on
@@ -1709,7 +1718,7 @@ function createSetupWizard(ctx, adapter) {
     const doc = modal.root.ownerDocument;
     const shell = doc.createElement('div');shell.className='choir-setup';shell.dataset.choirSetup='';modal.root.append(shell);
     const draft = setupDraft(snapshot.config, snapshot.preset, snapshot.existing);
-    let connections = snapshot.connections, step = 0, visited = 0, busy = false, closed = false, completed = false, ctrl = null, renderId = 0;
+    let connections = snapshot.connections, step = 0, visited = 0, busy = false, closed = false, completed = false, ctrl = null, renderId = 0, cancellable = false;
     const tests = new Map();
     const element = (tag,text,parent) => {const node=doc.createElement(tag);if(text)node.textContent=text;parent?.append(node);return node;};
     const nav = element('ol','',shell);nav.className='cs-progress';nav.setAttribute('aria-label','Setup progress');
@@ -1723,7 +1732,8 @@ function createSetupWizard(ctx, adapter) {
     const actions = element('div','',shell);actions.className='cs-actions';
     const button = (text,parent,action) => {const node=element('button',text,parent);node.type='button';node.onclick=action;return node;};
     const back = button('Back',actions,()=>navigate(step-1));
-    const skip = button('Skip for now',actions,()=>task(async()=>{await defer();modal.dismiss();},'Saving your choice…'));
+    const skip = button('Skip for now',actions,()=>task(async()=>{await defer();modal.dismiss();},'Saving your choice…',false));
+    const cancel = button('Cancel',actions,()=>{if(cancellable){ctrl?.abort();adapter.stopTest();}});cancel.hidden=true;
     const next = button('Next',actions,()=>step===4?finish():navigate(step+1));next.className='cs-primary';
     const say = (message,error=false) => {if(closed)return;feedback.textContent=message;feedback.classList.toggle('cs-error',error);feedback.setAttribute('role',error?'alert':'status');};
     const session = () => adapter.session();
@@ -1737,13 +1747,16 @@ function createSetupWizard(ctx, adapter) {
       for(const node of body.querySelectorAll('input,select,button'))node.disabled=busy || node.dataset.unavailable==='true';
       navButtons.forEach((node,index)=>{node.disabled=busy || completed || index>visited;node.setAttribute('aria-current',index===step?'step':'false');});
       back.disabled=busy || completed || step===0;skip.disabled=busy || completed;next.disabled=busy;
+      cancel.hidden=!busy || !cancellable;cancel.disabled=!busy || !cancellable;
     };
-    async function task(operation,message) {
+    async function task(operation,message,canCancel=true) {
       if(busy || closed)return;
-      busy=true;ctrl=new AbortController();say(message);lock();
-      try {await operation(ctrl.signal);}
-      catch(error){if(!closed && error.name!=='AbortError')say(safeError(error),true);}
-      finally {busy=false;ctrl=null;if(!closed)lock();}
+      busy=true;cancellable=canCancel;const current=new AbortController();ctrl=current;say(message);lock();
+      let aborted;
+      const cancellation=new Promise((_,reject)=>{aborted=()=>reject(Object.assign(new Error('Operation cancelled.'),{name:'AbortError'}));current.signal.addEventListener('abort',aborted,{once:true});});
+      try {await Promise.race([operation(current.signal),cancellation]);}
+      catch(error){if(!closed)say(error.name==='AbortError'?'Operation cancelled.':safeError(error),error.name!=='AbortError');}
+      finally {current.signal.removeEventListener('abort',aborted);busy=false;cancellable=false;ctrl=null;if(!closed)lock();}
     }
     async function defer() {
       if(completed || previousState?.completed)return;
@@ -1777,6 +1790,12 @@ function createSetupWizard(ctx, adapter) {
       if(hint)element('p',hint,parent).className='cs-hint';return node;
     }
     const defaultRoute = () => `native:${draft.connection}`;
+    const effectiveRoute = actor => draft.connectionMode==='one'?defaultRoute():actor.route || defaultRoute();
+    function changeSpeechRouting(change) {
+      const actors=[...draft.fixed,draft.npcPolicy],before=actors.map(effectiveRoute);change();
+      actors.forEach((actor,index)=>{if(before[index]!==effectiveRoute(actor)){actor.voice='';if(actor===draft.npcPolicy)actor.voices=[];}});
+      tests.delete('tts');render();
+    }
     const routes = () => [['','Use default speech connection'],...connections.tts.map(item=>[`native:${item.id}`,`${item.name} · ${item.provider} · ${item.model || 'no model'}`])];
     const signature = kind => JSON.stringify(kind==='planner'?[draft.plannerMode,draft.planner,draft.decisionConnection,Boolean(session().jev)]:[defaultRoute(),draft.connectionMode,draft.fixed[0]?.route,draft.fixed[0]?.voice]);
     function navigate(target) {
@@ -1789,27 +1808,28 @@ function createSetupWizard(ctx, adapter) {
       body.scrollTop=0;modal.root.scrollTop=0;
     }
     function refresh() {
-      return task(async signal=>{connections=await adapter.connections(signal);tests.clear();render();say('Connections refreshed. No synthesis or planner test was run.');},'Refreshing connection lists…');
+      return task(async signal=>{const latest=await adapter.connections(signal);if(closed || signal.aborted)return;connections=latest;tests.clear();render();say('Connections refreshed. No synthesis or planner test was run.');},'Refreshing connection lists…');
     }
     function testPlanner() {
       const key=signature('planner');
-      return task(async signal=>{const result=await adapter.testPlanner(draft,signal);tests.set('planner',{key,message:result});say(result);},draft.plannerMode==='heuristic'?'Checking local attribution…':'Sending one planner test request…');
+      return task(async signal=>{const result=await adapter.testPlanner(draft,signal);if(closed || signal.aborted)return;tests.set('planner',{key,message:result});say(result);},draft.plannerMode==='heuristic'?'Checking local attribution…':'Sending one planner test request…');
     }
     function testVoice(actor = draft.fixed[0]) {
       if(!actor?.voice){say('This voice is set to automatic selection. Choir chooses it when you plan a reply. Select a specific voice to audition it now.',true);return;}
       const key=signature('tts');
-      return task(async signal=>{await adapter.testVoice(draft,actor,signal);if(actor===draft.fixed[0])tests.set('tts',{key,message:'A narrator sample was synthesized and played.'});say(`Voice test passed: ${actor.voice}. A sample was synthesized and played.`);},'Synthesizing a short voice sample…');
+      return task(async signal=>{await adapter.testVoice(draft,actor,signal);if(closed || signal.aborted)return;if(actor===draft.fixed[0])tests.set('tts',{key,message:'A narrator sample was synthesized and played.'});say(`Voice test passed: ${actor.voice}. A sample was synthesized and played.`);},'Synthesizing a short voice sample…');
     }
     function voiceField(actor,parent,label,changed,allowAutomatic=false) {
       const row=element('div','',parent),id=renderId;
       const effective=()=>draft.connectionMode==='one'?defaultRoute():actor.route || defaultRoute();
       const automaticLabel=draft.plannerMode==='jev'?'Let Choir choose (Jev)':'Let the LLM choose';
       const emptyLabel=allowAutomatic?automaticLabel:'Choose a voice';
-      const choices=select(`${label} voice`,[['',emptyLabel]],actor.voice,row,value=>{actor.voice=value;changed?.();});
+      let voiceId;
+      const choices=select(`${label} voice`,[['',emptyLabel]],actor.voice,row,value=>{actor.voice=value;if(voiceId)voiceId.value=value;changed?.();});
       const note=element('small','Loading voices…',row);
       if(allowAutomatic)element('small',draft.plannerMode==='heuristic'?'Let the LLM choose requires switching the planner to Standard LLM on Connections.':'Automatic selection happens during planning, using this connection’s catalogue and Choir’s existing casting logic. Planner calls may incur charges.',row);
       const custom=element('details','',row);element('summary','Use a provider voice ID',custom);
-      input(`${label} voice ID`,actor.voice,custom,value=>{
+      voiceId=input(`${label} voice ID`,actor.voice,custom,value=>{
         actor.voice=value;if(value && ![...choices.options].some(item=>item.value===value)){const entry=element('option',`${value} · custom ID`,choices);entry.value=value;}
         choices.value=value;changed?.();
       },{hint:'Use an ID from this provider. Choir validates it with the selected route; a successful test confirms synthesis.'});
@@ -1858,7 +1878,7 @@ function createSetupWizard(ctx, adapter) {
         element('p','Speech & Planner preferences are shared across chats. Voice defaults are used by new chats; existing chat casts stay independent. Skip saves no configuration.',body).className='cs-hint';
       } else if(step===1){
         element('p','Choose a speech connection saved in Lumiverse. Your API key and model are managed in Lumiverse’s Connect panel.',body);
-        select('Default TTS connection',[['','Choose a connection'],...connections.tts.map(item=>[item.id,`${item.name} · ${item.provider} · ${item.model || 'no model'}`])],draft.connection,body,value=>{draft.connection=value;tests.delete('tts');render();});
+        select('Default TTS connection',[['','Choose a connection'],...connections.tts.map(item=>[item.id,`${item.name} · ${item.provider} · ${item.model || 'no model'}`])],draft.connection,body,value=>changeSpeechRouting(()=>{draft.connection=value;}));
         fishGuide(body);
         select('Planner engine',[['heuristic','Heuristic · local, no planner API'],['jev','Jev · Decision classification'],['llm','Standard LLM planner']],draft.plannerMode,body,value=>{draft.plannerMode=value;draft.useFastClassifier=value==='heuristic';draft.useJev=value==='jev';tests.delete('planner');render();});
         element('p',draft.plannerMode==='heuristic'?'Heuristic attribution works locally for narration and simple dialogue. Ambiguous speakers can stop planning. Assign voices explicitly; use Jev or LLM for complex scenes. Speech still uses your TTS provider.':draft.plannerMode==='jev'?'Jev classifies dialogue through a Decision connection. LLM fallback stays controlled by your existing Choir preference. Tests and classification can incur charges.':'An LLM identifies speakers and chooses voices. Planning and connection tests can incur charges.',body).className='cs-hint';
@@ -1879,22 +1899,22 @@ function createSetupWizard(ctx, adapter) {
         element('p','TTS connection testing is on the next step, using an actual voice sample.',body).className='cs-hint';
         const guide=element('div','',body);guide.className='cs-card';element('h3','Missing a connection?',guide);
         element('p','Open Lumiverse’s Connect panel and select TTS, LLM, or Decision. Create or edit your connection there, choose its model, then reopen this wizard and refresh. Choir uses your connections; it does not create host-managed connections.',guide);
-        button('Configure connections later',guide,()=>task(async()=>{await defer();modal.dismiss();adapter.connectionGuide();},'Saving your choice…'));
+        button('Configure connections later',guide,()=>task(async()=>{await defer();modal.dismiss();adapter.connectionGuide();},'Saving your choice…',false));
         button('Refresh connections',guide,refresh);
         for(const error of connections.errors || [])element('p',error,guide).className='cs-error';
       } else if(step===2){
         element('p','Choose voices for new chats. Existing chats keep their cast. A voice test synthesizes and plays one short sample.',body);
-        select('Voice connection mode',[['one','One connection for the whole cast'],['several','A connection for each character']],draft.connectionMode,body,value=>{draft.connectionMode=value;render();});
+        select('Voice connection mode',[['one','One connection for the whole cast'],['several','A connection for each character']],draft.connectionMode,body,value=>changeSpeechRouting(()=>{draft.connectionMode=value;}));
         {
           const selected=connections.tts.find(item=>item.id===draft.connection);
-          const provider=select('Default TTS provider',[['','Choose provider'],...[...new Set(connections.tts.map(item=>item.provider))].map(id=>[id,id])],selected?.provider,body,value=>{draft.connection=connections.tts.find(item=>item.provider===value)?.id || '';tests.delete('tts');render();});
-          select('TTS model and connection',[['','Choose model'],...connections.tts.filter(item=>item.provider===provider.value).map(item=>[item.id,`${item.model || 'No model configured'} · ${item.name}`])],draft.connection,body,value=>{draft.connection=value;tests.delete('tts');render();},'Native models are configured in Lumiverse’s Connect panel. Selecting one here selects its saved connection.');
+          const provider=select('Default TTS provider',[['','Choose provider'],...[...new Set(connections.tts.map(item=>item.provider))].map(id=>[id,id])],selected?.provider,body,value=>changeSpeechRouting(()=>{draft.connection=connections.tts.find(item=>item.provider===value)?.id || '';}));
+          select('TTS model and connection',[['','Choose model'],...connections.tts.filter(item=>item.provider===provider.value).map(item=>[item.id,`${item.model || 'No model configured'} · ${item.name}`])],draft.connection,body,value=>changeSpeechRouting(()=>{draft.connection=value;}),'Native models are configured in Lumiverse’s Connect panel. Selecting one here selects its saved connection.');
         }
         const grid=element('div','',body);grid.className='cs-grid';
         draft.fixed.forEach((actor,index)=>{
           const name=['Narrator','Persona','Main character'][index],card=element('div','',grid);card.className='cs-card';element('h3',name,card);
           if(draft.connectionMode==='several') select(`${name} connection`,routes(),actor.route || '',card,value=>{actor.route=value;actor.voice='';tests.delete('tts');render();});
-          voiceField(actor,card,name,()=>tests.delete('tts'),true);
+          voiceField(actor,card,name,()=>tests.delete('tts'),index!==0 || !jevNeedsNarratorVoice(draft,connections));
           check(`Enable ${name.toLowerCase()} speech`,!actor.excluded,card,value=>{actor.excluded=!value;});
           button(`Test ${name.toLowerCase()} voice`,card,()=>testVoice(actor));
         });
@@ -1946,7 +1966,9 @@ function createSetupWizard(ctx, adapter) {
         };
         const tts=connections.tts.find(item=>item.id===draft.connection);
         review('Speech',`${tts?.name || 'Missing TTS connection'} · ${tts?.provider || ''} · ${tts?.model || 'no model'}`,1,issues.some(item=>item.step===1)?'Needs Attention':'Ready');
-        review('Planner',draft.plannerMode==='heuristic'?'Local heuristic · ambiguous dialogue may need manual help':`${draft.plannerMode} · ${draft.planner || draft.decisionConnection || 'host default'}`,1,issues.some(item=>item.step===1)?'Needs Attention':'Ready');
+        const plannerConnection=(draft.plannerMode==='jev'?connections.decision:connections.llm).find(item=>draft.plannerMode==='jev'?(draft.decisionConnection?item.id===draft.decisionConnection:item.is_default):(draft.planner?item.id===draft.planner:item.is_default));
+        const plannerDetail=draft.plannerMode==='heuristic'?'Local heuristic · ambiguous dialogue may need manual help':`${draft.plannerMode==='jev'?'Jev':'Standard LLM'} · ${plannerConnection?.name || (draft.plannerMode==='jev' && connections.directJev && session().jev?'Session Jev connection':'Missing planner connection')}${plannerConnection?.model?` · ${plannerConnection.model}`:''}`;
+        review('Planner',plannerDetail,1,issues.some(item=>item.step===1)?'Needs Attention':'Ready');
         review('Cast defaults',draft.fixed.map((actor,index)=>`${['Narrator','Persona','Main character'][index]}: ${actor.excluded?'disabled':actor.voice || (draft.plannerMode==='llm'?'LLM chooses during planning':draft.plannerMode==='jev'?'Choir chooses with Jev':'needs a voice')}`).join(' · ')+` · NPCs: ${draft.npcPolicy.mode}`,2,issues.some(item=>item.step===2)?'Needs Attention':'Ready');
         review('Optional features',[['Sound effects',draft.enableSfx],['Ambience',draft.enableAmbience],['Music',draft.enableMusic],['Auto-plan',draft.autoPlan],['Auto-play',draft.auto]].filter(item=>item[1]).map(item=>item[0]).join(', ') || 'All optional features are off',3,issues.some(item=>item.step===3)?'Needs Attention':'Optional');
         review('Reading',`Custom skip rules: ${draft.ignoredTags || 'none'} · Automatic non-story filtering: ${draft.skipMeta===false?'off':'on'} · Highlight: ${draft.readAlong || 'off'}`,3,'Optional');
@@ -1960,15 +1982,18 @@ function createSetupWizard(ctx, adapter) {
       const issues=setupIssues(draft,connections,session());
       if(issues.length){say(issues.map(item=>item.message).join('\n'),true);return;}
       return task(async signal=>{
-        saving=true;
+        let committing=false;
         try {
         // Re-read connections to catch deleted connections before committing.
-        connections=await adapter.connections(signal);
+        const latestConnections=await adapter.connections(signal);
+        if(closed || signal.aborted)return;
+        connections=latestConnections;
         const latest=setupIssues(draft,connections,session());
         if(latest.length)throw new Error(latest.map(item=>item.message).join('\n'));
-        await adapter.save(draft,snapshot.config,signal);
+        await adapter.save(draft,snapshot.config,signal,()=>{committing=true;saving=true;cancellable=false;lock();});
+        if(closed || signal.aborted)return;
         completed=true;if(!closed){render();say('Setup completed successfully.');}
-        } finally {saving=false;}
+        } finally {if(committing)saving=false;}
       },'Validating and saving setup…');
     }
     render();
@@ -2587,7 +2612,7 @@ export async function setup(ctx) {
   let activeCharacterCard=null,activePersonaName='',activeCardKey='';
   const autoReplyQueue=new Map(),seenAutoGenerations=new Set();let autoReplyTimer=null,autoReplyActive=null;
   let voices=[...GEMINI_VOICES], nativeConnections=[], nativeProviders=[], castRows=[], npcRows=[], voiceIdEditorCount=0;
-  const voiceCatalogues=new Map();
+  const voiceCatalogues=new Map();let voiceCatalogueRevision=0;
   let controller=null, currentAudio=null, finishAudio=null, objectUrl=null;
   const defaults = () => ({planner:'',connection:'',decisionConnection:'',styleParam:'',apiBase:'/api/v1',chunk:1800,batchSpeech:false,concurrency:1,plannerTokens:8192,
     prefetch:1,normalizeLoudness:true,skipMeta:true,allowLlmFallback:false,sectionButtons:false,connectionMode:'several',enableMixer:false,singleVoices:{},
@@ -3114,6 +3139,7 @@ export async function setup(ctx) {
   async function ensureCatalogue(route,version=loadVersion) {
     if(disposed || version!==loadVersion)return [];
     if(voiceCatalogues.has(route))return voiceCatalogues.get(route);
+    const catalogueRevision=voiceCatalogueRevision;
     scopeLegacyExtraVoices();
     let extra=[...additionalVoices(config.extraVoices).filter(voice=>extraVoiceRoutes(voice.id).includes(route)),...(capturedDefaults?.voiceCatalogue || []).filter(voice=>voice.route===route)];
     const connectionId=route.startsWith('native:')?route.slice(7):'';
@@ -3128,8 +3154,15 @@ export async function setup(ctx) {
     const fallback=nativeProviders.find(item=>item.id===conn.provider)?.capabilities?.staticVoices || [];
     let data;
     try{data=await api(`/tts-connections/${encodeURIComponent(connectionId)}/voices`).then(response=>response.json());}
-    catch(error){if(!fallback.length && !extra.length && provider!=='openai_tts')throw error;data={voices:[]};}
+    catch(error){
+      if(disposed || version!==loadVersion)return [];
+      if(catalogueRevision!==voiceCatalogueRevision)return ensureCatalogue(route,version);
+      if(!fallback.length && !extra.length && provider!=='openai_tts')throw error;data={voices:[]};
+    }
     if(disposed || version!==loadVersion)return [];
+    // A refreshed connection may keep its ID while changing models or voices.
+    // Late responses must retry against the current connection, never cache the old list.
+    if(catalogueRevision!==voiceCatalogueRevision)return ensureCatalogue(route,version);
     let baseVoices=data.voices || [];
     if(!baseVoices.length)baseVoices=fallback.length?fallback:provider==='openai_tts'?OPENAI_VOICES:[];
     if(conn.provider==='openrouter_tts'){
@@ -3172,7 +3205,7 @@ export async function setup(ctx) {
   // The wizard uses the same connections, catalogue, synthesis, and default
   // format as the settings panel. It never persists a chat cast.
   let setupTestController=null,setupAutoStarted=false;
-  const wizardConnections=async(signal)=>{
+  const wizardConnections=async(signal,refresh=false)=>{
     const paths=['/tts-connections?limit=200','/connections?limit=200','/decision-connections?limit=200'];
     const results=await Promise.allSettled([...paths.map(path=>api(path,{signal}).then(response=>response.json())),rpc('ping',{},signal,8000)]);
     if(signal?.aborted)throw abortError();
@@ -3181,8 +3214,20 @@ export async function setup(ctx) {
       if(results[index].status==='fulfilled')result[kind]=results[index].value.data || [];
       else result.errors.push(`Could not load ${kind==='tts'?'TTS':kind==='llm'?'LLM':'Decision'} connections: ${results[index].reason.message}. Refresh to retry.`);
     });
-    // Use the fresh TTS list for every catalogue and synthesis lookup.
-    if(results[0].status==='fulfilled')nativeConnections=result.tts;
+    // Connection IDs survive edits to their provider/model. Refresh the voice
+    // lists too, including cached routes used by playback after setup closes.
+    if(results[0].status==='fulfilled'){
+      const previous=new Map(nativeConnections.map(connection=>[connection.id,JSON.stringify(connection)]));
+      const changed=refresh || result.tts.length!==nativeConnections.length || result.tts.some(connection=>previous.get(connection.id)!==JSON.stringify(connection));
+      nativeConnections=result.tts;
+      if(changed){
+        const cachedRoutes=[...voiceCatalogues.keys()].filter(route=>nativeConnections.some(connection=>route===`native:${connection.id}`));
+        ++voiceCatalogueRevision;voiceCatalogues.clear();
+        await Promise.allSettled(cachedRoutes.map(route=>ensureCatalogue(route)));
+        if(disposed || signal?.aborted)throw abortError();
+        voices=voiceCatalogues.get(scope(config)) || [];
+      }
+    }
     result.directJev=results[3].status==='fulfilled' && results[3].value.decisionsAvailable===false;
     return result;
   };
@@ -3202,7 +3247,7 @@ export async function setup(ctx) {
     report:message=>status(message,true),
     session:()=>({jev:$('jevKey').value.trim()}),
     setSession:(kind,value)=>{if(kind==='jev')$('jevKey').value=value;},
-    connections:wizardConnections,
+    connections:signal=>wizardConnections(signal,true),
     voices:route=>ensureCatalogue(route),
     stopTest:()=>{if(setupTestController){setupTestController.abort();setupTestController=null;stop(false);}},
     connectionGuide:()=>{tab.activate?.();status('Open Lumiverse’s Connect panel, then TTS, LLM, or Decision to configure a connection. Return to Choir, run setup again, and refresh connections.');},
@@ -3229,13 +3274,13 @@ export async function setup(ctx) {
       if(testSignal.aborted)throw abortError();
       await playBlob(blob,testSignal,actor.speaker || 'NPC',0,draft.normalizeLoudness);
     }),
-    save:async(draft,initial,signal)=>{
+    save:async(draft,initial,signal,onCommit)=>{
       await flushSettings();if(disposed || signal.aborted)throw abortError();
       const route=scope(draft),fixed=draft.fixed.map(actor=>({...actor,route:draft.connectionMode==='one'?route:actor.route || route}));
       const policy={...draft.npcPolicy,route:draft.connectionMode==='one'?'':draft.npcPolicy.route || ''};
       const selected=fixed.filter(actor=>!actor.excluded).map(actor=>({id:actor.voice,route:actor.route}));
       if(['single','preferred'].includes(policy.mode))selected.push(...(policy.mode==='single'?[policy.voice]:policy.voices).map(id=>({id,route:policy.route || route})));
-      const routes=[...new Set([route,...fixed.map(actor=>actor.route),...(policy.mode==='skip'?[]:[policy.route || route])])];
+      const routes=[...new Set([route,...fixed.filter(actor=>!actor.excluded).map(actor=>actor.route),...(policy.mode==='skip'?[]:[policy.route || route])])];
       const lists=await Promise.all(routes.map(async route=>{
         let list;
         try{list=await ensureCatalogue(route);}
@@ -3253,7 +3298,9 @@ export async function setup(ctx) {
         catalogue.set(JSON.stringify([voice.route,voice.id]),{...voice,name:voice.id});
       }
       validateNumericSettings(draft);
-      validateCastConfig({fixed:fixed.map(actor=>actor.excluded?{...actor,voice:''}:actor),npcs:[],voices:[...catalogue.values()],defaultRoute:route,npcPolicy:policy,useStyle:draft.useStyle});
+      // Disabled roles keep their saved choices, but need no catalogue from a
+      // removed connection. Validate their identity on the available default route.
+      validateCastConfig({fixed:fixed.map(actor=>actor.excluded?{...actor,voice:'',route}:actor),npcs:[],voices:[...catalogue.values()],defaultRoute:route,npcPolicy:policy,useStyle:draft.useStyle});
       if(disposed || signal.aborted)throw abortError();
       const [global,preset]=await Promise.all([ctx.settings.get(GLOBAL_SETTINGS_KEY),ctx.settings.get(CAPTURED_DEFAULTS_KEY)]);
       const choices=preferenceSnapshot(draft),baseline=preferenceSnapshot(initial);
@@ -3261,6 +3308,8 @@ export async function setup(ctx) {
       const changes=Object.fromEntries(Object.entries(choices).filter(([name,value])=>!Object.hasOwn(global || {},name) || JSON.stringify(value)!==JSON.stringify(baseline[name])));
       const defaultsPreset={...(preset || {}),version:2,npcPolicy:structuredClone(policy),leadVoices:fixed.map(actor=>Object.fromEntries(defaultVoiceFields.filter(name=>Object.hasOwn(actor,name)).map(name=>[name,actor[name]]))),
         voiceCatalogue:[...new Map([...(preset?.voiceCatalogue || []),...selected.filter(voice=>voice.id).map(voice=>catalogue.get(JSON.stringify([voice.route,voice.id])))].map(voice=>[JSON.stringify([voice.route,voice.id]),voice])).values()]};
+      if(disposed || signal.aborted)throw abortError();
+      onCommit?.();
       await saveSetupSettings(ctx.settings,[[GLOBAL_SETTINGS_KEY,{...(global || {}),...changes}],[CAPTURED_DEFAULTS_KEY,defaultsPreset]],{version:1,completed:true,deferred:false});
       capturedDefaults=defaultsPreset;++defaultsRevision;
       if(!disposed){
@@ -4259,7 +4308,7 @@ export async function setup(ctx) {
   }
   async function loadVoices(version=loadVersion) {
     cataloguesReady=false;
-    voiceCatalogues.clear();
+    ++voiceCatalogueRevision;voiceCatalogues.clear();
     // Keep saved editors available even if the catalogue request fails.
     renderCast();
     const catalogue=await ensureCatalogue(scope(config),version);
@@ -5165,7 +5214,15 @@ export async function setup(ctx) {
 
     function pump() {
       const concurrency=Math.max(1,Number(snapshot.concurrency)||1);
-      while(!failed && !ctrl.signal.aborted && activeWorkers<concurrency && nextToSynthesize<segments.length && nextToSynthesize<=playIdx+Number(snapshot.prefetch ?? 1)) {
+      // Background markers never occupy playback time. Count audible passages
+      // for lookahead, so a music/ambience marker cannot postpone the next TTS
+      // request until the playing clip ends, especially at faster speeds.
+      let prefetchEnd=playIdx, audibleAhead=0;
+      for(;prefetchEnd<segments.length;prefetchEnd++){
+        if(isBed(segments[prefetchEnd]) || playbackExcluded(segments[prefetchEnd]))continue;
+        if(audibleAhead++>=Number(snapshot.prefetch ?? 1))break;
+      }
+      while(!failed && !ctrl.signal.aborted && activeWorkers<concurrency && nextToSynthesize<segments.length && nextToSynthesize<=prefetchEnd) {
         const idx=nextToSynthesize++;
         if(playbackExcluded(segments[idx]))continue;
         if(isBed(segments[idx])){if(!segments[idx][segments[idx].kind].stop)loadBed(idx).catch(()=>{});continue;}

@@ -12,7 +12,7 @@ const base=()=>({mode:'native',connection:'tts',model:'gemini-speech',connection
   enableSfx:false,enableAmbience:false,enableMusic:false,autoDesignNPCs:false,auto:false,autoPlan:false});
 const profiles={tts:[{id:'tts',name:'Speech',provider:'openai_tts',model:'speech-model'}],llm:[{id:'llm',name:'Planner',model:'text-model',is_default:true}],decision:[{id:'decision',name:'Jev'}]};
 
-function uiHarness({existing=false,state,config=base(),failSave=false}={}){
+function uiHarness({existing=false,state,config=base(),failSave=false,connections=profiles,plannerTest,connectionRequest,saveSetup}={}){
   const dom=new JSDOM('<body></body>'),store=new Map(),modals=[],reports=[],calls=[],session={gemini:'',jev:''};let voiceFailure=false,testFailure=false,holdTest=false,releaseTest;
   if(state)store.set(ONBOARDING_KEY,state);
   const settings={get:async key=>store.get(key),set:async(key,value)=>{if(failSave && key==='settings:global'){failSave=false;throw Error('Storage unavailable');}store.set(key,structuredClone(value));},remove:async key=>store.delete(key)};
@@ -22,12 +22,12 @@ function uiHarness({existing=false,state,config=base(),failSave=false}={}){
   }}};
   const wizard=createSetupWizard(ctx,{
     report:value=>reports.push(value),session:()=>session,setSession:(kind,value)=>{session[kind]=value;},stopTest:()=>calls.push(['stopTest']),connectionGuide:()=>calls.push(['guide']),
-    snapshot:async()=>({config:structuredClone(config),existing,preset:null,connections:structuredClone(profiles)}),
-    connections:async()=>{calls.push(['connections']);return structuredClone(profiles);},
+    snapshot:async()=>({config:structuredClone(config),existing,preset:null,connections:structuredClone(connections)}),
+    connections:async signal=>{calls.push(['connections']);return connectionRequest?connectionRequest(signal):structuredClone(connections);},
     voices:async route=>{calls.push(['voices',route]);if(voiceFailure)throw Error('Catalogue offline');return [{id:'voice',name:'Voice'},{id:'other',name:'Other'}];},
-    testPlanner:async(draft,signal)=>{calls.push(['planner',draft.plannerMode]);if(testFailure)throw Error('Planner unavailable');if(holdTest)await new Promise((resolve,reject)=>{releaseTest=resolve;signal.addEventListener('abort',()=>reject(new DOMException('Stopped','AbortError')),{once:true});});return 'Local · Heuristic · no LLM request';},
+    testPlanner:async(draft,signal)=>{calls.push(['planner',draft.plannerMode]);if(plannerTest)return plannerTest(draft,signal);if(testFailure)throw Error('Planner unavailable');if(holdTest)await new Promise((resolve,reject)=>{releaseTest=resolve;signal.addEventListener('abort',()=>reject(new DOMException('Stopped','AbortError')),{once:true});});return 'Local · Heuristic · no LLM request';},
     testVoice:async draft=>{calls.push(['synthesis']);if(testFailure)throw Error(`Provider rejected ${draft.freesoundApiKey}`);},
-    save:async draft=>saveSetupSettings(settings,[['settings:global',{mode:draft.mode,enableSfx:draft.enableSfx,plannerMode:draft.plannerMode}],['settings:captured-defaults',{version:2,leadVoices:draft.fixed,npcPolicy:draft.npcPolicy}]],{version:1,completed:true,deferred:false})
+    save:async(draft,initial,signal,onCommit)=>{calls.push(['save']);if(saveSetup)return saveSetup(draft,initial,signal,onCommit);onCommit?.();return saveSetupSettings(settings,[['settings:global',{mode:draft.mode,enableSfx:draft.enableSfx,plannerMode:draft.plannerMode}],['settings:captured-defaults',{version:2,leadVoices:draft.fixed,npcPolicy:draft.npcPolicy}]],{version:1,completed:true,deferred:false});}
   });
   const root=()=>dom.window.document.querySelector('[data-choir-setup]');
   const findButton=text=>[...root().querySelectorAll('button')].find(node=>node.textContent===text);
@@ -111,6 +111,79 @@ test('Fish setup guide distinguishes credentials from voices and never offers re
   const guide=[...h.root().querySelectorAll('details')].find(node=>node.querySelector('summary')?.textContent==='How to connect Fish Audio');assert.ok(guide);guide.open=true;
   const links=[...guide.querySelectorAll('a')];assert.ok(links.some(link=>link.href==='https://fish.audio/app/api-keys'));assert.ok(links.every(link=>link.target==='_blank' && link.rel.includes('noopener')));
   assert.match(guide.textContent,/API key.*voice ID/s);assert.match(guide.textContent,/Refresh connections/);assert.equal(h.calls.filter(call=>['synthesis','planner'].includes(call[0])).length,0);assert.equal(h.store.size,0);h.wizard.dispose();
+});
+
+test('deleted saved actor and NPC routes can be reached and repaired on the voices step',async()=>{
+  const config={...base(),npcPolicy:{mode:'single',route:'native:deleted',voice:'old'}};
+  config.fixed[0].route='native:deleted';
+  const h=uiHarness({existing:true,config});await h.wizard.open();h.click('Next');h.click('Next');
+  assert.equal(h.root().querySelector('h2').textContent,'TTS & Voices');
+  h.click('Next');assert.equal(h.root().querySelector('h2').textContent,'TTS & Voices');
+  assert.match(h.root().textContent,/available TTS connection.*Narrator/s);
+  h.select('Narrator connection','native:tts');await until(()=>h.label('Narrator voice').options.length===3);h.select('Narrator voice','voice');
+  h.select('NPC connection','native:tts');await until(()=>h.label('Shared NPC voice').options.length===3);h.select('Shared NPC voice','voice');h.click('Next');
+  assert.equal(h.root().querySelector('h2').textContent,'Optional Features');h.wizard.dispose();
+});
+
+test('switching default connections clears inherited voice IDs while preserving explicitly routed voices',async()=>{
+  const connections={...profiles,tts:[...profiles.tts,{id:'other',name:'Other',provider:'google_tts',model:'gemini-tts'}]};
+  const config={...base(),npcPolicy:{mode:'preferred',voices:['voice'],voice:'voice'}};config.fixed[1].route='native:tts';
+  const h=uiHarness({existing:true,config,connections});await h.wizard.open();h.click('Next');h.select('Default TTS connection','other');h.click('Next');
+  assert.equal(h.label('Narrator voice').value,'');assert.equal(h.label('Persona voice').value,'voice');assert.equal(h.label('Main character voice').value,'');
+  assert.equal(h.label('Preferred NPC voice IDs').value,'');
+  await until(()=>h.label('Narrator voice').options.length===3);h.select('Narrator voice','other');h.select('Default TTS provider','openai_tts');assert.equal(h.label('Narrator voice').value,'');
+  await until(()=>h.label('Narrator voice').options.length===3);
+  h.select('Narrator voice','voice');h.select('Voice connection mode','one');assert.equal(h.label('Persona voice').value,'voice');
+  h.select('TTS model and connection','tts');assert.equal(h.label('Narrator voice').value,'voice');h.wizard.dispose();
+});
+
+test('voice dropdown and custom provider ID stay synchronized',async()=>{
+  const h=uiHarness();await h.wizard.open();h.click('Next');h.click('Next');await until(()=>h.label('Narrator voice').options.length===3);
+  h.select('Narrator voice','other');assert.equal(h.label('Narrator voice ID').value,'other');
+  h.input('Narrator voice ID','private-voice');assert.equal(h.label('Narrator voice').value,'private-voice');h.wizard.dispose();
+});
+
+test('a non-cooperative planner test can be cancelled and its late response cannot overwrite the next step',async()=>{
+  let release,signal;
+  const h=uiHarness({plannerTest:async(_,value)=>{signal=value;return new Promise(resolve=>release=resolve);}});
+  await h.wizard.open();h.click('Next');h.click('Test planner connection');assert.ok(release);h.click('Cancel');
+  await until(()=>!h.root().querySelector('[aria-label="Planner engine"]').disabled);assert.equal(signal.aborted,true);
+  assert.match(h.root().textContent,/cancelled/i);h.click('Next');release('Late planner success');await tick();
+  assert.equal(h.root().querySelector('h2').textContent,'TTS & Voices');assert.doesNotMatch(h.root().textContent,/Late planner success/);
+  h.click('Next');h.click('Next');assert.match(h.root().textContent,/Planner connection has not been tested/);h.wizard.dispose();
+});
+
+test('Finish validation can be cancelled before writes and a late connection result cannot save defaults',async()=>{
+  let release,signal;
+  const h=uiHarness({connectionRequest:async value=>{signal=value;return new Promise(resolve=>release=resolve);}});
+  await h.wizard.open();for(let i=0;i<4;i++)h.click('Next');h.click('Finish setup');assert.ok(release);h.click('Cancel');
+  await until(()=>!h.root().querySelector('.cs-primary').disabled);assert.equal(signal.aborted,true);h.click('Back');
+  release({...structuredClone(profiles),tts:[]});await tick();assert.equal(h.calls.filter(call=>call[0]==='save').length,0);
+  assert.equal(h.store.has(ONBOARDING_KEY),false);assert.equal(h.root().querySelector('h2').textContent,'Optional Features');
+  h.click('Next');assert.doesNotMatch(h.root().textContent,/Missing TTS connection/);h.wizard.dispose();
+});
+
+test('Cancel is unavailable while settings writes commit',async()=>{
+  let release;
+  const h=uiHarness({saveSetup:async(_,__,___,onCommit)=>{onCommit();await new Promise(resolve=>release=resolve);}});
+  await h.wizard.open();for(let i=0;i<4;i++)h.click('Next');h.click('Finish setup');await until(()=>release);
+  assert.equal([...h.root().querySelectorAll('button')].find(node=>node.textContent==='Cancel').hidden,true);
+  release();await until(()=>h.root().textContent.includes('Setup completed successfully'));h.click('Close');assert.equal(h.root(),null);h.wizard.dispose();
+});
+
+test('Jev catalogue setup requires an assigned narrator before review while allowing automatic dialogue voices',async()=>{
+  const config={...base(),plannerMode:'jev',decisionConnection:'decision'};config.fixed.forEach(actor=>actor.voice='');
+  const h=uiHarness({existing:true,config});await h.wizard.open();h.click('Next');h.click('Next');
+  assert.equal(h.label('Narrator voice').options[0].textContent,'Choose a voice');h.click('Next');
+  assert.match(h.root().textContent,/Choose a narrator voice for Jev/);await until(()=>h.label('Narrator voice').options.length===3);
+  h.select('Narrator voice','voice');h.click('Next');assert.equal(h.root().querySelector('h2').textContent,'Optional Features');h.wizard.dispose();
+});
+
+test('Review identifies the selected Jev Decision connection rather than the unrelated LLM ID',async()=>{
+  const config={...base(),plannerMode:'jev',decisionConnection:'decision',planner:'llm'};
+  const connections={...profiles,decision:[{id:'decision',name:'Decision QA',model:'jev-latest'}]};
+  const h=uiHarness({existing:true,config,connections});await h.wizard.open();for(let i=0;i<4;i++)h.click('Next');
+  assert.match(h.root().textContent,/Jev · Decision QA · jev-latest/);assert.doesNotMatch(h.root().textContent,/jev · llm/);h.wizard.dispose();
 });
 
 // Integration with the generated extension, including the real persistence,
