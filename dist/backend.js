@@ -744,9 +744,30 @@ function browserPlaybackRate(rate) {
   return Math.min(BROWSER_PLAYBACK_RATE_LIMITS.max,Math.max(BROWSER_PLAYBACK_RATE_LIMITS.min,number));
 }
 
-function loudnessGain(channels, target=0.12) {
-  let squares=0,peak=0,count=0;
-  for(const samples of channels)for(const sample of samples){squares+=sample*sample;peak=Math.max(peak,Math.abs(sample));count++;}
+function loudnessGain(channels, target=0.12, sampleRate=24000) {
+  const length=Math.max(0,...channels.map(samples=>samples.length));
+  const frameSize=Math.max(1,Math.round((Number.isFinite(sampleRate) && sampleRate>0?sampleRate:24000)*0.01));
+  const frames=[];let peak=0,strongest=0;
+  // Measure 10 ms frames, retaining every channel's peak even in an edge frame
+  // excluded below. Provider padding should not make the same speech louder.
+  for(let start=0;start<length;start+=frameSize){
+    let squares=0,count=0;
+    for(const samples of channels)for(let i=start,end=Math.min(start+frameSize,samples.length);i<end;i++){
+      const sample=samples[i],absolute=Math.abs(sample);squares+=sample*sample;count++;
+      if(absolute>peak)peak=absolute;
+    }
+    const rms=count?Math.sqrt(squares/count):0;
+    frames.push({squares,count,rms});strongest=Math.max(strongest,rms);
+  }
+  if(strongest<=0.0001)return 1;
+  // Ignore only quiet leading/trailing frames, below -80 dBFS or 40 dB below
+  // the strongest frame. Internal pauses remain in the loudness measurement;
+  // the audio and its timing are never trimmed.
+  const threshold=Math.max(0.0001,strongest*0.01);
+  let first=0,last=frames.length-1,squares=0,count=0;
+  while(first<=last && frames[first].rms<threshold)first++;
+  while(last>=first && frames[last].rms<threshold)last--;
+  for(let i=first;i<=last;i++){squares+=frames[i].squares;count+=frames[i].count;}
   const rms=count?Math.sqrt(squares/count):0;
   return rms>0.0001?Math.max(0.25,Math.min(4,target/rms,peak?0.95/peak:4)):1;
 }
@@ -762,7 +783,7 @@ function mixUnisonAudio(tracks,sampleRate,{normalize=true}={}) {
     while(start<Math.min(channels[0].length,sampleRate) && channels.every(channel=>Math.abs(channel[start])<0.005))start++;
     const level=track.level ?? 1;
     if(!Number.isFinite(level) || level<0 || level>MAX_CHANNEL_VOLUME)throw new Error('Invalid unison level.');
-    return {channels,start,gain:level*(normalize?loudnessGain(channels):1)};
+    return {channels,start,gain:level*(normalize?loudnessGain(channels,undefined,sampleRate):1)};
   });
   const length=Math.max(...prepared.map(track=>track.channels[0].length-track.start));
   if(!length || length>sampleRate*300)throw new Error('Invalid unison audio length.');

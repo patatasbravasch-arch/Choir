@@ -360,7 +360,8 @@ export async function setup(ctx) {
         <label hidden>Lumiverse API base<input data-et="apiBase" value="/api/v1"></label>
         <label>Freesound API key (Foley)<input data-et="freesoundApiKey" type="password" placeholder="Freesound token"></label>
       </div>
-      <p id="choir-chunk-hint" style="font-size:.85em;opacity:.75">Smaller chunks start playing sooner.</p>
+      <p id="choir-chunk-hint" style="font-size:.85em;opacity:.75">Shorter chunks can reduce the first wait, but many short requests can cause gaps at faster speeds.</p>
+      <p style="font-size:.85em;opacity:.75">For faster playback, try 2 prefetched passages and 2 concurrent TTS requests if your provider allows it. Prefetch 0 disables lookahead. More lookahead may generate speech you do not finish; changing playback speed does not speed up synthesis.</p>
       <div class="et-row">
         <label class="et-check"><input data-et="sectionButtons" type="checkbox"> Show message play controls</label>
         <label class="et-check"><input data-et="enableMixer" type="checkbox"> Floating audio mixer</label>
@@ -573,6 +574,7 @@ export async function setup(ctx) {
   let voices=[...GEMINI_VOICES], nativeConnections=[], nativeProviders=[], castRows=[], npcRows=[], voiceIdEditorCount=0;
   const voiceCatalogues=new Map();let voiceCatalogueRevision=0;
   let controller=null, currentAudio=null, finishAudio=null, objectUrl=null;
+  const paragraphPrefetchControllers=new Set();
   const defaults = () => ({planner:'',connection:'',decisionConnection:'',styleParam:'',apiBase:'/api/v1',chunk:1800,batchSpeech:false,concurrency:1,plannerTokens:8192,
     prefetch:1,normalizeLoudness:true,skipMeta:true,allowLlmFallback:false,sectionButtons:false,connectionMode:'several',enableMixer:false,singleVoices:{},
     extraVoices:'',ignoredTags:'',useStyle:true,auto:false,autoPlan:false,showAutoPlanAction:false,muteNarrator:false,enableSfx:true,enableAmbience:true,enableMusic:false,loopMusic:false,freesoundApiKey:'',npcPolicy:{mode:'llm',route:'',voice:'',voices:[]},fishVoiceSource:'community',plannerMode:'llm',useFastClassifier:false,useJev:false,jevApiKey:'',jevEndpoint:'https://api.typesafe.ai/v1',planBatchChars:3600,planBatchUnits:24,retention:'forever',readAlong:'off',followNarration:false,casts:{},fixed:[
@@ -997,7 +999,7 @@ export async function setup(ctx) {
     const latest=latestReply(),paused=voiceGapHold?voiceGapHold.paused:(!currentAudio || currentAudio.paused),label=currentAudio?(paused?'Resume Choir audio':'Pause Choir audio'):'Play latest reply';
     mixerPlay.innerHTML=(paused?ICON_TRANSPORT_PLAY:ICON_TRANSPORT_PAUSE).replace(/<circle[^>]*\/>/,'');mixerPlay.title=label;mixerPlay.setAttribute('aria-label',label);mixerPlay.disabled=currentAudio?!audioReady:busy || Boolean(controller) || !chatId || !latest;
     mixerPlanLatest.disabled=busy || Boolean(controller) || !chatId || !latest;
-    mixerStop.disabled=!controller && !currentAudio && !autoReplyQueue.size && !beds.ambience && !beds.music;
+    mixerStop.disabled=!controller && !currentAudio && !paragraphPrefetchControllers.size && !autoReplyQueue.size && !beds.ambience && !beds.music;
     $('stop').disabled=mixerStop.disabled;
     mixer.dataset.playState=currentAudio?(paused?'paused':'playing'):busy?'loading':'idle';playbackCaption.textContent=currentAudio?(paused?'Paused':'Now playing'):busy?(planningSource?'Planning speech':'Preparing audio'):'Playback';
   }
@@ -2237,7 +2239,9 @@ export async function setup(ctx) {
   function stop(show=true,keepBed=false,keepMusic=false) {
     if(show)cancelAutoReplies();
     if(activePlayback && currentAudio)savePosition(currentAudio.currentTime || 0);
-    revision++;controller?.abort();controller=null;planningSource=null;advancePlayback=null;skipAudio=null;generationPolicyChanged=null;activePlayback=null;currentSpeaker='';currentGroupLevel=null;currentGroupNames=[];mixerPlaybackSegments=null;
+    revision++;controller?.abort();controller=null;
+    for(const pending of paragraphPrefetchControllers)pending.abort();paragraphPrefetchControllers.clear();
+    planningSource=null;advancePlayback=null;skipAudio=null;generationPolicyChanged=null;activePlayback=null;currentSpeaker='';currentGroupLevel=null;currentGroupNames=[];mixerPlaybackSegments=null;
     currentAudio?.pause();finishAudio?.();currentAudio=null;finishAudio=null;
     if(objectUrl){URL.revokeObjectURL(objectUrl);objectUrl=null;}
     audioReady=false;if(keepBed)pauseBeds(false);else if(keepMusic && continuousMusic()){stopBeds('ambience');pauseBeds(false);}else stopBeds();
@@ -2840,6 +2844,31 @@ export async function setup(ctx) {
   const userScroll=event=>{if(followContainer && (event.type!=='keydown' || /^(?:Arrow(?:Up|Down)|Page(?:Up|Down)|Home|End| )$/.test(event.key) && !event.target.closest?.('input,textarea,select,[contenteditable]')) && (followContainer.contains(event.target) || event.target===document.body))followPaused=true;};
   for(const type of ['wheel','touchmove','keydown'])document.addEventListener(type,userScroll,{capture:true,passive:true});
   unsubs.push(()=>{for(const type of ['wheel','touchmove','keydown'])document.removeEventListener(type,userScroll,{capture:true});});
+  // Decode once when audio arrives, while earlier speech plays. Keep only the
+  // measured gain, not the decoded PCM, and observe background failures here.
+  const loudnessMeasurements=new WeakMap();
+  function prepareLoudness(blob){
+    if(!loudnessMeasurements.has(blob))loudnessMeasurements.set(blob,(async()=>{
+      const AudioContextClass=globalThis.AudioContext || globalThis.webkitAudioContext;
+      if(!AudioContextClass)return {gain:1};
+      audioContext ||= new AudioContextClass();
+      const decoded=await audioContext.decodeAudioData(await blob.arrayBuffer());
+      return {gain:loudnessGain(Array.from({length:decoded.numberOfChannels},(_,i)=>decoded.getChannelData(i)),undefined,decoded.sampleRate)};
+    })().catch(error=>({gain:1,error})));
+    return loudnessMeasurements.get(blob);
+  }
+  function preparePlayback(blob,segment,snapshot){
+    if(blob && snapshot.normalizeLoudness && !segment?.unison && !isBed(segment))void prepareLoudness(blob);
+    return blob;
+  }
+  function playbackLoudness(blob,signal){
+    return new Promise((resolve,reject)=>{
+      const cancel=()=>{signal.removeEventListener('abort',cancel);reject(abortError());};
+      if(signal.aborted){cancel();return;}
+      signal.addEventListener('abort',cancel,{once:true});
+      prepareLoudness(blob).then(value=>{signal.removeEventListener('abort',cancel);resolve(value);});
+    });
+  }
   async function playBlob(blob,signal,speaker='',offset=0,normalize=false,paused=false,track=null) {
     if(signal.aborted)throw abortError();
     const url=URL.createObjectURL(blob);objectUrl=url;currentAudio=new Audio(url);
@@ -2860,9 +2889,10 @@ export async function setup(ctx) {
         audioContext ||= new AudioContextClass();await audioContext.resume();
         if(signal.aborted)throw abortError();
         if(normalize && !item?.unison){
-          const decoded=await audioContext.decodeAudioData(await blob.arrayBuffer());
+          const measured=await playbackLoudness(blob,signal);
           if(signal.aborted)throw abortError();
-          currentNormalize=loudnessGain(Array.from({length:decoded.numberOfChannels},(_,i)=>decoded.getChannelData(i)));
+          currentNormalize=measured.gain;
+          if(measured.error)throw measured.error;
         }
         mediaSource=audioContext.createMediaElementSource(audio);gain=audioContext.createGain();currentGain=gain;
         mediaSource.connect(gain);gain.connect(audioContext.destination);audio.volume=1;applyVolume();
@@ -3238,6 +3268,7 @@ export async function setup(ctx) {
             if(token!==revision || ctrl.signal.aborted)throw abortError();
             resolveFlight?.(blob);
             blobs[idx]=blob;passages[key]=blob;
+            preparePlayback(blob,seg,snapshot);
             void persist();
             void refreshCacheStatus().catch(()=>{});
             resolvers.get(idx)({blob});
@@ -3419,6 +3450,13 @@ export async function setup(ctx) {
         const blob=recording.blobs[index];
         if(!blob || speakerExcluded(recording.segments[index].speaker) || recording.segments[index].kind==='sfx' && config.enableSfx===false || isBed(recording.segments[index])){index++;continue;}
         if(token!==revision || ctrl.signal.aborted)throw abortError();
+        // Cached replay has no synthesis pump. Prepare the current and next
+        // audible clip before handoff, skipping background markers.
+        let ahead=0;
+        for(let next=index;next<recording.blobs.length && ahead<2;next++){
+          if(playbackExcluded(recording.segments[next]) || isBed(recording.segments[next]))continue;
+          preparePlayback(recording.blobs[next],recording.segments[next],snapshot);ahead++;
+        }
         status(`Replaying ${index+1}/${recording.blobs.length}: ${recording.segments[index].speaker}`);
         const segment=recording.segments[index];
         let nextIndex=index+1;
@@ -3873,7 +3911,7 @@ export async function setup(ctx) {
 
   async function synthesizeSegment(seg,snapshot,signal) {
     if(seg.kind)return fetchFoleyAudio(seg,snapshot,signal);
-    if(seg.unison)return synthesizeUnisonBlob(seg,snapshot,signal,member=>getCachedOrSynthesize(member,snapshot,signal));
+    if(seg.unison)return synthesizeUnisonBlob(seg,snapshot,signal,member=>getCachedOrSynthesize(member,snapshot,signal,false));
     return synthesizeSpeechBlob(seg,snapshot,signal);
   }
 
@@ -3883,13 +3921,13 @@ const paragraphAudioCache = new Map();
   function segmentCacheKey(seg, snap) {
     return cacheKey(seg,snap);
   }
-  function getCachedOrSynthesize(seg, snap, sig) {
+  function getCachedOrSynthesize(seg, snap, sig, prepare=true) {
     const k = segmentCacheKey(seg, snap);
     const cached=paragraphAudioCache.get(k);
-    if(cached && !cached.signal?.aborted)return cached.promise;
+    if(cached && !cached.signal?.aborted)return cached.promise.then(blob=>prepare?preparePlayback(blob,seg,snap):blob);
     const entry={signal:sig};
     const prom = synthesizeSegment(seg, snap, sig).then(blob=>{
-      sig?.throwIfAborted();entry.signal=null;return blob;
+      sig?.throwIfAborted();entry.signal=null;return prepare?preparePlayback(blob,seg,snap):blob;
     }).catch(err => {
       if(paragraphAudioCache.get(k)===entry)paragraphAudioCache.delete(k);
       throw err;
@@ -4005,6 +4043,8 @@ const paragraphAudioCache = new Map();
 
       const ctrl = new AbortController();
       controller = ctrl;
+      paragraphPrefetchControllers.add(ctrl);
+      let finishParagraphWork=()=>Promise.resolve();
       updateTransport();
       const onAbort = () => ctrl.abort();
       signal?.addEventListener('abort', onAbort, { once: true });
@@ -4026,36 +4066,72 @@ const paragraphAudioCache = new Map();
         const prefetchBeds=list=>{for(const batch of list)if(isBed(batch) && !batch[batch.kind].stop && !playbackExcluded(batch))getCachedOrSynthesize(batch,snapshot,bedPrefetch.signal).catch(()=>{});};
         prefetchBeds(batches);
 
-        // Prefetch upcoming paragraph in background for 0ms transition latency
+        // Current speech enters the bounded queue first. Background markers do
+        // not consume lookahead, and the next paragraph uses only spare slots
+        // after the remaining audible batches in this paragraph.
+        const speechJobs=new Map(),pendingSpeech=[];
+        let speechWorkers=0,currentBatchIndex=0,nextBatches=[];
+        const pumpSpeech=()=>{
+          if(ctrl.signal.aborted || token!==revision || disposed){for(const job of pendingSpeech.splice(0))job.reject(abortError());return;}
+          while(pendingSpeech.length && speechWorkers<Math.max(1,Number(snapshot.concurrency)||1)){
+            const job=pendingSpeech.shift();
+            if(playbackExcluded(job.batch)){speechJobs.delete(job.key);job.resolve(null);continue;}
+            speechWorkers++;
+            getCachedOrSynthesize(job.batch,snapshot,ctrl.signal).then(job.resolve,job.reject).finally(()=>{speechWorkers--;pumpSpeech();});
+          }
+        };
+        const queueSpeech=batch=>{
+          const key=segmentCacheKey(batch,snapshot);
+          if(!speechJobs.has(key)){
+            let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b;});promise.catch(()=>{});
+            speechJobs.set(key,promise);pendingSpeech.push({key,batch,resolve,reject});pumpSpeech();
+            return promise;
+          }
+          return speechJobs.get(key);
+        };
+        const prefetchSpeech=index=>{
+          if(ctrl.signal.aborted || token!==revision)return;
+          let remaining=1+Math.max(0,Number(snapshot.prefetch)||0);
+          for(let next=index;next<batches.length && remaining>0;next++){
+            if(isBed(batches[next]) || playbackExcluded(batches[next]))continue;
+            queueSpeech(batches[next]);remaining--;
+          }
+          if(snapshot.prefetch>0)for(const batch of nextBatches){
+            if(remaining<=0)break;
+            if(isBed(batch) || playbackExcluded(batch))continue;
+            queueSpeech(batch);remaining--;
+          }
+        };
+        ctrl.signal.addEventListener('abort',pumpSpeech,{once:true});
+        let nextCueWork=Promise.resolve();
+        finishParagraphWork=async()=>{await nextCueWork;await Promise.allSettled([...speechJobs.values()]);};
+
+        // Discover cues early; speech joins the queue when it falls within lookahead.
         if (snapshot.prefetch>0 && nextText && typeof nextText === 'string' && nextText.trim()) {
           // The current paragraph's music has not started yet, so name it directly.
           const carried = lastMusic(paragraphCues.get(paragraphSegments(text, snapshot, speaker).cleanPara)?.music);
-          void loadParagraphCues(nextText, snapshot, '', ctrl.signal, carried).catch(() => {}).then(() => {
-            const next = planAndBatchParagraph(nextText, snapshot, true), first = next.find(batch => !isBed(batch));
-            if (token === revision) prefetchBeds(next);
-            if (!ctrl.signal.aborted && first && !playbackExcluded(first)) {
-              getCachedOrSynthesize(first, snapshot, ctrl.signal).catch(() => {});
-            }
+          nextCueWork=loadParagraphCues(nextText, snapshot, '', ctrl.signal, carried).catch(() => {}).then(() => {
+            if(ctrl.signal.aborted || token!==revision)return;
+            nextBatches=planAndBatchParagraph(nextText,snapshot,true);
+            prefetchBeds(nextBatches);prefetchSpeech(currentBatchIndex);
           }).catch(() => {});
         }
 
         for (let i = 0; i < batches.length; i++) {
           if (ctrl.signal.aborted || signal?.aborted) throw abortError();
+          currentBatchIndex=i;
           const batch = batches[i];
           if(playbackExcluded(batch))continue;
           // The bed keeps running after this paragraph until another bed, a stop entry, stop() or cancellation.
           if(isBed(batch)){followBed(batch[batch.kind],bedSignal=>getCachedOrSynthesize(batch,snapshot,bedSignal).catch(error=>{if(!bedSignal.aborted)warnFoley(error);throw error;}),batch.kind);continue;}
 
-          // Pipeline next batch synthesis concurrently with current batch playback
-          if (snapshot.prefetch>0 && i + 1 < batches.length && !playbackExcluded(batches[i+1]) && !isBed(batches[i+1])) {
-            getCachedOrSynthesize(batches[i + 1], snapshot, ctrl.signal).catch(() => {});
-          }
+          prefetchSpeech(i);
 
           onStatus?.({ kind: 'loading', speaker: batch.speaker });
           try{
-            const blob = await getCachedOrSynthesize(batch, snapshot, ctrl.signal);
+            const blob = await queueSpeech(batch);
             if (ctrl.signal.aborted || signal?.aborted) throw abortError();
-            if(playbackExcluded(batch))continue;
+            if(!blob || playbackExcluded(batch))continue;
             onStatus?.({ kind: 'playing', speaker: batch.speaker });
             await playBlob(blob,ctrl.signal,batch.speaker,0,snapshot.normalizeLoudness,false,{messageId,items:batches,index:i,gapMs:gapBefore(batches,i)});
             played++;
@@ -4063,17 +4139,21 @@ const paragraphAudioCache = new Map();
             if(batch.kind!=='sfx' || ctrl.signal.aborted || signal?.aborted)throw error;
             paragraphAudioCache.delete(segmentCacheKey(batch,snapshot));foleyCache.delete(foleyKey(batch.sfx));warnFoley(error);
           }
-          if (i < batches.length - 1 && !ctrl.signal.aborted && !signal?.aborted) {
-            await new Promise(r => setTimeout(r, 60));
-          }
         }
         onStatus?.({ kind: 'idle', ...(warnings.size?{message:foleyWarning([...warnings]).trim()}: {}) });
         return { played, ...(warnings.size?{warnings:[...warnings]}: {}) };
       } catch(error) {
+        ctrl.abort();
         if(token===revision)stopBeds();
         throw error;
       } finally {
-        signal?.removeEventListener('abort', onAbort);
+        // A finished paragraph may still be preparing nextText. Keep that work
+        // cancellable by Stop, navigation and the caller until its queue drains.
+        void finishParagraphWork().finally(()=>{
+          paragraphPrefetchControllers.delete(ctrl);
+          signal?.removeEventListener('abort',onAbort);
+          if(!disposed)updateTransport();
+        });
         if (controller === ctrl) controller = null;
         if (token === revision) clearReadAlong();
         updateTransport();

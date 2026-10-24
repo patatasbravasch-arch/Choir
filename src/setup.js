@@ -435,8 +435,8 @@ export function createSetupWizard(ctx, adapter) {
         select('Audio retention for new recordings',[['session','This session only'],['1','1 day'],['7','7 days'],['30','30 days'],['forever','Indefinitely']],draft.retention,playback,value=>{draft.retention=value;},'Existing recordings keep their current retention policy. Manage or clear saved audio in the drawer.');
         const buffering=disclosure('Buffering and request limits',playback);
         element('p','Prefetch prepares speech ahead of playback. More requests can reduce gaps but increase provider load and generate unused audio. Fast playback can still catch up to a slow provider.',buffering).className='cs-hint';
-        number('Prefetch passages','prefetch',0,4,buffering,'0 disables lookahead. A value of 1–2 is a useful starting point; higher values may generate more unused speech if you stop.');
-        number('Concurrent TTS requests','concurrency',1,4,buffering,'Limit simultaneous speech requests. Your provider may enforce a lower rate limit.');
+        number('Prefetch passages','prefetch',0,4,buffering,'0 disables lookahead. For faster playback, try 2 with 2 concurrent requests. More lookahead may generate speech you do not finish.');
+        number('Concurrent TTS requests','concurrency',1,4,buffering,'Limit simultaneous speech requests. Try 2 for faster playback if your provider allows it; playback speed does not speed up synthesis.');
         number('Max characters per request','chunk',80,10000,buffering,'Long passages are split at this limit. Smaller requests can start sooner but require more calls.');
         check('Group speech requests',draft.batchSpeech,buffering,value=>{draft.batchSpeech=value;},'Used only by compatible providers and models, with compatible voice levels and speeds and no added voice gap.');
         const controls=disclosure('Drawer and message controls',playback);

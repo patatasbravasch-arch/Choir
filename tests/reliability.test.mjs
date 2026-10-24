@@ -75,6 +75,31 @@ test('mixed-provider loudness matching raises quiet audio, lowers loud audio and
   assert.equal(loudnessGain([new Float32Array(32)]),1);
 });
 
+test('loudness matching ignores provider edge padding without changing audio or internal pauses',()=>{
+  for(const sampleRate of [16000,24000,44100,48000]){
+    const speech=Float32Array.from({length:sampleRate},(_,i)=>0.08*Math.sin(2*Math.PI*220*i/sampleRate));
+    const padded=new Float32Array(sampleRate*4);padded.set(speech,sampleRate);
+    const original=padded.slice(),gain=loudnessGain([speech],undefined,sampleRate);
+    assert.ok(Math.abs(loudnessGain([padded],undefined,sampleRate)-gain)<0.00001);
+    assert.deepEqual(padded,original);
+    // Non-frame-aligned padding may leave less than one frame at each edge.
+    const shifted=new Float32Array(sampleRate*4);shifted.set(speech,Math.round(sampleRate*0.037));
+    assert.ok(Math.abs(20*Math.log10(loudnessGain([shifted],undefined,sampleRate)/gain))<0.1);
+    const paused=new Float32Array(sampleRate*2);paused.set(speech.subarray(0,sampleRate/2));paused.set(speech.subarray(sampleRate/2),sampleRate*1.5);
+    assert.ok(Math.abs(loudnessGain([paused],undefined,sampleRate)-gain*Math.SQRT2)<0.00001);
+  }
+});
+
+test('loudness edge detection measures both channels, tolerates quiet padding and retains peak headroom',()=>{
+  const sampleRate=24000,speech=new Float32Array(sampleRate).fill(0.06),quiet=new Float32Array(sampleRate).fill(0.00002);
+  const left=new Float32Array(sampleRate*4).fill(0.00002),right=left.slice();right.set(speech,sampleRate);
+  assert.ok(Math.abs(loudnessGain([left,right])-loudnessGain([quiet,speech]))<0.00001);
+  const peaked=right.slice();peaked[0]=0.9;
+  assert.ok(loudnessGain([left,peaked])*peaked[0]<=0.95);
+  assert.equal(loudnessGain([new Float32Array(sampleRate).fill(0.00001)]),1);
+  assert.equal(loudnessGain([]),1);
+});
+
 test('versioned cast exchange round-trips preferences and strips credentials and unknown fields',()=>{
   const c={fixed:[...config.fixed.map(actor=>({...actor,accent:'Irish',pronunciation:'mee-rah',excluded:true}))],casts:{'native:a':[]},jevApiKey:'secret',apiKey:'secret'};
   const exported=castExport({...c,fixed:c.fixed.map(actor=>({...actor,apiKey:'secret'}))});assert.ok(!JSON.stringify(exported).includes('secret'));
