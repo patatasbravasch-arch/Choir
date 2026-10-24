@@ -764,6 +764,38 @@ test('partial card profiles include all leads and analyse unclaimed scenario tex
  }finally{await h.close();}
 });
 
+test('cached partial card analysis gains newly recognized profiles and aliases without another LLM call or changing saved voices',async()=>{
+ const h=await harness();try{
+  const card={name:'Choir QA - Mira and Adrian',description:'# Mira\nMira is a female captain. Her voice is feminine. Alias: Captain Mira.\n# Adrian\nAdrian is a male navigator. His voice is masculine. Alias: Adi.'};
+  h.state.character=card;h.message.content='The room fell quiet.';
+  const key=createHash('sha256').update(JSON.stringify(['name','description','personality','scenario','first_mes'].map(field=>card[field] || ''))).digest('hex');
+  const saved=structuredClone(h.store.get('chat:chat-a'));saved.fixed[2].speaker='Adrian';saved.fixed[2].aliases=['My navigator'];saved.plannerMode='llm';
+  saved.cardCastAnalysis={key,roles:[{name:'Adrian',aliases:[],description:'Previously identified navigator.'}]};
+  h.store.set('chat:chat-a',saved);await h.reload();await h.plan();
+  const cast=h.store.get('chat:chat-a').fixed,adrian=cast.find(actor=>actor.speaker==='Adrian'),mira=cast.find(actor=>actor.speaker==='Mira');
+  assert.deepEqual(cast.slice(2).map(actor=>actor.speaker),['Adrian','Mira']);assert.equal(adrian.voice,'m');assert.equal(adrian.route,'native:b');assert.equal(adrian.accent,'Irish');assert.equal(adrian.pronunciation,'Mira: mee-rah');
+  assert.deepEqual(adrian.aliases,['My navigator','Adi']);assert.deepEqual(mira.aliases,['Captain Mira']);
+  assert.equal(h.requests.filter(request=>request.action==='cardCast').length,0);assert.equal(h.synthesis.length,0);
+  const profiles=h.requests.filter(request=>request.action==='plan').at(-1).input.config.characterProfiles;
+  assert.deepEqual(profiles.map(profile=>profile.speaker),['Mira','Adrian']);assert.match(profiles[0].description,/female captain/);assert.ok(!profiles[0].description.includes('male navigator'));
+  await h.reload();await h.plan();assert.equal(h.requests.filter(request=>request.action==='cardCast').length,0);assert.equal(h.store.get('chat:chat-a').fixed.find(actor=>actor.speaker==='Adrian').voice,'m');
+ }finally{await h.close();}
+});
+
+test('cached group-title placeholders cannot replace local people while cached additional leads remain available',async()=>{
+ const h=await harness();try{
+  const card={name:'Choir QA - Mira and Adrian',description:'# Mira\nMira is a female captain. Alias: Captain Mira.\n# Adrian\nAdrian is a male navigator. Alias: Adi.',scenario:'Diego is another playable lead.'};
+  h.state.character=card;h.message.content='The room fell quiet.';
+  const key=createHash('sha256').update(JSON.stringify(['name','description','personality','scenario','first_mes'].map(field=>card[field] || ''))).digest('hex');
+  const saved=structuredClone(h.store.get('chat:chat-a'));saved.fixed[2].speaker=card.name;saved.fixed[2].aliases=[];saved.plannerMode='llm';
+  saved.cardCastAnalysis={key,roles:[{name:card.name,aliases:['Mira','Adrian'],description:'Old combined identity.'},{name:'Adrian',aliases:[],description:'Navigator.'},{name:'Diego',aliases:['Pilot'],description:'Another playable lead.'}]};
+  h.store.set('chat:chat-a',saved);await h.reload();await h.plan();
+  const cast=h.store.get('chat:chat-a').fixed;assert.deepEqual(cast.slice(2).map(actor=>actor.speaker),['Mira','Adrian','Diego']);assert.equal(cast[2].voice,'m');assert.deepEqual(cast[4].aliases,['Pilot']);
+  assert.equal(h.requests.filter(request=>request.action==='cardCast').length,0);assert.ok(!h.$('fixed').textContent.includes('Old combined identity'));
+  await h.reload();await h.plan();assert.equal(h.requests.filter(request=>request.action==='cardCast').length,0);
+ }finally{await h.close();}
+});
+
 test('Cue mixes both unison voices and reuses cached members after failures, levels and exclusions change',async()=>{
  const original=globalThis.AudioContext;let decoded=0;
  globalThis.AudioContext=class{
@@ -2462,6 +2494,79 @@ test('storage failure preserves generated audio in the session and reports the p
     assert.equal(h.synthesis.length,4);assert.match(h.$('status').textContent,/unavailable/);
     await h.click('play',text=>text.includes('Audio could not be saved'));assert.equal(h.synthesis.length,4);
   }finally{await h.close();}
+});
+
+// Delay the commit notifications while retaining actual IndexedDB writes. This
+// models a slow device without substituting the playback or recording code.
+function holdRecordingCommits(){
+  const put=IDBObjectStore.prototype.put,held=[];
+  IDBObjectStore.prototype.put=function(...args){
+    if(this.name==='recordings'){
+      const transaction=this.transaction;
+      Object.defineProperty(transaction,'oncomplete',{configurable:true,set(handler){
+        transaction.addEventListener('complete',event=>held.push(()=>handler.call(transaction,event)),{once:true});
+      }});
+    }
+    return put.apply(this,args);
+  };
+  return {held,release(){for(const finish of held.splice(0))finish();},restore(){IDBObjectStore.prototype.put=put;}};
+}
+
+test('slow recording commits never gate speech, prefetch or subsequent passages, and all audio is eventually saved',async()=>{
+  const h=await harness();let commits;
+  try{
+    await h.plan();commits=holdRecordingCommits();h.$('play').click();
+    await until(()=>h.audios.length===4 && h.audios.every(audio=>audio.endedAt));
+    assert.equal(h.synthesis.length,4);await until(()=>commits.held.length>=4);
+    commits.restore();commits.release();
+    await until(()=>h.$('status').textContent.includes('Playback finished'));
+    const saved=await recordingFor(h.message.content);
+    assert.equal(saved.blobs.filter(Boolean).length,4);assert.equal(saved.segments.length,4);
+    assert.equal(Object.keys(saved.passages).length,4);
+  }finally{commits?.restore();commits?.release();await h.close();}
+});
+
+test('stalled recording commits report a bounded save failure while session replay needs no new speech',async()=>{
+  const h=await harness(),setTimer=globalThis.setTimeout;let commits;
+  try{
+    await h.plan();commits=holdRecordingCommits();
+    globalThis.setTimeout=(callback,ms,...args)=>setTimer(callback,ms===5000?50:ms,...args);
+    h.$('play').click();
+    await until(()=>h.$('status').textContent.includes('Playback finished'));
+    assert.match(h.$('status').textContent,/storage is taking too long/);
+    assert.match(h.$('status').textContent,/pending saves continue in the background/);
+    assert.equal(h.audios.length,4);assert.equal(h.synthesis.length,4);
+    h.$('play').click();await until(()=>h.audios.length===8 && h.$('status').textContent.includes('Playback finished'));
+    assert.equal(h.synthesis.length,4);
+    commits.restore();commits.release();await tick();
+    const saved=await recordingFor(h.message.content);
+    assert.equal(saved.blobs.filter(Boolean).length,4);assert.equal(saved.segments.length,4);
+  }finally{globalThis.setTimeout=setTimer;commits?.restore();commits?.release();await h.close();}
+});
+
+test('Stop remains immediate during delayed recording commits and late saves never restart speech',async()=>{
+  const h=await harness();let commits;
+  try{
+    await h.plan();commits=holdRecordingCommits();h.state.blockAudio=true;h.$('play').click();
+    await until(()=>h.audios[0]?.paused===false && commits.held.length>0);
+    h.$('stop').click();assert.equal(h.$('status').textContent,'Stopped.');
+    assert.ok(h.audios.every(audio=>audio.paused));
+    commits.restore();commits.release();await tick();await tick();
+    assert.equal(h.synthesis.length,1);assert.ok(h.audios.every(audio=>audio.paused));assert.equal(h.$('status').textContent,'Stopped.');
+  }finally{commits?.restore();commits?.release();await h.close();}
+});
+
+test('Stop interrupts the final recording-save wait while completed audio still commits',async()=>{
+  const h=await harness();let commits;
+  try{
+    await h.plan();commits=holdRecordingCommits();h.$('play').click();
+    await until(()=>h.audios.length===4 && h.audios.every(audio=>audio.endedAt));
+    assert.equal(h.$('status').textContent.includes('Playback finished'),false);
+    h.$('stop').click();assert.equal(h.$('status').textContent,'Stopped.');
+    commits.restore();commits.release();await tick();await tick();
+    assert.equal(h.$('status').textContent,'Stopped.');assert.equal(h.synthesis.length,4);
+    const saved=await recordingFor(h.message.content);assert.equal(saved.blobs.filter(Boolean).length,4);
+  }finally{commits?.restore();commits?.release();await h.close();}
 });
 
 test('a transient audio-storage open failure is retried without disabling saved recordings',async()=>{

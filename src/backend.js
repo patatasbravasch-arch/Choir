@@ -248,6 +248,8 @@ export async function planWithJev({ transcript, config, apiKey, endpoint, contex
   }
   // The LLM planner can name and cast a new speaker; without it the line keeps a separate NPC voice.
   if (config.allowLlmFallback === true && speakerChoices.some((choice,index)=>choice===UNLISTED_SPEAKER && !unisonSpeakers(transcript,dialogueUnits[index],config)?.length)) throw new Error('Jev found dialogue from someone who is not in the cast.');
+  const unresolved = speakerChoices.filter((choice,index)=>choice===UNLISTED_SPEAKER && !unisonSpeakers(transcript,dialogueUnits[index],config)?.length);
+  if(unresolved.length>1)throw new Error('Jev could not identify multiple dialogue speakers. Choose the Standard LLM planner or add their names and aliases to the cast; unnamed people cannot safely share one Unknown speaker voice.');
 
   const dialogueSpeakerMap = new Map();
   const dialogueEmotionMap = new Map();
@@ -261,7 +263,34 @@ export async function planWithJev({ transcript, config, apiKey, endpoint, contex
     }
   }
 
-  const rawSegments = [];
+  // Unlike community casting, catalogue casting previously never checked an
+  // automatic speaker's profile and simply took the first unused voice.
+  // Resolve all required identities in bounded batches; names alone are not
+  // evidence for voice gender, and manually assigned voices remain untouched.
+  const inferredGenders = new Map(), automatic = new Map();
+  for(const u of dialogueUnits)for(const name of unisonSpeakers(transcript,u,config) || [dialogueSpeakerMap.get(u.id)]){
+    const original=allCast.find(actor=>[actor.speaker,...(actor.aliases || [])].some(alias=>normalizeName(alias)===normalizeName(name)));
+    const npc=!config.fixed.includes(original),actor=npc?npcCastActor(original || {speaker:name,voice:'',gender:'auto'},config):original;
+    const route=actor.route || config.defaultRoute || '';
+    const catalogue=config.voices.filter(voice=>(voice.route || '')===route && (!npc || config.npcPolicy?.mode!=='preferred' || config.npcPolicy.voices.includes(voice.id)));
+    if(actor.voice || ['female','male','neutral'].includes(actor.gender) || config.communityRoutes?.[route] || !catalogue.some(voice=>voice.gender))continue;
+    automatic.set(normalizeName(actor.speaker),actor);
+  }
+  const automaticActors=[...automatic.values()];
+  for(let start=0;start<automaticActors.length;start+=256){
+    const batch=automaticActors.slice(start,start+256),questions=Object.fromEntries(batch.map((actor,index)=>[`voice_gender_${start+index}`,{
+      type:'choice',instructions:`What voice gender does ${actor.speaker} have according to their own profile or the story? Use explicit descriptions and pronouns for this person. Do not guess from the name or another person's profile. Choose unknown when the evidence is unclear.`,
+      criteria:{female:'Feminine voice',male:'Masculine voice',neutral:'Neutral or androgynous voice',unknown:'The profile and story do not establish this person\'s voice gender'}
+    }]));
+    const answers=await decide(state,questions,decisionInput,userId,signal);
+    for(const [index,actor] of batch.entries()){
+      const gender=answers?.[`voice_gender_${start+index}`]?.choice;
+      if(!['female','male','neutral'].includes(gender))throw new Error(`Jev could not determine the voice gender for ${actor.speaker}. Choose their voice or gender in the cast, or use the Standard LLM planner.`);
+      inferredGenders.set(normalizeName(actor.speaker),gender);
+    }
+  }
+
+  const rawSegments = [], catalogueVoices = new Map();
   for (const u of units) {
     if (u.kind === 'narration') {
       rawSegments.push({
@@ -281,16 +310,20 @@ export async function planWithJev({ transcript, config, apiKey, endpoint, contex
         || { speaker: chosenName, voice: '', style: '', gender: 'auto' };
       const npc=!config.fixed.includes(actor);
       if(npc)actor=npcCastActor(actor,config);
+      if(inferredGenders.has(normalizeName(actor.speaker)))actor={...actor,gender:inferredGenders.get(normalizeName(actor.speaker))};
       const style = dialogueEmotionMap.get(u.id) || '';
-      let voice = actor.voice || await communityVoice(actor, npc);
+      const identity=JSON.stringify([normalizeName(actor.speaker),actor.route || config.defaultRoute || '']);
+      let voice = actor.voice || catalogueVoices.get(identity) || await communityVoice(actor, npc);
       if (!voice && config.voices?.length) {
         const route = actor.route || config.defaultRoute || '';
         const available=config.voices.filter(v => (v.route || '') === route && (!npc || config.npcPolicy?.mode!=='preferred' || config.npcPolicy.voices.includes(v.id)));
         const preferred=available.filter(v=>!actor.gender || actor.gender==='auto' || !v.gender || v.gender===actor.gender);
-        const pool=preferred.length?preferred:available;
-        const match=pool.find(v=>!used.has(v.id)) || pool[0];
+        const pool=preferred;
+        if(!pool.length && available.length)throw new Error(`No ${actor.gender} voice is available for ${actor.speaker}. Choose a suitable voice or change the cast gender preference.`);
+        const exact=v=>actor.gender==='auto' || !actor.gender || v.gender===actor.gender;
+        const match=pool.find(v=>!used.has(v.id) && exact(v)) || pool.find(v=>!used.has(v.id)) || pool.find(exact) || pool[0];
         voice = match?.id || '';
-        actor.voice=voice;used.add(voice);
+        actor.voice=voice;catalogueVoices.set(identity,voice);used.add(voice);
       }
       members.push({speaker:actor.speaker || chosenName,voice,style,route:actor.route || config.defaultRoute || '',gender:actor.gender || 'auto'});
       }

@@ -496,7 +496,15 @@ export async function setup(ctx) {
       transaction.onabort=event=>reject(recordingFailure(event,new Error('Recording storage cleanup failed.')));
     });
   }
-  async function recordingStore(operation,key,value) {
+  function recordingStore(operation,key,value) {
+    // Storage is optional for playback. A suspended IndexedDB request may still
+    // finish later, so keep it running while bounding how long the UI waits.
+    if(!['get','put'].includes(operation))return accessRecordingStore(operation,key,value);
+    let timer;
+    const deadline=new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error('Device audio storage is taking too long. Audio remains available in this session; pending saves continue in the background.')),5000);});
+    return Promise.race([accessRecordingStore(operation,key,value),deadline]).finally(()=>clearTimeout(timer));
+  }
+  async function accessRecordingStore(operation,key,value) {
     if(operation==='policy' && value.retention!=='session') {
       for(const [sessionKey,record] of [...sessionAudio]) {
         if(JSON.parse(sessionKey)[1]===JSON.parse(key)[1])await recordingStore('put',sessionKey,{...record,retention:value.retention});
@@ -2397,8 +2405,24 @@ export async function setup(ctx) {
   const cardFingerprint=card=>sha256Hex(JSON.stringify(['name','description','personality','scenario','first_mes'].map(field=>card?.[field] || '')));
   function rolesForCard(card){
     const local=characterCardRoles(card || {}),cached=config?.cardCastAnalysis?.key===activeCardKey?validateCardRoles(config.cardCastAnalysis.roles):[];
+    // A saved analysis may predate improved local profile detection. Keep its
+    // extra people, but let explicit profiles restore missing identities and
+    // aliases without charging for another analysis of the unchanged card.
+    const roles=local.map(role=>({...role,aliases:[...(role.aliases || [])]}));
+    const identity=role=>[role.name,...(role.aliases || [])].map(normalizeName);
+    const titles=new Set([card?.name,String(card?.name || '').split(/\s*\|+\s*/)[0]].map(normalizeName));
+    for(const role of cached){
+      if(local.length>1 && titles.has(normalizeName(role.name)))continue;
+      const exact=roles.find(candidate=>normalizeName(candidate.name)===normalizeName(role.name));
+      const names=identity(role),matches=roles.filter(candidate=>identity(candidate).some(name=>names.includes(name)));
+      // One cached group description cannot merge two separately named people.
+      if(!exact && matches.length>1)continue;
+      const existing=exact || matches[0];
+      if(existing)existing.aliases=[...new Set([...existing.aliases,role.name,...(role.aliases || [])])].filter(name=>normalizeName(name)!==normalizeName(existing.name)).slice(0,30);
+      else roles.push({...role,aliases:[...(role.aliases || [])]});
+    }
     const npcNames=new Set((config?.cardCastNPCs || []).map(normalizeName));
-    return (cached.length?cached:local).filter(role=>![role.name,...(role.aliases || [])].some(name=>npcNames.has(normalizeName(name))));
+    return validateCardRoles(roles).filter(role=>![role.name,...(role.aliases || [])].some(name=>npcNames.has(normalizeName(name))));
   }
   function expandCardRoles(value,roles,character){
     let renamed=false;
@@ -3048,6 +3072,12 @@ export async function setup(ctx) {
     const blobs=[];
     let totalExpected=0;
     let playIdx=0,failed=false,saveError='',saveQueue=Promise.resolve();
+    const waitForSaves=()=>new Promise((resolve,reject)=>{
+      const cancel=()=>reject(abortError());
+      if(ctrl.signal.aborted){cancel();return;}
+      ctrl.signal.addEventListener('abort',cancel,{once:true});
+      saveQueue.then(resolve,reject).finally(()=>ctrl.signal.removeEventListener('abort',cancel));
+    });
     const skipped=new Set(),failures=new Set(),scheduled=new Set();let jumpTo=null,pauseNext=false,initialized=false,resumePending=Boolean(source.resume),wakePolicy;
     const blockStart=(index)=>{const passage=segments[index]?.passageIndex ?? index;while(index>0 && (segments[index-1].passageIndex ?? index-1)===passage)index--;return index;};
     advancePlayback=(direction=1)=>{
@@ -3088,7 +3118,10 @@ export async function setup(ctx) {
     };
     const persist=()=>{
       const value={content:source.content,transcript:source.transcript,segments:[...segments],blobs:[...blobs],speechTexts:segments.map(segment=>recordingSpeechText(segment,snapshot)),passages:{...passages},passageKeys:isDoneAdding?savedPassageKeys():(cached?.passageKeys || []),sfxPlacement:SFX_PLACEMENT_VERSION,retention:snapshot.retention};
-      saveQueue=saveQueue.then(()=>recordingStore('put',recordingKey(source.chatId,source.messageId),value)).catch(error=>{saveError=error.message;});
+      // Submit in order, but do not make synthesis or audible playback wait for
+      // disk commits. IndexedDB orders these read/write transactions itself.
+      const saving=recordingStore('put',recordingKey(source.chatId,source.messageId),value).catch(error=>{saveError=error.message;});
+      saveQueue=Promise.all([saveQueue,saving]).then(()=>{});
       return saveQueue;
     };
     // Beds load beside the speech queue, so a slow download never delays the words.
@@ -3098,7 +3131,7 @@ export async function setup(ctx) {
         const seg=segments[index],key=cacheKey(seg,snapshot);
         const signal=seg.kind==='music' && continuousMusic()?bedPrefetch.signal:ctrl.signal;
         blobs[index]=passages[key] ||= await fetchFoleyAudio(seg,snapshot,signal);
-        await persist();return blobs[index];
+        void persist();return blobs[index];
       })().catch(error=>{if(!ctrl.signal.aborted && token===revision)warnFoley(error);throw error;}));
       return bedLoads.get(index);
     };
@@ -3141,7 +3174,7 @@ export async function setup(ctx) {
               blob=await synthesizeUnisonBlob(seg,snapshot,ctrl.signal,async member=>{
                 const memberKey=cacheKey(member,snapshot);
                 let audio=passages[memberKey];
-                if(!audio){audio=await synthesizeSpeechBlob(member,snapshot,ctrl.signal);passages[memberKey]=audio;await persist();}
+                if(!audio){audio=await synthesizeSpeechBlob(member,snapshot,ctrl.signal);passages[memberKey]=audio;void persist();}
                 return audio;
               });
             } else {
@@ -3150,7 +3183,7 @@ export async function setup(ctx) {
             if(token!==revision || ctrl.signal.aborted)throw abortError();
             resolveFlight?.(blob);
             blobs[idx]=blob;passages[key]=blob;
-            await persist();
+            void persist();
             void refreshCacheStatus().catch(()=>{});
             resolvers.get(idx)({blob});
           } catch(error) {
@@ -3198,7 +3231,7 @@ export async function setup(ctx) {
         if(outcome.policy)continue;
         if(token!==revision || ctrl.signal.aborted)throw abortError();
         if(outcome.skip){playIdx++;nextToSynthesize=Math.max(nextToSynthesize,playIdx);pump();continue;}
-        if(outcome.error){await saveQueue;throw new Error(`${outcome.error.message} Completed passages were retained.${saveError?` Storage failed: ${saveError}`:''}`);}
+        if(outcome.error){await waitForSaves();throw new Error(`${outcome.error.message} Completed passages were retained.${saveError?` Storage failed: ${saveError}`:''}`);}
         const blob=outcome.blob;
         const seg=segments[playIdx];
         status(`Playing ${playIdx+1}/${totalExpected || segments.length}: ${seg.speaker}`);
@@ -3215,7 +3248,7 @@ export async function setup(ctx) {
         activePlayback={...activePlayback,passage:segments[playIdx]?.passageIndex ?? (activePlayback.passage+1),chunk:segments[playIdx]?.chunkIndex ?? 0,complete:isDoneAdding && playIdx===segments.length};
         savePosition(0);activePlayback=null;pump();
       }
-      await saveQueue;
+      await waitForSaves();
       if(saveError)status(`Audio could not be saved: ${saveError}`,true);
       return {blobs,segments,warnings:[...warnings],passages,passageKeys:savedPassageKeys()};
     })().finally(()=>{if(token===revision)fadeOutBeds();});

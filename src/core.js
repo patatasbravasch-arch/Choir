@@ -139,9 +139,12 @@ export function characterCardRoleDiscovery(card={}) {
   const title=String(card.name || '').split(/\s*\|\s*/)[0];
   const titleNames=title.split(/\s+and\s+|\s*[&+]\s*|,\s*/i).map(name=>name.trim()).filter(Boolean);
   const nameFields=text=>[...text.matchAll(/^\s*(?:[-*]\s*)?(?:\*\*)?(?:Character\s+)?Name(?:\*\*)?\s*:\s*([^\n\r]+)/gim)].map(match=>clean(match[1]));
+  const aliasFields=text=>[...text.matchAll(/(?:^|[.!?][ \t]+)[ \t]*(?:[-*]\s*)?(?:\*\*)?(?:Alias(?:es)?|Also known as|Nicknames?)(?:\*\*)?[ \t]*:[ \t]*([^\n\r]+)/gim)]
+    .flatMap(match=>clean(match[1]).replace(/[.!?]+$/g,'').split(/[,;|]|\s+\/\s+/u)).map(alias=>alias.trim())
+    .filter(alias=>alias && alias.length<=100 && !/[.!?][ \t]+/.test(alias));
   const profiles=[];let needsAnalysis=false;
   const secondary=value=>/^(?:NPCs?|supporting (?:cast|characters?)|secondary (?:cast|characters?)|side characters?|incidental characters?)$/i.test(String(value || '').trim());
-  const add=(name,aliases,description,start)=>profiles.push({name,aliases,description:description.trim().slice(0,8000),__start:start});
+  const add=(name,aliases,description,start)=>profiles.push({name,aliases:[...new Set([...aliases,...aliasFields(description)])].slice(0,30),description:description.trim().slice(0,8000),__start:start});
   for(const field of ['description','personality','scenario','first_mes']){
   const fieldStart=profiles.length;
   const description=String(card[field] || '');
@@ -163,9 +166,14 @@ export function characterCardRoleDiscovery(card={}) {
     const block=description.slice(heading.end,next?.start),names=nameFields(block);
     if(excludedProfile(heading.start,block))return [];
     const inTitle=titleNames.some(name=>normalizeName(name)===normalizeName(heading.name));
+    // A prefix such as "QA - " belongs to the card title, not the first
+    // person's name. Require that person's own profile before accepting a
+    // heading that only matches a decorated part of the title.
+    const decoratedTitle=titleNames.some(name=>name.split(/\s+-\s+|\s*[–—:]\s*/u).some(part=>normalizeName(part)===normalizeName(heading.name)));
+    const ownProfile=new RegExp(`^\\s*(?:\\*{1,2})?${escape(heading.name)}(?:\\*{1,2})?(?:\\s+(?:is|was|has|uses)\\b|\\s*[:：])`,'iu').test(block);
     const namedSection=sections.some(section=>normalizeName(section.tag.replace(/[_-]/g,' '))===normalizeName(heading.name));
     const explicitLead=/\b(?:lead|primary character|main character|playable character)\b/i.test(block);
-    return names.length===1 || inTitle || namedSection || explicitLead?[{...heading,fullName:names.length===1?names[0]:undefined}]:[];
+    return names.length===1 || inTitle || decoratedTitle && ownProfile || namedSection || explicitLead?[{...heading,fullName:names.length===1?names[0]:undefined}]:[];
   });
   const spans=[],seenSections=new Set();
   for(const section of sections){
