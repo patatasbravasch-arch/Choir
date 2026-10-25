@@ -12,7 +12,7 @@ const base=()=>({mode:'native',connection:'tts',model:'gemini-speech',connection
   enableSfx:false,enableAmbience:false,enableMusic:false,autoDesignNPCs:false,auto:false,autoPlan:false});
 const profiles={tts:[{id:'tts',name:'Speech',provider:'openai_tts',model:'speech-model'}],llm:[{id:'llm',name:'Planner',model:'text-model',is_default:true}],decision:[{id:'decision',name:'Jev'}]};
 
-function uiHarness({existing=false,state,config=base(),failSave=false}={}){
+function uiHarness({existing=false,state,config=base(),failSave=false,connections=profiles,plannerTest,connectionRequest,saveSetup,catalogue=[{id:'voice',name:'Voice'},{id:'other',name:'Other'}]}={}){
   const dom=new JSDOM('<body></body>'),store=new Map(),modals=[],reports=[],calls=[],session={gemini:'',jev:''};let voiceFailure=false,testFailure=false,holdTest=false,releaseTest;
   if(state)store.set(ONBOARDING_KEY,state);
   const settings={get:async key=>store.get(key),set:async(key,value)=>{if(failSave && key==='settings:global'){failSave=false;throw Error('Storage unavailable');}store.set(key,structuredClone(value));},remove:async key=>store.delete(key)};
@@ -22,12 +22,12 @@ function uiHarness({existing=false,state,config=base(),failSave=false}={}){
   }}};
   const wizard=createSetupWizard(ctx,{
     report:value=>reports.push(value),session:()=>session,setSession:(kind,value)=>{session[kind]=value;},stopTest:()=>calls.push(['stopTest']),connectionGuide:()=>calls.push(['guide']),
-    snapshot:async()=>({config:structuredClone(config),existing,preset:null,connections:structuredClone(profiles)}),
-    connections:async()=>{calls.push(['connections']);return structuredClone(profiles);},
-    voices:async route=>{calls.push(['voices',route]);if(voiceFailure)throw Error('Catalogue offline');return [{id:'voice',name:'Voice'},{id:'other',name:'Other'}];},
-    testPlanner:async(draft,signal)=>{calls.push(['planner',draft.plannerMode]);if(testFailure)throw Error('Planner unavailable');if(holdTest)await new Promise((resolve,reject)=>{releaseTest=resolve;signal.addEventListener('abort',()=>reject(new DOMException('Stopped','AbortError')),{once:true});});return 'Local · Heuristic · no LLM request';},
+    snapshot:async()=>({config:structuredClone(config),existing,preset:null,connections:structuredClone(connections)}),
+    connections:async signal=>{calls.push(['connections']);return connectionRequest?connectionRequest(signal):structuredClone(connections);},
+    voices:async route=>{calls.push(['voices',route]);if(voiceFailure)throw Error('Catalogue offline');return structuredClone(catalogue);},
+    testPlanner:async(draft,signal)=>{calls.push(['planner',draft.plannerMode]);if(plannerTest)return plannerTest(draft,signal);if(testFailure)throw Error('Planner unavailable');if(holdTest)await new Promise((resolve,reject)=>{releaseTest=resolve;signal.addEventListener('abort',()=>reject(new DOMException('Stopped','AbortError')),{once:true});});return 'Local · Heuristic · no LLM request';},
     testVoice:async draft=>{calls.push(['synthesis']);if(testFailure)throw Error(`Provider rejected ${draft.freesoundApiKey}`);},
-    save:async draft=>saveSetupSettings(settings,[['settings:global',{mode:draft.mode,enableSfx:draft.enableSfx,plannerMode:draft.plannerMode}],['settings:captured-defaults',{version:2,leadVoices:draft.fixed,npcPolicy:draft.npcPolicy}]],{version:1,completed:true,deferred:false})
+    save:async(draft,initial,signal,onCommit)=>{calls.push(['save']);if(saveSetup)return saveSetup(draft,initial,signal,onCommit);onCommit?.();return saveSetupSettings(settings,[['settings:global',{mode:draft.mode,enableSfx:draft.enableSfx,plannerMode:draft.plannerMode}],['settings:captured-defaults',{version:2,leadVoices:draft.fixed,npcPolicy:draft.npcPolicy}]],{version:1,completed:true,deferred:false});}
   });
   const root=()=>dom.window.document.querySelector('[data-choir-setup]');
   const findButton=text=>[...root().querySelectorAll('button')].find(node=>node.textContent===text);
@@ -113,13 +113,150 @@ test('Fish setup guide distinguishes credentials from voices and never offers re
   assert.match(guide.textContent,/API key.*voice ID/s);assert.match(guide.textContent,/Refresh connections/);assert.equal(h.calls.filter(call=>['synthesis','planner'].includes(call[0])).length,0);assert.equal(h.store.size,0);h.wizard.dispose();
 });
 
+function checkIllustratedGuide(h,id,expectedSteps,secret){
+  const guide=h.root().querySelector(`[data-setup-guide="${id}"]`);assert.ok(guide,`Missing ${id} illustrated guide`);guide.open=true;
+  const steps=[...guide.querySelectorAll('ol.cs-guide-steps > li')];
+  assert.deepEqual(steps.map(step=>step.dataset.guideStep),expectedSteps);
+  assert.equal(guide.querySelectorAll('figure').length,expectedSteps.length);
+  assert.equal(guide.querySelectorAll('img').length,expectedSteps.length);
+  for(const step of steps){
+    const title=step.querySelector('h4').textContent,picture=step.querySelector('.cs-guide-picture'),image=picture.querySelector('img'),caption=step.querySelector('figcaption');
+    assert.ok(image.alt.length>25,`Missing descriptive alternative text for ${title}`);
+    assert.match(image.src,/^data:image\/svg\+xml;charset=utf-8,/);assert.equal(image.loading,'lazy');
+    const svg=decodeURIComponent(image.src.split(',').slice(1).join(','));
+    assert.match(svg,/<svg\b/);assert.doesNotMatch(svg,/<script\b|<foreignObject\b|(?:href|src)=["']https?:/i);
+    assert.ok(!svg.includes(secret));assert.ok(!image.alt.includes(secret));assert.ok(!step.outerHTML.includes(secret));
+    assert.ok(caption.textContent.trim());assert.equal(picture.getAttribute('aria-describedby'),caption.id);
+    const toggle=step.querySelector('button');assert.equal(toggle.getAttribute('aria-label'),`Enlarge picture: ${title}`);assert.equal(toggle.getAttribute('aria-expanded'),'false');
+    toggle.click();assert.ok(picture.classList.contains('cs-picture-large'));assert.equal(toggle.getAttribute('aria-expanded'),'true');
+    assert.equal(toggle.getAttribute('aria-label'),`Reduce picture: ${title}`);assert.equal(h.dom.window.document.activeElement,picture);
+    toggle.click();assert.equal(picture.classList.contains('cs-picture-large'),false);assert.equal(toggle.getAttribute('aria-expanded'),'false');
+    assert.equal(toggle.getAttribute('aria-label'),`Enlarge picture: ${title}`);
+  }
+  const links=[...guide.querySelectorAll('a')];assert.ok(links.length);assert.ok(links.every(link=>link.target==='_blank'&&link.rel.includes('noopener')));
+  return guide;
+}
+
+test('Fish Audio illustrated guide has an offline picture for every step and enlarges without provider requests or saving',async()=>{
+  const secret='fish-guide-private-draft-key',h=uiHarness({config:{...base(),freesoundApiKey:secret}});
+  try{
+    await h.wizard.start();h.click('Next');await tick();const before=h.calls.map(call=>call[0]);
+    const guide=checkIllustratedGuide(h,'fish',['fish-account','fish-api-key','fish-lumiverse','fish-choose-connection','fish-voice-id','fish-test'],secret);
+    assert.equal(guide.querySelector('summary').textContent,'How to connect Fish Audio');
+    assert.match(guide.textContent,/Create New Key/);assert.match(guide.textContent,/Connect.*TTS.*New TTS Connection/);
+    assert.match(guide.textContent,/API URL empty/);assert.match(guide.textContent,/Refresh connections/);
+    assert.match(guide.textContent,/voice ID is different from an API key/);assert.match(guide.textContent,/Test narrator voice/);
+    assert.match(guide.textContent,/illustrated examples, not screenshots/);
+    const urls=[...guide.querySelectorAll('a')].map(link=>link.href);
+    assert.ok(urls.some(url=>/^https:\/\/fish\.audio\/app\/api-keys\/?$/.test(url)));
+    assert.ok(urls.includes('https://docs.fish.audio/developer-guide/getting-started/api-key'));
+    assert.ok(urls.includes('https://docs.fish.audio/developer-guide/getting-started/quickstart'));
+    await tick();assert.deepEqual(h.calls.map(call=>call[0]),before);assert.equal(h.store.size,0);
+    assert.equal(h.label('Default TTS connection').value,'tts');assert.equal(h.root().querySelector('h2').textContent,'Connections');
+  }finally{h.wizard.dispose();h.dom.window.close();}
+});
+
+test('Freesound illustrated guide explains the secret and sound cue LLM while keeping draft credentials out of pictures',async()=>{
+  const secret='freesound-guide-private-draft-key',h=uiHarness({config:{...base(),freesoundApiKey:secret}});
+  try{
+    await h.wizard.start();h.click('Next');h.click('Next');h.click('Next');await tick();
+    h.input('Freesound API key',secret+'-edited');const before=h.calls.map(call=>call[0]);
+    const guide=checkIllustratedGuide(h,'freesound',['freesound-account','freesound-apply','freesound-secret','freesound-paste','freesound-enable','freesound-finish'],secret);
+    assert.equal(guide.querySelector('summary').textContent,'How to get a Freesound API key');
+    assert.match(guide.textContent,/Client secret\/Api key/);assert.match(guide.textContent,/Do not copy Client ID/);
+    assert.match(guide.textContent,/Sound effects and\/or Ambient sound/);assert.match(guide.textContent,/Sound cue LLM connection/);
+    assert.match(guide.textContent,/Finish setup/);assert.match(guide.textContent,/Plan latest/);assert.match(guide.textContent,/do not need to set up an OAuth/);
+    const urls=[...guide.querySelectorAll('a')].map(link=>link.href);
+    assert.ok(urls.includes('https://freesound.org/apiv2/apply/'));
+    assert.ok(urls.includes('https://freesound.org/docs/api/authentication.html#token-authentication'));
+    await tick();assert.deepEqual(h.calls.map(call=>call[0]),before);assert.equal(h.store.size,0);
+    assert.equal(h.label('Freesound API key').value,secret+'-edited');assert.equal(h.label('Freesound API key').type,'password');
+    assert.equal(h.label('Sound effects').checked,false);assert.equal(h.label('Ambient sound').checked,false);
+    assert.equal(h.root().querySelector('h2').textContent,'Optional Features');
+  }finally{h.wizard.dispose();h.dom.window.close();}
+});
+
+test('deleted saved actor and NPC routes can be reached and repaired on the voices step',async()=>{
+  const config={...base(),npcPolicy:{mode:'single',route:'native:deleted',voice:'old'}};
+  config.fixed[0].route='native:deleted';
+  const h=uiHarness({existing:true,config});await h.wizard.open();h.click('Next');h.click('Next');
+  assert.equal(h.root().querySelector('h2').textContent,'TTS & Voices');
+  h.click('Next');assert.equal(h.root().querySelector('h2').textContent,'TTS & Voices');
+  assert.match(h.root().textContent,/available TTS connection.*Narrator/s);
+  h.select('Narrator connection','native:tts');await until(()=>h.label('Narrator voice').options.length===3);h.select('Narrator voice','voice');
+  h.select('NPC connection','native:tts');await until(()=>h.label('Shared NPC voice').options.length===3);h.select('Shared NPC voice','voice');h.click('Next');
+  assert.equal(h.root().querySelector('h2').textContent,'Optional Features');h.wizard.dispose();
+});
+
+test('switching default connections clears inherited voice IDs while preserving explicitly routed voices',async()=>{
+  const connections={...profiles,tts:[...profiles.tts,{id:'other',name:'Other',provider:'google_tts',model:'gemini-tts'}]};
+  const config={...base(),npcPolicy:{mode:'preferred',voices:['voice'],voice:'voice'}};config.fixed[1].route='native:tts';
+  const h=uiHarness({existing:true,config,connections});await h.wizard.open();h.click('Next');h.select('Default TTS connection','other');h.click('Next');
+  assert.equal(h.label('Narrator voice').value,'');assert.equal(h.label('Persona voice').value,'voice');assert.equal(h.label('Main character voice').value,'');
+  assert.equal(h.label('Preferred NPC voice IDs').value,'');
+  await until(()=>h.label('Narrator voice').options.length===3);h.select('Narrator voice','other');h.select('Default TTS provider','openai_tts');assert.equal(h.label('Narrator voice').value,'');
+  await until(()=>h.label('Narrator voice').options.length===3);
+  h.select('Narrator voice','voice');h.select('Voice connection mode','one');assert.equal(h.label('Persona voice').value,'voice');
+  h.select('TTS model and connection','tts');assert.equal(h.label('Narrator voice').value,'voice');h.wizard.dispose();
+});
+
+test('voice dropdown and custom provider ID stay synchronized',async()=>{
+  const h=uiHarness();await h.wizard.open();h.click('Next');h.click('Next');await until(()=>h.label('Narrator voice').options.length===3);
+  h.select('Narrator voice','other');assert.equal(h.label('Narrator voice ID').value,'other');
+  h.input('Narrator voice ID','private-voice');assert.equal(h.label('Narrator voice').value,'private-voice');h.wizard.dispose();
+});
+
+test('a non-cooperative planner test can be cancelled and its late response cannot overwrite the next step',async()=>{
+  let release,signal;
+  const h=uiHarness({plannerTest:async(_,value)=>{signal=value;return new Promise(resolve=>release=resolve);}});
+  await h.wizard.open();h.click('Next');h.click('Test planner connection');assert.ok(release);h.click('Cancel');
+  await until(()=>!h.root().querySelector('[aria-label="Planner engine"]').disabled);assert.equal(signal.aborted,true);
+  assert.match(h.root().textContent,/cancelled/i);h.click('Next');release('Late planner success');await tick();
+  assert.equal(h.root().querySelector('h2').textContent,'TTS & Voices');assert.doesNotMatch(h.root().textContent,/Late planner success/);
+  h.click('Next');h.click('Next');assert.match(h.root().textContent,/Planner connection has not been tested/);h.wizard.dispose();
+});
+
+test('Finish validation can be cancelled before writes and a late connection result cannot save defaults',async()=>{
+  let release,signal;
+  const h=uiHarness({connectionRequest:async value=>{signal=value;return new Promise(resolve=>release=resolve);}});
+  await h.wizard.open();for(let i=0;i<4;i++)h.click('Next');h.click('Finish setup');assert.ok(release);h.click('Cancel');
+  await until(()=>!h.root().querySelector('.cs-primary').disabled);assert.equal(signal.aborted,true);h.click('Back');
+  release({...structuredClone(profiles),tts:[]});await tick();assert.equal(h.calls.filter(call=>call[0]==='save').length,0);
+  assert.equal(h.store.has(ONBOARDING_KEY),false);assert.equal(h.root().querySelector('h2').textContent,'Optional Features');
+  h.click('Next');assert.doesNotMatch(h.root().textContent,/Missing TTS connection/);h.wizard.dispose();
+});
+
+test('Cancel is unavailable while settings writes commit',async()=>{
+  let release;
+  const h=uiHarness({saveSetup:async(_,__,___,onCommit)=>{onCommit();await new Promise(resolve=>release=resolve);}});
+  await h.wizard.open();for(let i=0;i<4;i++)h.click('Next');h.click('Finish setup');await until(()=>release);
+  assert.equal([...h.root().querySelectorAll('button')].find(node=>node.textContent==='Cancel').hidden,true);
+  release();await until(()=>h.root().textContent.includes('Setup completed successfully'));h.click('Close');assert.equal(h.root(),null);h.wizard.dispose();
+});
+
+test('Jev catalogue setup requires an assigned narrator before review while allowing automatic dialogue voices',async()=>{
+  const config={...base(),plannerMode:'jev',decisionConnection:'decision'};config.fixed.forEach(actor=>actor.voice='');
+  const h=uiHarness({existing:true,config});await h.wizard.open();h.click('Next');h.click('Next');
+  assert.equal(h.label('Narrator voice').options[0].textContent,'Choose a voice');h.click('Next');
+  assert.match(h.root().textContent,/Choose a narrator voice for Jev/);await until(()=>h.label('Narrator voice').options.length===3);
+  h.select('Narrator voice','voice');h.click('Next');assert.equal(h.root().querySelector('h2').textContent,'Optional Features');h.wizard.dispose();
+});
+
+test('Review identifies the selected Jev Decision connection rather than the unrelated LLM ID',async()=>{
+  const config={...base(),plannerMode:'jev',decisionConnection:'decision',planner:'llm'};
+  const connections={...profiles,decision:[{id:'decision',name:'Decision QA',model:'jev-latest'}]};
+  const h=uiHarness({existing:true,config,connections});await h.wizard.open();for(let i=0;i<4;i++)h.click('Next');
+  assert.match(h.root().textContent,/Jev · Decision QA · jev-latest/);assert.doesNotMatch(h.root().textContent,/jev · llm/);h.wizard.dispose();
+});
+
 // Integration with the generated extension, including the real persistence,
 // synthesis adapter, and chat switching paths (providers are deterministic).
-async function frontendHarness(existing){
+async function frontendHarness(existing,{mixer}={}){
   const dom=new JSDOM('<body><main></main></body>',{url:'http://lumiverse.test'}),store=new Map(),events=new Map(),subscriptions=new Map(),rpc=[],synthesis=[],audios=[];
   const original={document:globalThis.document,fetch:globalThis.fetch,Audio:globalThis.Audio,indexedDB:globalThis.indexedDB};
   Object.assign(globalThis,{document:dom.window.document,indexedDB:new IDBFactory()});
   let backend,active=existing?'old':null;
+  if(mixer)store.set('ui:mixer',structuredClone(mixer));
   if(existing){store.set('chat:old',{...base(),fixed:base().fixed.map((actor,index)=>({...actor,voice:['old-n','old-y','old-m'][index]})),casts:{'native:tts':[{speaker:'Guard',voice:'old-g',style:''}]}});store.set('settings:global',{mode:'native',connection:'tts',plannerMode:'heuristic',prefetch:0});}
   class Audio {constructor(){this.paused=true;audios.push(this);}play(){this.paused=false;setTimeout(()=>this.onended?.(),1);return Promise.resolve();}pause(){this.paused=true;}}
   globalThis.Audio=Audio;
@@ -179,6 +316,56 @@ test('generated Choir preserves automatic lead IDs and the LLM planner without s
     h.click('Next');h.click('Next');h.click('Finish setup');await until(()=>h.store.get(ONBOARDING_KEY)?.completed);
     assert.deepEqual(h.store.get('settings:captured-defaults').leadVoices.map(actor=>actor.voice),['','','']);assert.equal(h.store.get('settings:global').plannerMode,'llm');
     assert.equal(h.synthesis.length,0);assert.ok(h.rpc.every(request=>request.action==='ping'));assert.equal(h.store.get(ONBOARDING_KEY).completed,true);
+  }finally{h.cleanup();}
+});
+
+test('voice gender filtering preserves explicit choices and unknown metadata, and shows descriptions',async()=>{
+  const catalogue=[{id:'voice',name:'Storyteller',gender:'male',description:'Warm and deliberate.'},{id:'female',name:'Guide',gender:'female',description:'Clear and bright.'},{id:'other',name:'Guest'},{id:'second-male',name:'Man',gender:'male'}];
+  const h=uiHarness({catalogue});await h.wizard.start();h.click('Next');h.click('Next');await until(()=>h.label('Narrator voice').options.length===5);
+  h.select('Narrator voice gender','female');let voices=h.label('Narrator voice');
+  assert.equal(voices.value,'voice');assert.deepEqual([...voices.options].map(node=>node.value),['','voice','female','other']);
+  assert.match(voices.selectedOptions[0].textContent,/Male.*differs from preference/);assert.match(h.root().textContent,/Warm and deliberate/);
+  h.select('Narrator voice','female');voices=h.label('Narrator voice');assert.ok(![...voices.options].some(node=>node.value==='voice'));assert.match(h.root().textContent,/Clear and bright/);
+  h.input('Narrator voice ID','custom-saved');assert.equal(h.label('Narrator voice').value,'custom-saved');h.select('Narrator voice gender','neutral');assert.equal(h.label('Narrator voice').value,'custom-saved');
+  h.click('Next');h.click('Next');assert.match(h.root().textContent,/custom-saved \(gender preference: neutral\)/);assert.equal(h.calls.filter(call=>['planner','synthesis'].includes(call[0])).length,0);h.wizard.dispose();
+});
+
+test('Fish source changes revalidate automatic Jev narration, including OpenRouter Fish routes',async()=>{
+  for(const speech of [{...profiles.tts[0],provider:'fish_audio',model:'s2'},{...profiles.tts[0],provider:'openrouter_tts',model:'fish-audio/s2:free'}]){
+    const config={...base(),plannerMode:'jev',decisionConnection:'decision'};config.fixed[0].voice='';
+    const h=uiHarness({existing:true,config,connections:{...profiles,tts:[speech]}});await h.wizard.open();h.click('Next');h.click('Next');
+    assert.equal(h.label('Voices the planner picks from').value,'community');h.select('Voices the planner picks from','own');h.click('Next');assert.equal(h.root().querySelector('h2').textContent,'TTS & Voices');assert.match(h.root().textContent,/Choose a narrator voice for Jev/);
+    h.select('Voices the planner picks from','both');h.click('Next');assert.equal(h.root().querySelector('h2').textContent,'Optional Features');h.wizard.dispose();
+  }
+});
+
+test('Jev fallback needs an LLM and invalid request limits can be repaired before Review',async()=>{
+  const config={...base(),plannerMode:'jev',decisionConnection:'decision'};
+  const h=uiHarness({existing:true,config,connections:{...profiles,llm:[]}});await h.wizard.open();h.click('Next');
+  const fallback=h.label('Allow LLM fallback after Jev fails');fallback.checked=true;fallback.dispatchEvent(new h.dom.window.Event('change'));h.click('Next');assert.match(h.root().textContent,/LLM fallback needs/);
+  fallback.checked=false;fallback.dispatchEvent(new h.dom.window.Event('change'));h.click('Next');h.click('Next');
+  assert.equal(h.label('Automatic NPC voice casting'),null);
+  for(const [label,bad,good] of [['Prefetch passages','5','2'],['Concurrent TTS requests','0','2'],['Max characters per request','79','900']]){
+    h.input(label,bad);h.click('Next');assert.equal(h.root().querySelector('h2').textContent,'Optional Features');assert.match(h.root().querySelector('[role="alert"]').textContent,/whole number/);h.input(label,good);
+  }
+  h.click('Next');assert.match(h.root().textContent,/Prefetch: 2.*Concurrent TTS: 2.*Request size: 900/);h.wizard.dispose();
+});
+
+test('generated setup persists drawer choices and new-chat genders while preserving the existing cast and mixer state',async()=>{
+  const mixer={playbackRate:1.75,voiceGapMs:80,speedSliderMax:3,abyssalTheme:true,position:{x:40,y:100},master:.7,effects:.4};
+  const h=await frontendHarness(true,{mixer});try{
+    const before=structuredClone(h.store.get('chat:old'));await until(()=>h.root());h.click('Next');h.click('Next');await until(()=>h.root().querySelector('[aria-label="Narrator voice"]').options.length>2);
+    h.select('Narrator voice','other');h.select('Narrator voice gender','female');h.select('Persona voice gender','neutral');h.select('Main character voice gender','male');h.click('Next');
+    const setCheck=(name,value)=>{const node=h.root().querySelector(`[aria-label="${name}"]`);node.checked=value;node.dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));};
+    const setNumber=(name,value)=>{const node=h.root().querySelector(`[aria-label="${name}"]`);node.value=String(value);node.dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));};
+    setCheck('Floating audio mixer',true);setCheck('Match passage loudness',false);setCheck('Group speech requests',true);setCheck('Show message play controls',true);setCheck('Show automatic planning shortcut',true);
+    h.select('Audio retention for new recordings','7');setNumber('Prefetch passages',2);setNumber('Concurrent TTS requests',3);setNumber('Max characters per request',900);
+    setCheck('Background music',true);assert.equal(h.root().querySelector('[aria-label="Loop music between replies"]').closest('div').hidden,false);setCheck('Loop music between replies',true);
+    h.click('Next');assert.match(h.root().textContent,/New recordings: 7 days/);h.click('Finish setup');await until(()=>h.store.get(ONBOARDING_KEY)?.completed);
+    const global=h.store.get('settings:global');for(const [key,value] of Object.entries({enableMixer:true,normalizeLoudness:false,batchSpeech:true,retention:'7',prefetch:2,concurrency:3,chunk:900,sectionButtons:true,showAutoPlanAction:true,enableMusic:true,loopMusic:true,autoPlan:false,auto:false}))assert.equal(global[key],value,key);
+    assert.deepEqual(h.store.get('settings:captured-defaults').leadVoices.map(actor=>actor.gender),['female','neutral','male']);assert.deepEqual(h.store.get('chat:old'),before);assert.deepEqual(h.store.get('ui:mixer'),mixer);
+    assert.equal(h.synthesis.length,0);assert.ok(h.rpc.every(request=>request.action==='ping'));await until(()=>h.root().textContent.includes('Setup completed successfully'));h.click('Close');await h.switchChat('new');await until(()=>document.querySelectorAll('[data-choir-voice]').length===3);
+    assert.equal(document.querySelector('[data-choir-voice]').value,'other');assert.deepEqual([...document.querySelectorAll('[data-choir-gender]')].map(node=>node.value),['female','neutral','male']);
   }finally{h.cleanup();}
 });
 

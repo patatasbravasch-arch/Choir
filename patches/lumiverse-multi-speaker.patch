@@ -39,7 +39,7 @@ index 7060b0e8..0dc40cbc 100644
 +  }
    return body;
  }
-
+ 
 @@ -314,6 +332,7 @@ export class FishAudioTtsProvider implements TtsProvider {
      staticVoices: [],
      modelListStyle: "static",
@@ -55,7 +55,7 @@ index afa89e73..606294dc 100644
 @@ -1,3 +1,4 @@
 +import { ProviderRequestError } from "../../utils/provider-errors";
  import type { TtsRequest, TtsStreamChunk, TtsVoice } from "../types";
-
+ 
  /** Gemini text-to-speech models. TTS-only list: no text/generation models. */
 @@ -107,6 +108,27 @@ export function buildGeminiTtsBody(request: TtsRequest): Record<string, any> {
    if (typeof request.parameters.temperature === "number") {
@@ -135,7 +135,7 @@ index 8db7ac15..0b326de4 100644
 +  "google/gemini-2.5-pro-tts": 2,
 +  "google/gemini-2.5-flash-tts": 2,
 +};
-
+ 
  /**
   * OpenRouter Text-to-Speech.
 @@ -66,6 +80,7 @@ export class OpenRouterTtsProvider extends OpenAICompatibleTtsProvider {

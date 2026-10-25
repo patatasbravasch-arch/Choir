@@ -17,6 +17,19 @@ test('clear legacy pronunciation mappings migrate while general instructions rem
   assert.equal(respellNames('Eliza arrived.',[{speaker:'Eliza',pronunciation:'Eliza: Eh-Lee-Zah'}]),'Eh-Lee-Zah arrived.');
 });
 
+test('pronunciation matches equivalent name spacing and composed or decomposed accents without changing other text',()=>{
+  const actors=[{speaker:'Eliza Jane',sayAs:'Eh Lee Zah Jayne'},{speaker:'Zoë',sayAs:'Zo-ee'}];
+  const text="Eliza  Jane greeted Eliza\u00a0Jane and Zoe\u0308. Zoe\u0308's cafe\u0301 stayed open. Eliza Janette stayed home.";
+  assert.equal(respellNames(text,actors),"Eh Lee Zah Jayne greeted Eh Lee Zah Jayne and Zo-ee. Zo-ee's cafe\u0301 stayed open. Eliza Janette stayed home.");
+});
+
+test('a decorated character can pronounce a selected short name without replacing its surname or other aliases',()=>{
+  const actors=[{speaker:'Richter Vane (Callsign: Grim)',aliases:['Richter','Grim'],sayAsName:'Richter',sayAs:'Rish-ter'}];
+  assert.equal(respellNames('Richter Vane arrived. “Richter,” Grim said. Richter\'s coat was wet.',actors),'Rish-ter Vane arrived. “Rish-ter,” Grim said. Rish-ter\'s coat was wet.');
+  assert.equal(respellNames('Richter Vane (Callsign: Grim)',[{...actors[0],sayAsName:''}]),'Rish-ter');
+  assert.equal(respellNames('Richter smiled.',[{...actors[0],sayAs:''}]),'Richter smiled.');
+});
+
 test('speech splitting measures expanded pronunciation and keeps multiword names intact',()=>{
   const actors=[{speaker:'Eliza Jane',sayAs:'Eh-Lee-Zah Jayne'}],speechText=text=>respellNames(text,actors),atomicWords=['Eliza Jane'];
   const source={speaker:'Narrator',voice:'n',text:('A visitor called Eliza Jane arrived. ').repeat(12).trim()};
@@ -28,7 +41,8 @@ test('speech splitting measures expanded pronunciation and keeps multiword names
 });
 
 test('cast transfer preserves pronunciation spelling and rejects invalid values',()=>{
-  const config={fixed:[{speaker:'Eliza',voice:'e',style:'',sayAs:'Eh-Lee-Zah'}],casts:{'native:tts':[]}};
-  const exported=castExport(config);assert.equal(castImport(exported).fixed[0].sayAs,'Eh-Lee-Zah');
+  const config={fixed:[{speaker:'Eliza Jane',voice:'e',style:'',sayAs:'Eh-Lee-Zah',sayAsName:'Eliza'}],casts:{'native:tts':[]}};
+  const exported=castExport(config);assert.equal(castImport(exported).fixed[0].sayAs,'Eh-Lee-Zah');assert.equal(castImport(exported).fixed[0].sayAsName,'Eliza');
   for(const sayAs of ['[whisper]','a\nb',42,'a'.repeat(121)])assert.throws(()=>castImport({...exported,fixed:[{...exported.fixed[0],sayAs}]}),/pronunciation/);
+  for(const sayAsName of ['<Richter>','a\nb',42,'a'.repeat(101)])assert.throws(()=>castImport({...exported,fixed:[{...exported.fixed[0],sayAsName}]}),/pronunciation/);
 });

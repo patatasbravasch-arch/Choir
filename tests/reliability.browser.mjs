@@ -2,7 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {JSDOM} from 'jsdom';
-import {IDBFactory} from 'fake-indexeddb';
+import {IDBFactory,IDBObjectStore} from 'fake-indexeddb';
 import {setup} from '../dist/frontend.js';
 import {validatePlan,speechSourceUnits,transcriptFromMessage} from '../src/core.js';
 import {speechPanel} from './fixtures/speech-panel.mjs';
@@ -48,12 +48,34 @@ test('queued preference edits can revert a value while the previous save is pend
 
 const tick=()=>new Promise(resolve=>setTimeout(resolve,10));
 const until=async(predicate)=>{for(let i=0;i<250;i++){if(predicate())return;await tick();}throw Error('Timed out waiting for regression state');};
+let failIdbOpen=0;
+const openRecordings=()=>new Promise((resolve,reject)=>{const request=globalThis.indexedDB.open('choir-recordings',1);request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);});
+async function recordings(){
+  const database=await openRecordings();
+  const rows=await new Promise((resolve,reject)=>{
+    const transaction=database.transaction('recordings','readonly'),request=transaction.objectStore('recordings').openCursor(),items=[];
+    request.onsuccess=()=>{const cursor=request.result;if(cursor){items.push({key:cursor.key,value:cursor.value});cursor.continue();}};
+    transaction.oncomplete=()=>resolve(items);transaction.onerror=()=>reject(transaction.error);
+  });
+  database.close();return rows;
+}
+const recordingFor=async content=>(await recordings()).find(row=>row.value?.content===content)?.value || null;
 
 async function harness(mixerPreferences,mobile=false){
   const dom=new JSDOM('<body><nav><button>Another extension</button><div data-choir-toolbar></div></nav><main></main><footer></footer></body>',{url:'https://lumiverse.test'});
   const layoutListeners=new Set(),channelLayout={matches:mobile,addEventListener:(_,fn)=>layoutListeners.add(fn),removeEventListener:(_,fn)=>layoutListeners.delete(fn)};dom.window.matchMedia=()=>channelLayout;
   const original={document:globalThis.document,Audio:globalThis.Audio,fetch:globalThis.fetch,indexedDB:globalThis.indexedDB};
-  globalThis.document=dom.window.document;globalThis.indexedDB=new IDBFactory();
+  const factory=new IDBFactory(),open=factory.open.bind(factory);
+  factory.open=(...args)=>{
+    if(failIdbOpen>0){
+      failIdbOpen--;
+      const request={error:Object.assign(new Error('Device audio storage is blocked.'),{name:'UnknownError'})};
+      setTimeout(()=>request.onerror?.(),0);
+      return request;
+    }
+    return open(...args);
+  };
+  globalThis.document=dom.window.document;globalThis.indexedDB=factory;
   const root=document.querySelector('main'),footer=document.querySelector('footer'),toolbar=document.querySelector('[data-choir-toolbar]');
   const state={active:'chat-a',blockAudio:false,failVoice:null,delay:0,held:false,aborted:0,previewFetches:[],bedFetches:[],previewAborted:0},store=new Map(),requests=[],synthesis=[],audios=[],audioBlobs=[],events=new Map(),subscriptions=new Map(),heldPlans=[],toolbarActions=new Map();
   const createObjectURL=URL.createObjectURL;URL.createObjectURL=blob=>{audioBlobs.push(blob);return createObjectURL(blob);};
@@ -268,6 +290,90 @@ test('name pronunciation updates legacy Replay without seeding stale audio under
     [...h.$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay').click();await until(()=>h.$('status').textContent.includes('Name pronunciation updated'));
     assert.equal(h.synthesis.length,7);assert.ok(h.synthesis.slice(4).every(input=>input.text.includes('Eh-Lee-Zah')));assert.equal(h.requests.filter(request=>request.action==='plan').length,1);
     [...h.$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay').click();await until(()=>h.$('status').textContent==='Replay finished.');assert.equal(h.synthesis.length,7);
+  }finally{await h.close();}
+});
+
+test('pronunciation regression: shared-connection companion uses inherited NPC name spelling and delivery preferences',async()=>{
+  const h=await harness();try{
+    const saved=h.store.get('chat:chat-a');
+    Object.assign(saved,{connection:'b',connectionMode:'one',useStyle:false,skipMeta:false,enableSfx:false,enableAmbience:false,plannerMode:'heuristic',useFastClassifier:true});
+    saved.casts={'native:a':[{speaker:'Guard',voice:'g',style:'',sayAs:'Gahrd',pronunciation:'Speak softly.',accent:'Irish'}],'native:b':[]};
+    h.store.set('chat:chat-a',saved);await h.reload();
+    assert.deepEqual(globalThis.__CHOIR_API__.getConfig().casts['native:b'],[]);
+    const text='Guard opened the gate. "Hello, Guard."';
+    await globalThis.__CHOIR_API__.playParagraph({text,speaker:'Guard'});
+    assert.ok(h.synthesis.length>=2);assert.ok(h.synthesis.every(input=>input.text.includes('Gahrd')),JSON.stringify(h.synthesis));
+    const npc=h.synthesis.find(input=>input.voice==='g');assert.ok(npc);assert.equal(npc.connectionId,'b');assert.equal(npc.parameters.accent,'Irish');assert.match(npc.parameters.instructions,/Speak softly/);
+    const count=h.synthesis.length;await globalThis.__CHOIR_API__.playParagraph({text,speaker:'Guard'});assert.equal(h.synthesis.length,count);
+    assert.equal(h.requests.filter(request=>request.action==='plan').length,0);
+  }finally{await h.close();}
+});
+
+test('pronunciation regression: equivalent accented multiword names update cached lead speech without replanning',async()=>{
+  const h=await harness();try{
+    const name='Zoë Jane';h.state.character={name};h.state.leadSpeaker=name;h.message.name=name;
+    h.message.content='Zoe\u0308\u00a0Jane arrived. "Hello, Zoe\u0308 Jane." "Wait, Zoë  Jane." The gate closed.';
+    const saved=h.store.get('chat:chat-a');Object.assign(saved,{useStyle:false,skipMeta:false,enableSfx:false,enableAmbience:false,batchSpeech:false});
+    saved.fixed[2]={...saved.fixed[2],speaker:name,sayAs:'Zoh-ee Jayne',pronunciation:'',aliases:[],accent:''};h.store.set('chat:chat-a',saved);await h.reload();
+    const original=h.message.content;await h.plan();await h.play();assert.equal(h.synthesis.length,4);
+    assert.ok(h.synthesis.slice(0,3).every(input=>input.text.includes('Zoh-ee Jayne')),JSON.stringify(h.synthesis));
+    await editNamePronunciation(h,'Zo Ee Jeyn');await h.play();assert.equal(h.synthesis.length,7);assert.ok(h.synthesis.slice(4).every(input=>input.text.includes('Zo Ee Jeyn')));
+    assert.equal(h.message.content,original);assert.equal(h.requests.filter(request=>request.action==='plan').length,1);
+    await h.reload();await h.play();assert.equal(h.synthesis.length,7);
+  }finally{await h.close();}
+});
+
+test('pronunciation regression: editing an NPC name spelling refreshes Replay for every voice that says it',async()=>{
+  const h=await harness();try{
+    h.message.content='Guard arrived. "Hello, Guard." "Wait, Guard." The gate closed.';
+    const saved=h.store.get('chat:chat-a');Object.assign(saved,{useStyle:false,skipMeta:false,enableSfx:false,enableAmbience:false,batchSpeech:false});
+    saved.casts['native:a'][0].sayAs='Gahrd';h.store.set('chat:chat-a',saved);await h.reload();await h.plan();await h.play();assert.equal(h.synthesis.length,4);
+    assert.ok(h.synthesis.slice(0,3).every(input=>input.text.includes('Gahrd')));
+    const input=h.$('npcs').querySelector('[data-choir-say-as]');assert.ok(input);input.value='Garrd';input.dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));await until(()=>h.$('saveState').textContent==='Saved automatically');
+    [...h.$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay').click();await until(()=>h.$('status').textContent.includes('Name pronunciation updated'));
+    assert.equal(h.synthesis.length,7);assert.ok(h.synthesis.slice(4).every(input=>input.text.includes('Garrd')));assert.equal(h.requests.filter(request=>request.action==='plan').length,1);
+    [...h.$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay').click();await until(()=>h.$('status').textContent==='Replay finished.');assert.equal(h.synthesis.length,7);
+    assert.equal(h.store.get('chat:chat-a').casts['native:a'][0].sayAs,'Garrd');
+  }finally{await h.close();}
+});
+
+test('pronunciation regression: editing a legacy speaking mapping promotes it to Say name as and clearing stays deliberate',async()=>{
+  const h=await harness();try{
+    await elizaFixture(h);
+    const input=h.$('fixed').querySelectorAll('[data-choir-say-as]')[2];assert.ok(input);assert.equal(input.value,'');
+    const row=input.closest('.et-card');assert.ok(row);const instruction=[...row.querySelectorAll('label')].find(label=>label.firstChild.textContent==='Speaking instruction')?.querySelector('input');assert.ok(instruction);
+    instruction.value='Pronounce Eliza as Eh-Lee-Zah';instruction.dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));instruction.dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));
+    await until(()=>h.$('saveState').textContent==='Saved automatically');assert.equal(input.value,'Eh-Lee-Zah');
+    row.querySelector('[data-choir-pronunciation-test]').click();await until(()=>h.$('status').textContent==='Audition finished.');assert.match(h.synthesis.at(-1).text,/Eh-Lee-Zah opened the door/);
+    await editNamePronunciation(h,'');await h.reload();assert.equal(h.$('fixed').querySelectorAll('[data-choir-say-as]')[2].value,'');
+    h.$('fixed').querySelector('[aria-label="Test pronunciation of Eliza"]').click();await until(()=>h.$('status').textContent==='Audition finished.');assert.match(h.synthesis.at(-1).text,/Eliza opened the door/);
+  }finally{await h.close();}
+});
+
+test('pronunciation regression: selecting Richter targets the displayed alias and refreshes narration dialogue Replay and audition',async()=>{
+  const h=await harness();try{
+    const name='Richter Vane (Callsign: Grim)';h.state.character={name};h.state.leadSpeaker=name;h.message.name=name;
+    h.message.content='Richter Vane arrived. "Hello, Richter." "Wait, Richter." The gate closed.';
+    const original=h.message.content,saved=h.store.get('chat:chat-a');Object.assign(saved,{useStyle:false,skipMeta:false,enableSfx:false,enableAmbience:false,batchSpeech:false});
+    saved.fixed[2]={...saved.fixed[2],speaker:name,aliases:['Richter'],sayAs:'Rish-ter',pronunciation:'',accent:''};h.store.set('chat:chat-a',saved);await h.reload();
+    let target=h.$('fixed').querySelectorAll('[data-choir-say-as-name]')[2];assert.ok(target);assert.equal(target.value,'');assert.ok([...target.options].some(option=>option.value==='Richter'));
+    await h.plan();await h.play();assert.equal(h.synthesis.length,4);assert.ok(h.synthesis.slice(0,3).every(input=>input.text.includes('Richter')));
+    target=h.$('fixed').querySelectorAll('[data-choir-say-as-name]')[2];
+    target.value='Richter';target.dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));await until(()=>h.$('saveState').textContent==='Saved automatically');
+    await h.play();assert.equal(h.synthesis.length,7);assert.ok(h.synthesis.slice(4).every(input=>input.text.includes('Rish-ter')));assert.match(h.synthesis[4].text,/Rish-ter Vane arrived/);
+    const actor=h.store.get('chat:chat-a').fixed[2];assert.equal(actor.speaker,name);assert.deepEqual(actor.aliases,['Richter']);assert.equal(actor.sayAsName,'Richter');assert.match(h.$('planJson').value,/Richter Vane \(Callsign: Grim\)/);
+    [...h.$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay').click();await until(()=>h.$('status').textContent==='Replay finished.');assert.equal(h.synthesis.length,7);
+    h.$('fixed').querySelectorAll('[data-choir-say-as]')[2].closest('.et-card').querySelector('[data-choir-pronunciation-test]').click();await until(()=>h.$('status').textContent==='Audition finished.');assert.equal(h.synthesis.at(-1).text,'Rish-ter opened the door.');assert.equal(h.synthesis.length,8);
+    await editNamePronunciation(h,'Rish-turr');
+    [...h.$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay').click();await until(()=>h.$('status').textContent.includes('Name pronunciation updated'));
+    assert.equal(h.synthesis.length,11);assert.ok(h.synthesis.slice(8).every(input=>input.text.includes('Rish-turr')));assert.match(h.synthesis[8].text,/Rish-turr Vane arrived/);
+    await h.reload();assert.equal(h.$('fixed').querySelectorAll('[data-choir-say-as-name]')[2].value,'Richter');await h.play();assert.equal(h.synthesis.length,11);
+    h.$('fixed').querySelectorAll('[data-choir-say-as]')[2].closest('.et-card').querySelector('[data-choir-pronunciation-test]').click();await until(()=>h.$('status').textContent==='Audition finished.');assert.equal(h.synthesis.at(-1).text,'Rish-turr opened the door.');
+    assert.equal(h.message.content,original);assert.equal(h.requests.filter(request=>request.action==='plan').length,1);assert.equal(h.store.get('chat:chat-a').fixed[2].speaker,name);
+    target=h.$('fixed').querySelectorAll('[data-choir-say-as-name]')[2];target.value='';target.dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));await until(()=>h.$('saveState').textContent==='Saved automatically');
+    const aliases=[...target.closest('.et-card').querySelectorAll('label')].find(label=>label.firstChild.textContent==='Aliases (comma separated)')?.querySelector('input');assert.ok(aliases);
+    aliases.value='Richter, Grim';aliases.dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));await until(()=>h.$('saveState').textContent==='Saved automatically');assert.equal(target.value,'');assert.equal(h.store.get('chat:chat-a').fixed[2].sayAsName,'');
+    await h.reload();assert.equal(h.$('fixed').querySelectorAll('[data-choir-say-as-name]')[2].value,'');
   }finally{await h.close();}
 });
 
@@ -739,6 +845,38 @@ test('partial card profiles include all leads and analyse unclaimed scenario tex
   h.state.character.scenario='Diego is another playable lead, with a gravelly voice.';h.state.cardRoles=[{name:'Alice Ward',aliases:['Alice'],description:'Bright.'},{name:'Bob Gray',aliases:['Bob'],description:'Deep.'},{name:'Clara Wood',aliases:['Clara'],description:'Alto.'},{name:'Diego',description:'Gravelly.'}];
   await h.plan();assert.equal(h.requests.filter(request=>request.action==='cardCast').length,1);assert.deepEqual(h.store.get('chat:chat-a').fixed.slice(2).map(actor=>actor.speaker),['Alice','Bob','Clara','Diego']);assert.equal(h.store.get('chat:chat-a').fixed[2].voice,'m');
   await h.reload();await h.plan();assert.equal(h.requests.filter(request=>request.action==='cardCast').length,1);
+ }finally{await h.close();}
+});
+
+test('cached partial card analysis gains newly recognized profiles and aliases without another LLM call or changing saved voices',async()=>{
+ const h=await harness();try{
+  const card={name:'Choir QA - Mira and Adrian',description:'# Mira\nMira is a female captain. Her voice is feminine. Alias: Captain Mira.\n# Adrian\nAdrian is a male navigator. His voice is masculine. Alias: Adi.'};
+  h.state.character=card;h.message.content='The room fell quiet.';
+  const key=createHash('sha256').update(JSON.stringify(['name','description','personality','scenario','first_mes'].map(field=>card[field] || ''))).digest('hex');
+  const saved=structuredClone(h.store.get('chat:chat-a'));saved.fixed[2].speaker='Adrian';saved.fixed[2].aliases=['My navigator'];saved.plannerMode='llm';
+  saved.cardCastAnalysis={key,roles:[{name:'Adrian',aliases:[],description:'Previously identified navigator.'}]};
+  h.store.set('chat:chat-a',saved);await h.reload();await h.plan();
+  const cast=h.store.get('chat:chat-a').fixed,adrian=cast.find(actor=>actor.speaker==='Adrian'),mira=cast.find(actor=>actor.speaker==='Mira');
+  assert.deepEqual(cast.slice(2).map(actor=>actor.speaker),['Adrian','Mira']);assert.equal(adrian.voice,'m');assert.equal(adrian.route,'native:b');assert.equal(adrian.accent,'Irish');assert.equal(adrian.pronunciation,'Mira: mee-rah');
+  assert.deepEqual(adrian.aliases,['My navigator','Adi']);assert.deepEqual(mira.aliases,['Captain Mira']);
+  assert.equal(h.requests.filter(request=>request.action==='cardCast').length,0);assert.equal(h.synthesis.length,0);
+  const profiles=h.requests.filter(request=>request.action==='plan').at(-1).input.config.characterProfiles;
+  assert.deepEqual(profiles.map(profile=>profile.speaker),['Mira','Adrian']);assert.match(profiles[0].description,/female captain/);assert.ok(!profiles[0].description.includes('male navigator'));
+  await h.reload();await h.plan();assert.equal(h.requests.filter(request=>request.action==='cardCast').length,0);assert.equal(h.store.get('chat:chat-a').fixed.find(actor=>actor.speaker==='Adrian').voice,'m');
+ }finally{await h.close();}
+});
+
+test('cached group-title placeholders cannot replace local people while cached additional leads remain available',async()=>{
+ const h=await harness();try{
+  const card={name:'Choir QA - Mira and Adrian',description:'# Mira\nMira is a female captain. Alias: Captain Mira.\n# Adrian\nAdrian is a male navigator. Alias: Adi.',scenario:'Diego is another playable lead.'};
+  h.state.character=card;h.message.content='The room fell quiet.';
+  const key=createHash('sha256').update(JSON.stringify(['name','description','personality','scenario','first_mes'].map(field=>card[field] || ''))).digest('hex');
+  const saved=structuredClone(h.store.get('chat:chat-a'));saved.fixed[2].speaker=card.name;saved.fixed[2].aliases=[];saved.plannerMode='llm';
+  saved.cardCastAnalysis={key,roles:[{name:card.name,aliases:['Mira','Adrian'],description:'Old combined identity.'},{name:'Adrian',aliases:[],description:'Navigator.'},{name:'Diego',aliases:['Pilot'],description:'Another playable lead.'}]};
+  h.store.set('chat:chat-a',saved);await h.reload();await h.plan();
+  const cast=h.store.get('chat:chat-a').fixed;assert.deepEqual(cast.slice(2).map(actor=>actor.speaker),['Mira','Adrian','Diego']);assert.equal(cast[2].voice,'m');assert.deepEqual(cast[4].aliases,['Pilot']);
+  assert.equal(h.requests.filter(request=>request.action==='cardCast').length,0);assert.ok(!h.$('fixed').textContent.includes('Old combined identity'));
+  await h.reload();await h.plan();assert.equal(h.requests.filter(request=>request.action==='cardCast').length,0);
  }finally{await h.close();}
 });
 
@@ -2442,6 +2580,219 @@ test('storage failure preserves generated audio in the session and reports the p
   }finally{await h.close();}
 });
 
+// Delay the commit notifications while retaining actual IndexedDB writes. This
+// models a slow device without substituting the playback or recording code.
+function holdRecordingCommits(){
+  const put=IDBObjectStore.prototype.put,held=[];
+  IDBObjectStore.prototype.put=function(...args){
+    if(this.name==='recordings'){
+      const transaction=this.transaction;
+      Object.defineProperty(transaction,'oncomplete',{configurable:true,set(handler){
+        transaction.addEventListener('complete',event=>held.push(()=>handler.call(transaction,event)),{once:true});
+      }});
+    }
+    return put.apply(this,args);
+  };
+  return {held,release(){for(const finish of held.splice(0))finish();},restore(){IDBObjectStore.prototype.put=put;}};
+}
+
+test('slow recording commits never gate speech, prefetch or subsequent passages, and all audio is eventually saved',async()=>{
+  const h=await harness();let commits;
+  try{
+    await h.plan();commits=holdRecordingCommits();h.$('play').click();
+    await until(()=>h.audios.length===4 && h.audios.every(audio=>audio.endedAt));
+    assert.equal(h.synthesis.length,4);await until(()=>commits.held.length>=4);
+    commits.restore();commits.release();
+    await until(()=>h.$('status').textContent.includes('Playback finished'));
+    const saved=await recordingFor(h.message.content);
+    assert.equal(saved.blobs.filter(Boolean).length,4);assert.equal(saved.segments.length,4);
+    assert.equal(Object.keys(saved.passages).length,4);
+  }finally{commits?.restore();commits?.release();await h.close();}
+});
+
+test('stalled recording commits report a bounded save failure while session replay needs no new speech',async()=>{
+  const h=await harness(),setTimer=globalThis.setTimeout;let commits;
+  try{
+    await h.plan();commits=holdRecordingCommits();
+    globalThis.setTimeout=(callback,ms,...args)=>setTimer(callback,ms===5000?50:ms,...args);
+    h.$('play').click();
+    await until(()=>h.$('status').textContent.includes('Playback finished'));
+    assert.match(h.$('status').textContent,/storage is taking too long/);
+    assert.match(h.$('status').textContent,/pending saves continue in the background/);
+    assert.equal(h.audios.length,4);assert.equal(h.synthesis.length,4);
+    h.$('play').click();await until(()=>h.audios.length===8 && h.$('status').textContent.includes('Playback finished'));
+    assert.equal(h.synthesis.length,4);
+    commits.restore();commits.release();await tick();
+    const saved=await recordingFor(h.message.content);
+    assert.equal(saved.blobs.filter(Boolean).length,4);assert.equal(saved.segments.length,4);
+  }finally{globalThis.setTimeout=setTimer;commits?.restore();commits?.release();await h.close();}
+});
+
+test('Stop remains immediate during delayed recording commits and late saves never restart speech',async()=>{
+  const h=await harness();let commits;
+  try{
+    await h.plan();commits=holdRecordingCommits();h.state.blockAudio=true;h.$('play').click();
+    await until(()=>h.audios[0]?.paused===false && commits.held.length>0);
+    h.$('stop').click();assert.equal(h.$('status').textContent,'Stopped.');
+    assert.ok(h.audios.every(audio=>audio.paused));
+    commits.restore();commits.release();await tick();await tick();
+    assert.equal(h.synthesis.length,1);assert.ok(h.audios.every(audio=>audio.paused));assert.equal(h.$('status').textContent,'Stopped.');
+  }finally{commits?.restore();commits?.release();await h.close();}
+});
+
+test('Stop interrupts the final recording-save wait while completed audio still commits',async()=>{
+  const h=await harness();let commits;
+  try{
+    await h.plan();commits=holdRecordingCommits();h.$('play').click();
+    await until(()=>h.audios.length===4 && h.audios.every(audio=>audio.endedAt));
+    assert.equal(h.$('status').textContent.includes('Playback finished'),false);
+    h.$('stop').click();assert.equal(h.$('status').textContent,'Stopped.');
+    commits.restore();commits.release();await tick();await tick();
+    assert.equal(h.$('status').textContent,'Stopped.');assert.equal(h.synthesis.length,4);
+    const saved=await recordingFor(h.message.content);assert.equal(saved.blobs.filter(Boolean).length,4);
+  }finally{commits?.restore();commits?.release();await h.close();}
+});
+
+test('a transient audio-storage open failure is retried without disabling saved recordings',async()=>{
+  let h;try{
+    failIdbOpen=1;h=await harness();
+    await h.plan();await h.play();
+    assert.match(h.$('status').textContent,/Audio saved on this device/);
+    assert.ok(await recordingFor(h.message.content));
+  }finally{failIdbOpen=0;if(h)await h.close();}
+});
+
+test('a full replay keeps the current and previous passage generations but drops older ones',async()=>{
+  const h=await harness();try{
+    await h.plan();await h.play();
+    const first=await recordingFor(h.message.content),firstKeys=Object.keys(first.passages || {});
+    assert.ok(firstKeys.length>=4);
+    h.connections.forEach(connection=>{connection.default_parameters={speed:1.2};});
+    await h.reload();await h.play();
+    const second=await recordingFor(h.message.content),secondKeys=Object.keys(second.passages || {});
+    const secondGeneration=secondKeys.filter(key=>!firstKeys.includes(key));
+    assert.equal(h.synthesis.length,8);
+    assert.equal(second.blobs.length,second.segments.length);
+    assert.equal(secondKeys.length,8);
+    assert.ok(firstKeys.every(key=>secondKeys.includes(key)));
+    h.connections.forEach(connection=>{connection.default_parameters={speed:1.4};});
+    await h.reload();await h.play();
+    const third=await recordingFor(h.message.content),thirdKeys=Object.keys(third.passages || {});
+    assert.equal(h.synthesis.length,12);
+    assert.equal(thirdKeys.length,8);
+    assert.equal(firstKeys.filter(key=>thirdKeys.includes(key)).length,0);
+    assert.ok(secondGeneration.every(key=>thirdKeys.includes(key)));
+    assert.equal(third.blobs.length,third.segments.length);
+  }finally{await h.close();}
+});
+
+test('playing one section does not discard the rest of a message’s saved audio',async()=>{
+  const h=await harness();try{
+    await toggle(h,'sectionButtons',true);await h.plan();await h.play();
+    const first=await recordingFor(h.message.content),saved=Object.keys(first.passages || {}).length;
+    assert.ok(saved>=4);
+    await until(()=>h.footer.querySelectorAll('[data-choir-section]').length>=3);
+    h.footer.querySelector('[data-choir-section]').click();
+    await until(()=>h.$('status').textContent.includes('Playback finished'));
+    const second=await recordingFor(h.message.content);
+    assert.ok(Object.keys(second.passages || {}).length>=saved);
+    assert.equal(second.segments.length,1);
+  }finally{await h.close();}
+});
+
+const insertRecordings=async rows=>{
+  const database=await openRecordings();
+  await new Promise((resolve,reject)=>{
+    const transaction=database.transaction('recordings','readwrite'),store=transaction.objectStore('recordings');
+    for(const row of rows)store.put(row.value,row.key);
+    transaction.oncomplete=resolve;transaction.onerror=()=>reject(transaction.error);
+  });
+  database.close();
+};
+const failRecordingPuts=()=>{
+  const put=IDBObjectStore.prototype.put;
+  IDBObjectStore.prototype.put=function(...args){
+    if(this.name==='recordings')throw Object.assign(new Error('The quota has been exceeded.'),{name:'QuotaExceededError'});
+    return put.apply(this,args);
+  };
+  return ()=>{IDBObjectStore.prototype.put=put;};
+};
+
+test('a quota failure never deletes audio saved with indefinite retention and reports the limit',async()=>{
+  const h=await harness();try{
+    const namespace=h.store.get('audio:namespace'),key=JSON.stringify([namespace,'chat-old','message-old']);
+    await insertRecordings([{key,value:{content:'Old reply',createdAt:1,retention:'forever',expiresAt:null,segments:[],blobs:[],passages:{}}}]);
+    const restore=failRecordingPuts();
+    try{await h.plan();await h.play();}finally{restore();}
+    assert.match(h.$('status').textContent,/storage is full/i);
+    assert.match(h.$('status').textContent,/Indefinitely/i);
+    assert.ok((await recordings()).some(row=>row.key===key));
+  }finally{await h.close();}
+});
+
+test('quota cleanup removes only expired recordings and keeps indefinite and unexpired audio',async()=>{
+  const h=await harness();try{
+    const namespace=h.store.get('audio:namespace'),now=Date.now();
+    await insertRecordings([
+      {key:JSON.stringify([namespace,'chat-old','expired']),value:{content:'Expired reply',createdAt:1,retention:'1',expiresAt:now-1000,segments:[],blobs:[],passages:{}}},
+      {key:JSON.stringify([namespace,'chat-old','forever']),value:{content:'Forever reply',createdAt:2,retention:'forever',expiresAt:null,segments:[],blobs:[],passages:{}}},
+      {key:JSON.stringify([namespace,'chat-old','later']),value:{content:'Later reply',createdAt:3,retention:'7',expiresAt:now+86400000,segments:[],blobs:[],passages:{}}}
+    ]);
+    const restore=failRecordingPuts();
+    try{await h.plan();await h.play();}finally{restore();}
+    const identities=(await recordings()).map(row=>JSON.parse(row.key)[2]);
+    assert.equal(identities.includes('expired'),false);
+    assert.ok(identities.includes('forever'));
+    assert.ok(identities.includes('later'));
+  }finally{await h.close();}
+});
+
+test('quota cleanup keeps the recording for the message being played',async()=>{
+  const h=await harness();try{
+    await h.plan();await h.play();
+    const current=(await recordings()).find(row=>row.value?.content===h.message.content);
+    assert.ok(current);
+    h.connections.forEach(connection=>{connection.default_parameters={speed:1.2};});
+    const restore=failRecordingPuts();
+    try{await h.play();}finally{restore();}
+    assert.match(h.$('status').textContent,/storage is full/i);
+    const saved=(await recordings()).find(row=>row.key===current.key);
+    assert.ok(saved);
+    assert.deepEqual(saved.value.blobs,current.value.blobs);
+  }finally{await h.close();}
+});
+
+test('an asynchronous quota error is reported without a null message and recovers',async()=>{
+  const h=await harness();try{
+    const namespace=h.store.get('audio:namespace'),now=Date.now();
+    const currentKey=JSON.stringify([namespace,'chat-a','message-a']);
+    await insertRecordings([
+      {key:currentKey,value:{content:'Old version',createdAt:1,retention:'forever',expiresAt:null,segments:[],blobs:[],passages:{}}},
+      {key:JSON.stringify([namespace,'chat-old','expired']),value:{content:'Expired reply',createdAt:2,retention:'1',expiresAt:now-1000,segments:[],blobs:[],passages:{}}}
+    ]);
+    const put=IDBObjectStore.prototype.put,add=IDBObjectStore.prototype.add;
+    const quotaError=Object.assign(new Error('The quota has been exceeded.'),{name:'QuotaExceededError'});
+    let first=true;
+    IDBObjectStore.prototype.put=function(...args){
+      if(first && this.name==='recordings'){
+        first=false;
+        // A real asynchronous request error (duplicate key), relabelled as the
+        // quota failure the browser reports through the transaction event.
+        const request=add.call(this,...args);
+        Object.defineProperty(request,'error',{configurable:true,get:()=>quotaError,set:()=>{}});
+        return request;
+      }
+      return put.apply(this,args);
+    };
+    try{await h.plan();await h.play();}finally{IDBObjectStore.prototype.put=put;}
+    assert.doesNotMatch(h.$('status').textContent,/Cannot read properties of null/);
+    assert.match(h.$('status').textContent,/Audio saved on this device/);
+    const rows=await recordings();
+    assert.ok(rows.some(row=>row.key===currentKey));
+    assert.equal(rows.some(row=>JSON.parse(row.key)[2]==='expired'),false);
+  }finally{await h.close();}
+});
+
 test('duplicate prefetched passages share one synthesis request',async()=>{
   const h=await harness();try{
     h.message.content='At dawn. At dawn.';h.$('prefetch').value='1';h.$('concurrency').value='2';h.state.delay=30;
@@ -3230,10 +3581,21 @@ test('ambience beds keep normal speed while the spoken block plays at the saved 
 
 test('excluded opening dialogue adds no voice gap before the first audible speaker',async()=>{
  const h=await harness({enabled:true,voiceGapMs:1500});try{
-  h.message.content='"Hello." "Wait."';await h.plan();document.querySelector('[aria-label="Mira no voice"]').click();await tick();h.state.blockAudio=true;
-  const began=Date.now();h.$('play').click();await until(()=>voices(h).length && !voices(h)[0].paused);
-  assert.ok(voices(h)[0].playedAt-began<700,`first audible voice waited ${voices(h)[0].playedAt-began}ms with no earlier speech`);
-  assert.equal(h.synthesis[0].voice,'g');
+  h.message.content='"Hello." "Wait." The gate closed.';await h.plan();document.querySelector('[aria-label="Mira no voice"]').click();await tick();h.state.blockAudio=true;
+  // A gap is a long timer. Record those instead of timing the whole JSDOM startup
+  // path, whose planning, storage and rendering work varies independently of gaps.
+  const gapTimers=[],nativeSetTimeout=globalThis.setTimeout;
+  globalThis.setTimeout=(fn,delay,...args)=>{if(delay===1500)gapTimers.push(delay);return nativeSetTimeout(fn,delay,...args);};
+  try{
+   h.$('play').click();await until(()=>voices(h).length && (gapTimers.length || voices(h)[0].playedAt));
+   assert.deepEqual(gapTimers,[],'no voice gap may be scheduled before the first audible voice');
+   await until(()=>voices(h)[0].playedAt);
+   assert.equal(h.synthesis[0].voice,'g');
+   // Positive control: the same gap must still separate the next audible speaker.
+   const first=voices(h)[0];h.state.blockAudio=false;first.onended();
+   await until(()=>voices(h).length===2 && gapTimers.length===1);
+   assert.deepEqual(gapTimers,[1500],'the saved gap still separates consecutive audible speakers');
+  }finally{globalThis.setTimeout=nativeSetTimeout;}
  }finally{await h.close();}
 });
 
@@ -3430,5 +3792,82 @@ test('the reported case: a master speed of 4 times with a character at 0.25 time
   h.state.blockAudio=true;h.$('play').click();await until(()=>voices(h).length>=1 && !voices(h)[0].paused);
   assert.equal(voices(h)[0].playbackRate,0.25,'the character speed replaces the master 4x instead of multiplying it');
   h.$('stop').click();
+ }finally{await h.close();}
+});
+
+
+test('speed prefetch skips background markers before the next spoken passage',async()=>{
+ for(const rate of [1.5,2]){
+  const h=await harness({enabled:true,playbackRate:rate});try{
+   const saved=h.store.get('chat:chat-a');Object.assign(saved,{prefetch:1,concurrency:1,enableAmbience:true,enableSfx:false,enableMusic:true,freesoundApiKey:'fixture-key'});
+   h.store.set('chat:chat-a',saved);await h.reload();
+   h.message.content='At dawn. Rain drummed on the roof. "Hello."';h.state.blockAudio=true;h.state.delay=120;
+   h.state.soundCues={cues:[],ambience:[{segment:0,trigger:'Rain drummed',query:'rain'}],music:[{segment:0,trigger:'Rain drummed',feels:['Dark'],genres:['Soundtrack'],keywords:['piano']}]};
+   await h.plan();h.$('play').click();await until(()=>voices(h).length===1 && !voices(h)[0].paused);
+   await new Promise(resolve=>setTimeout(resolve,70));
+   assert.equal(h.synthesis.length,2,'the next speech should synthesize while the first plays even when music and ambience markers lie between them');
+  }finally{await h.close();}
+ }
+});
+
+test('progress counter starts at the first audible clip after leading music and ambience, including cached replay',async()=>{
+ const h=await harness();try{
+  await configureFoley(h);await toggle(h,'enableMusic',true);
+  h.message.content='Rain drummed on the roof. "Hello."';
+  h.state.soundCues={cues:[],ambience:[{segment:0,trigger:'Rain drummed',query:'rain'}],music:[{segment:0,trigger:'Rain drummed',feels:['Dark'],genres:['Soundtrack'],keywords:['piano']}]};
+  await h.plan();h.state.blockAudio=true;h.state.delay=100;h.$('play').click();
+  await until(()=>h.synthesis.length===1);
+  assert.match(h.$('status').textContent,/^Synthesizing 1\/2: Narrator/);
+  assert.equal(h.synthesis[0].text,'Rain drummed on the roof.','the opening narration must be synthesized and heard');
+  await until(()=>voices(h).length===1 && !voices(h)[0].paused);
+  assert.match(h.$('status').textContent,/^Playing 1\/2: Narrator/);
+  voices(h)[0].onended();await until(()=>voices(h).length===2 && !voices(h)[1].paused);
+  assert.match(h.$('status').textContent,/^Playing 2\/2: Mira/);
+  voices(h)[1].onended();await until(()=>h.$('status').textContent.includes('Playback finished'));
+  const recording=await recordingFor(h.message.content);
+  assert.deepEqual(recording.segments.slice(0,2).map(segment=>segment.kind).sort(),['ambience','music'],'fixture must contain two real leading background markers');
+  const generated=h.synthesis.length,start=voices(h).length;
+  [...h.$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay').click();
+  await until(()=>voices(h).length===start+1 && !voices(h).at(-1).paused);
+  assert.match(h.$('status').textContent,/^Replaying 1\/2: Narrator/);
+  voices(h).at(-1).onended();await until(()=>voices(h).length===start+2 && !voices(h).at(-1).paused);
+  assert.match(h.$('status').textContent,/^Replaying 2\/2: Mira/);
+  voices(h).at(-1).onended();await until(()=>h.$('status').textContent==='Replay finished.');
+  assert.equal(h.synthesis.length,generated,'cached replay must not synthesize any speech again');
+ }finally{await h.close();}
+});
+
+test('progress counter excludes a leading actor set to No voice',async()=>{
+ const h=await harness();try{
+  h.message.content='Opening narration. "Hello."';await h.plan();
+  document.querySelector('[aria-label="Narrator no voice"]').click();
+  await until(()=>h.store.get('chat:chat-a').fixed.find(actor=>actor.speaker==='Narrator').excluded);
+  h.state.blockAudio=true;h.$('play').click();await until(()=>voices(h).length===1 && !voices(h)[0].paused);
+  assert.match(h.$('status').textContent,/^Playing 1\/1: Mira/);
+  assert.equal(h.synthesis.length,1);assert.equal(h.synthesis[0].voice,'m');assert.equal(h.synthesis[0].text,'"Hello."');
+  voices(h)[0].onended();await until(()=>h.$('status').textContent.includes('Playback finished'));
+ }finally{await h.close();}
+});
+
+test('progress counter keeps the actual resumed clip and seek position after leading background markers',async()=>{
+ const h=await harness();try{
+  await configureFoley(h);await toggle(h,'enableMusic',true);
+  h.message.content='Rain drummed on the roof. "Hello." "Wait."';
+  h.state.soundCues={cues:[],ambience:[{segment:0,trigger:'Rain drummed',query:'rain'}],music:[{segment:0,trigger:'Rain drummed',feels:['Dark'],genres:['Soundtrack'],keywords:['piano']}]};
+  await h.plan();h.state.blockAudio=true;h.$('play').click();await until(()=>voices(h).length===1 && !h.$('next').disabled);
+  h.$('next').click();await until(()=>voices(h).length===2 && !voices(h).at(-1).paused && !h.$('next').disabled);
+  assert.match(h.$('status').textContent,/^Playing 2\/3: Mira/);
+  voices(h).at(-1).currentTime=7.25;voices(h).at(-1).ontimeupdate();h.$('stop').click();
+  await until(()=>h.store.get('position:chat-a')?.seconds===7.25);
+  assert.equal(h.store.get('position:chat-a').passage,1);
+  const generated=h.synthesis.length,start=voices(h).length;await h.reload();h.$('play').click();
+  await until(()=>voices(h).length===start+1 && !voices(h).at(-1).paused && !h.$('next').disabled);
+  assert.match(h.$('status').textContent,/^Playing 2\/3: Mira/,'resuming the second clip must keep its ordinal within the full playback');
+  assert.equal(voices(h).at(-1).currentTime,7.25);assert.equal(h.store.get('position:chat-a').passage,1);
+  assert.equal(h.synthesis.length,generated,'resume must reuse the saved second clip');
+  h.$('previous').click();await until(()=>voices(h).length===start+2 && !voices(h).at(-1).paused);
+  assert.match(h.$('status').textContent,/^Playing 1\/3: Narrator/);
+  assert.equal(voices(h).at(-1).currentTime,0,'previous must not inherit the resumed seek offset');
+  assert.equal(h.synthesis.length,generated);
  }finally{await h.close();}
 });

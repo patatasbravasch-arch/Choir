@@ -1,4 +1,4 @@
-import { characterCardRoleDiscovery, namePronunciation, namePronunciations, respellNames } from './core.js';
+import { characterCardRoleDiscovery, namePronunciation, namePronunciationTarget, namePronunciations, respellNames } from './core.js';
 import { createSetupWizard, saveSetupSettings } from './setup.js';
 import { ABYSSAL_THEME_CSS } from './abyssal-theme.js';
 import { randomUuid, sha256Hex, GEMINI_VOICES, OPENAI_VOICES, additionalVoices, apiErrorMessage, MAX_SPEECH_CHARS, MAX_CHANNEL_VOLUME, speechProviderFamily, speechRequestLimits, normalizeName, normalizeVoiceCatalogue, characterCardRoles, validateCardRoles, reconcileCardCast, unisonSpeakers, speechSourceUnits, mixUnisonAudio, transcriptFromMessage, readableText, readAlongIndex, locatePassages, spokenLength, validateCastConfig, validatePlan, npcCastActor, parsePlanJson, speechBatches, groupedSpeechBatches, audioBytes, fastClassifyPlan, resolvePlannerMode, attributionPlan, restoreAttribution, passageKey, mixerVolume, loudnessGain, castExport, castImport, applySoundCues, cueOffset, sfxCueOffset, transcriptLines, withoutLines } from './core.js';
@@ -360,7 +360,8 @@ export async function setup(ctx) {
         <label hidden>Lumiverse API base<input data-et="apiBase" value="/api/v1"></label>
         <label>Freesound API key (Foley)<input data-et="freesoundApiKey" type="password" placeholder="Freesound token"></label>
       </div>
-      <p id="choir-chunk-hint" style="font-size:.85em;opacity:.75">Smaller chunks start playing sooner.</p>
+      <p id="choir-chunk-hint" style="font-size:.85em;opacity:.75">Shorter chunks can reduce the first wait, but many short requests can cause gaps at faster speeds.</p>
+      <p style="font-size:.85em;opacity:.75">For faster playback, try 2 prefetched passages and 2 concurrent TTS requests if your provider allows it. Prefetch 0 disables lookahead. More lookahead may generate speech you do not finish; changing playback speed does not speed up synthesis.</p>
       <div class="et-row">
         <label class="et-check"><input data-et="sectionButtons" type="checkbox"> Show message play controls</label>
         <label class="et-check"><input data-et="enableMixer" type="checkbox"> Floating audio mixer</label>
@@ -391,44 +392,46 @@ export async function setup(ctx) {
   for(const button of root.querySelectorAll('button'))button.type='button';
   const pending = new Map();
   let audioNamespace,audioNamespaceError;
-  try {
-    audioNamespace=await ctx.settings.get('audio:namespace');
-    if(!audioNamespace){audioNamespace=randomUuid();await ctx.settings.set('audio:namespace',audioNamespace);}
-  } catch(error){audioNamespaceError=error;}
-  let audioDatabase;
+  for(let attempt=0;attempt<2;attempt++){
+    try{
+      audioNamespace=await ctx.settings.get('audio:namespace');
+      if(!audioNamespace){audioNamespace=randomUuid();await ctx.settings.set('audio:namespace',audioNamespace);}
+      audioNamespaceError=null;break;
+    }catch(error){
+      audioNamespaceError=error;
+      if(attempt===0)await new Promise(resolve=>setTimeout(resolve,150));
+    }
+  }
+  let audioDatabase,audioDatabaseHandle;
   const sessionAudio=new Map();
-  async function recordingStore(operation,key,value) {
-    if(operation==='policy' && value.retention!=='session') {
-      for(const [sessionKey,record] of [...sessionAudio]) {
-        if(JSON.parse(sessionKey)[1]===JSON.parse(key)[1])await recordingStore('put',sessionKey,{...record,retention:value.retention});
-      }
+  function openRecordingDatabase(){
+    if(!audioDatabase){
+      const opening=new Promise((resolve,reject)=>{
+        const request=indexedDB.open('choir-recordings',1);
+        let settled=false;
+        const fail=error=>{if(settled)return;settled=true;reject(error);};
+        request.onupgradeneeded=()=>request.result.createObjectStore('recordings');
+        request.onsuccess=()=>{if(settled){try{request.result.close();}catch{}return;}settled=true;resolve(request.result);};
+        request.onerror=()=>fail(request.error || new Error('Device audio storage could not be opened.'));
+        request.onblocked=()=>fail(new Error('Close other Lumiverse tabs to enable recording storage.'));
+      });
+      audioDatabase=opening;
+      opening.then(db=>{
+        // A failed open is forgotten in the rejection handler, so a later call can retry.
+        if(audioDatabase!==opening){db.close();return;}
+        audioDatabaseHandle=db;
+        const forget=()=>{if(audioDatabaseHandle===db){audioDatabaseHandle=null;audioDatabase=null;}};
+        db.onversionchange=()=>{db.close();forget();};
+        db.onclose=forget;
+      },()=>{if(audioDatabase===opening)audioDatabase=null;});
     }
-    if(operation==='delete')sessionAudio.delete(key);
-    if(operation==='deleteChat')for(const sessionKey of [...sessionAudio.keys()]) {
-      if(JSON.parse(sessionKey)[1]===JSON.parse(key)[1])sessionAudio.delete(sessionKey);
-    }
-    if(operation==='get' && sessionAudio.has(key)){
-      const record=sessionAudio.get(key);
-      if(record.expiresAt==null || record.expiresAt>Date.now())return record;
-      sessionAudio.delete(key);
-    }
-    if(operation==='put') {
-      const createdAt=value.createdAt ?? Date.now(),retention=value.retention || 'forever';
-      value={...value,createdAt,expiresAt:retention==='forever' || retention==='session'?null:createdAt+Number(retention)*86400000};
-      if(retention==='session'){sessionAudio.set(key,value);return;}
-      // Keep a session copy if IndexedDB is unavailable or full.
-      sessionAudio.set(key,value);
-    }
-    if(audioNamespaceError)throw new Error(`Audio storage settings could not be loaded: ${audioNamespaceError.message}`);
-    if(!globalThis.indexedDB)throw new Error('Device audio storage is unavailable in this browser.');
-    if(!audioDatabase)audioDatabase=new Promise((resolve,reject)=>{
-      const request=indexedDB.open('choir-recordings',1);
-      request.onupgradeneeded=()=>request.result.createObjectStore('recordings');
-      request.onsuccess=()=>resolve(request.result);
-      request.onerror=()=>reject(request.error);
-      request.onblocked=()=>reject(new Error('Close other Lumiverse tabs to enable recording storage.'));
-    });
-    const db=await audioDatabase;
+    return audioDatabase;
+  }
+  // A request error bubbles to the transaction before transaction.error is
+  // guaranteed to be populated. The event target always carries the request's
+  // error, so use it first and never reject with null.
+  const recordingFailure=(event,fallback)=>event?.target?.error || event?.target?.transaction?.error || event?.currentTarget?.error || fallback;
+  function runRecordingTransaction(db,operation,key,value){
     return new Promise((resolve,reject)=>{
       const transaction=db.transaction('recordings','readwrite');
       const store=transaction.objectStore('recordings');
@@ -436,7 +439,10 @@ export async function setup(ctx) {
       if(!['policy','prune','deleteChat'].includes(operation)){
         const request=operation==='put'?store.put(value,key):operation==='delete'?store.delete(key):store.get(key);
         request.onsuccess=()=>{result=request.result;if(operation==='get' && result?.expiresAt!=null && result.expiresAt<=Date.now()){store.delete(key);result=undefined;}};
-        transaction.oncomplete=()=>{if(operation==='put')sessionAudio.delete(key);resolve(result);};transaction.onerror=()=>reject(transaction.error);transaction.onabort=()=>reject(transaction.error || new Error('Recording storage failed.'));return;
+        transaction.oncomplete=()=>{if(operation==='put')sessionAudio.delete(key);resolve(result);};
+        transaction.onerror=event=>reject(recordingFailure(event,new Error('Recording storage failed.')));
+        transaction.onabort=event=>reject(recordingFailure(event,new Error('Recording storage failed.')));
+        return;
       }
       const cursorRequest=store.openCursor();
       cursorRequest.onsuccess=()=>{
@@ -460,9 +466,100 @@ export async function setup(ctx) {
         request.onsuccess=()=>{result=request.result;};
       };
       transaction.oncomplete=()=>resolve(result);
-      transaction.onerror=()=>reject(transaction.error);
-      transaction.onabort=()=>reject(transaction.error || new Error('Recording storage failed.'));
+      transaction.onerror=event=>reject(recordingFailure(event,new Error('Recording storage failed.')));
+      transaction.onabort=event=>reject(recordingFailure(event,new Error('Recording storage failed.')));
     });
+  }
+  function recordingInUse(key){
+    for(const entry of [activePlayback,planSource])if(entry && recordingKey(entry.chatId,entry.messageId)===key)return true;
+    return Boolean(chatId && messagePlaybackId && recordingKey(chatId,messagePlaybackId)===key);
+  }
+  // Only the selected retention policy may end a recording's life. Indefinite
+  // audio (expiresAt === null) and unexpired timed audio are never removed here.
+  function purgeExpiredRecordings(db,keepKey){
+    return new Promise((resolve,reject)=>{
+      const transaction=db.transaction('recordings','readwrite');
+      const store=transaction.objectStore('recordings');
+      let removed=0;
+      const request=store.openCursor();
+      request.onsuccess=()=>{
+        const cursor=request.result;
+        if(cursor){
+          let identity;try{identity=JSON.parse(cursor.key);}catch{}
+          const record=cursor.value;
+          const expired=record?.expiresAt!=null && record.expiresAt<=Date.now();
+          if(identity?.[0]===audioNamespace && cursor.key!==keepKey && !recordingInUse(cursor.key) && expired){store.delete(cursor.key);removed++;}
+          cursor.continue();
+        }
+      };
+      transaction.oncomplete=()=>resolve(removed);
+      transaction.onerror=event=>reject(recordingFailure(event,new Error('Recording storage cleanup failed.')));
+      transaction.onabort=event=>reject(recordingFailure(event,new Error('Recording storage cleanup failed.')));
+    });
+  }
+  function recordingStore(operation,key,value) {
+    // Storage is optional for playback. A suspended IndexedDB request may still
+    // finish later, so keep it running while bounding how long the UI waits.
+    if(!['get','put'].includes(operation))return accessRecordingStore(operation,key,value);
+    let timer;
+    const deadline=new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error('Device audio storage is taking too long. Audio remains available in this session; pending saves continue in the background.')),5000);});
+    return Promise.race([accessRecordingStore(operation,key,value),deadline]).finally(()=>clearTimeout(timer));
+  }
+  async function accessRecordingStore(operation,key,value) {
+    if(operation==='policy' && value.retention!=='session') {
+      for(const [sessionKey,record] of [...sessionAudio]) {
+        if(JSON.parse(sessionKey)[1]===JSON.parse(key)[1])await recordingStore('put',sessionKey,{...record,retention:value.retention});
+      }
+    }
+    if(operation==='delete')sessionAudio.delete(key);
+    if(operation==='deleteChat')for(const sessionKey of [...sessionAudio.keys()]) {
+      if(JSON.parse(sessionKey)[1]===JSON.parse(key)[1])sessionAudio.delete(sessionKey);
+    }
+    if(operation==='get' && sessionAudio.has(key)){
+      const record=sessionAudio.get(key);
+      if(record.expiresAt==null || record.expiresAt>Date.now())return record;
+      sessionAudio.delete(key);
+    }
+    if(operation==='put') {
+      const createdAt=value.createdAt ?? Date.now(),retention=value.retention || 'forever';
+      value={...value,createdAt,expiresAt:retention==='forever' || retention==='session'?null:createdAt+Number(retention)*86400000};
+      if(retention==='session'){sessionAudio.set(key,value);return;}
+      // Keep a session copy if IndexedDB is unavailable or full.
+      sessionAudio.set(key,value);
+    }
+    if(audioNamespaceError)throw new Error(`Audio storage settings could not be loaded: ${audioNamespaceError.message}`);
+    if(!globalThis.indexedDB)throw new Error('Device audio storage is unavailable in this browser.');
+    let db=await openRecordingDatabase();
+    try{return await runRecordingTransaction(db,operation,key,value);}
+    catch(error){
+      error ||= new Error('Recording storage failed.');
+      if(error?.name==='InvalidStateError' || error?.name==='TransactionInactiveError'){
+        // The browser or another tab closed the connection. Reopen once instead of
+        // disabling saved audio for the rest of the session.
+        audioDatabaseHandle=null;audioDatabase=null;
+        db=await openRecordingDatabase();
+        return runRecordingTransaction(db,operation,key,value);
+      }
+      if(operation==='put' && error?.name==='QuotaExceededError'){
+        let removed=0;
+        try{removed=await purgeExpiredRecordings(db,key);}
+        catch(purgeError){
+          if(purgeError?.name==='InvalidStateError' || purgeError?.name==='TransactionInactiveError')throw purgeError;
+        }
+        if(removed){
+          try{
+            const result=await runRecordingTransaction(db,operation,key,value);
+            status(`Storage was full. Removed ${removed} expired recording${removed===1?'':'s'}; audio kept indefinitely was not touched.`);
+            return result;
+          }catch(retryError){
+            if(retryError?.name!=='QuotaExceededError')throw retryError;
+            error=retryError;
+          }
+        }
+        throw new Error(`Device audio storage is full.${removed?` ${removed} expired recording${removed===1?' was':'s were'} removed, but the new audio still did not fit.`:' Choir does not delete audio saved with “Indefinitely” retention automatically.'} Clear saved audio for another message or chat, or choose a shorter retention period. (${error.message})`);
+      }
+      throw error;
+    }
   }
   const recordingKey=(chat,message)=>JSON.stringify([audioNamespace,chat,message]);
   const unsubs = [];
@@ -475,8 +572,9 @@ export async function setup(ctx) {
   let activeCharacterCard=null,activePersonaName='',activeCardKey='';
   const autoReplyQueue=new Map(),seenAutoGenerations=new Set();let autoReplyTimer=null,autoReplyActive=null;
   let voices=[...GEMINI_VOICES], nativeConnections=[], nativeProviders=[], castRows=[], npcRows=[], voiceIdEditorCount=0;
-  const voiceCatalogues=new Map();
+  const voiceCatalogues=new Map();let voiceCatalogueRevision=0;
   let controller=null, currentAudio=null, finishAudio=null, objectUrl=null;
+  const paragraphPrefetchControllers=new Set();
   const defaults = () => ({planner:'',connection:'',decisionConnection:'',styleParam:'',apiBase:'/api/v1',chunk:1800,batchSpeech:false,concurrency:1,plannerTokens:8192,
     prefetch:1,normalizeLoudness:true,skipMeta:true,allowLlmFallback:false,sectionButtons:false,connectionMode:'several',enableMixer:false,singleVoices:{},
     extraVoices:'',ignoredTags:'',useStyle:true,auto:false,autoPlan:false,showAutoPlanAction:false,muteNarrator:false,enableSfx:true,enableAmbience:true,enableMusic:false,loopMusic:false,freesoundApiKey:'',npcPolicy:{mode:'llm',route:'',voice:'',voices:[]},fishVoiceSource:'community',plannerMode:'llm',useFastClassifier:false,useJev:false,jevApiKey:'',jevEndpoint:'https://api.typesafe.ai/v1',planBatchChars:3600,planBatchUnits:24,retention:'forever',readAlong:'off',followNarration:false,casts:{},fixed:[
@@ -901,12 +999,22 @@ export async function setup(ctx) {
     const latest=latestReply(),paused=voiceGapHold?voiceGapHold.paused:(!currentAudio || currentAudio.paused),label=currentAudio?(paused?'Resume Choir audio':'Pause Choir audio'):'Play latest reply';
     mixerPlay.innerHTML=(paused?ICON_TRANSPORT_PLAY:ICON_TRANSPORT_PAUSE).replace(/<circle[^>]*\/>/,'');mixerPlay.title=label;mixerPlay.setAttribute('aria-label',label);mixerPlay.disabled=currentAudio?!audioReady:busy || Boolean(controller) || !chatId || !latest;
     mixerPlanLatest.disabled=busy || Boolean(controller) || !chatId || !latest;
-    mixerStop.disabled=!controller && !currentAudio && !autoReplyQueue.size && !beds.ambience && !beds.music;
+    mixerStop.disabled=!controller && !currentAudio && !paragraphPrefetchControllers.size && !autoReplyQueue.size && !beds.ambience && !beds.music;
     $('stop').disabled=mixerStop.disabled;
     mixer.dataset.playState=currentAudio?(paused?'paused':'playing'):busy?'loading':'idle';playbackCaption.textContent=currentAudio?(paused?'Paused':'Now playing'):busy?(planningSource?'Planning speech':'Preparing audio'):'Playback';
   }
   function speakerExcluded(speaker){return normalizeName(speaker)==='narrator' && Boolean(config?.muteNarrator) || [...(config?.fixed || []),...Object.values(config?.casts || {}).flat()].some(actor=>normalizeName(actor.speaker)===normalizeName(speaker) && actor.excluded) || config?.npcPolicy?.mode==='skip' && Object.values(config.casts || {}).flat().some(actor=>normalizeName(actor.speaker)===normalizeName(speaker));}
   function playbackExcluded(segment){return (segment.unison?segment.unison.every(member=>speakerExcluded(member.speaker)):speakerExcluded(segment.speaker)) || segment.kind==='sfx' && config?.enableSfx===false || segment.kind==='ambience' && config?.enableAmbience===false || segment.kind==='music' && config?.enableMusic!==true;}
+  // Background markers have no standalone playback duration. Keep the display
+  // in audible clips while cache, resume and navigation retain plan indexes.
+  function audioProgress(items,index){
+    let current=0,total=0;
+    for(let i=0;i<items.length;i++){
+      if(isBed(items[i]) || playbackExcluded(items[i]))continue;
+      total++;if(i<=index)current++;
+    }
+    return `${current}/${total}`;
+  }
   function syncAmbiencePlayback(){if(!$('enableAmbience').checked)stopBeds('ambience');showFoleyStatus();updateTransport();}
   function syncMusicPlayback(){if(!$('enableMusic').checked)stopBeds('music');updateTransport();}
   function syncSfxPlayback(){showFoleyStatus();generationPolicyChanged?.();if(config?.enableSfx===false && currentSpeaker==='SFX')skipAudio?.();applyVolume();}
@@ -1002,6 +1110,7 @@ export async function setup(ctx) {
   async function ensureCatalogue(route,version=loadVersion) {
     if(disposed || version!==loadVersion)return [];
     if(voiceCatalogues.has(route))return voiceCatalogues.get(route);
+    const catalogueRevision=voiceCatalogueRevision;
     scopeLegacyExtraVoices();
     let extra=[...additionalVoices(config.extraVoices).filter(voice=>extraVoiceRoutes(voice.id).includes(route)),...(capturedDefaults?.voiceCatalogue || []).filter(voice=>voice.route===route)];
     const connectionId=route.startsWith('native:')?route.slice(7):'';
@@ -1016,8 +1125,15 @@ export async function setup(ctx) {
     const fallback=nativeProviders.find(item=>item.id===conn.provider)?.capabilities?.staticVoices || [];
     let data;
     try{data=await api(`/tts-connections/${encodeURIComponent(connectionId)}/voices`).then(response=>response.json());}
-    catch(error){if(!fallback.length && !extra.length && provider!=='openai_tts')throw error;data={voices:[]};}
+    catch(error){
+      if(disposed || version!==loadVersion)return [];
+      if(catalogueRevision!==voiceCatalogueRevision)return ensureCatalogue(route,version);
+      if(!fallback.length && !extra.length && provider!=='openai_tts')throw error;data={voices:[]};
+    }
     if(disposed || version!==loadVersion)return [];
+    // A refreshed connection may keep its ID while changing models or voices.
+    // Late responses must retry against the current connection, never cache the old list.
+    if(catalogueRevision!==voiceCatalogueRevision)return ensureCatalogue(route,version);
     let baseVoices=data.voices || [];
     if(!baseVoices.length)baseVoices=fallback.length?fallback:provider==='openai_tts'?OPENAI_VOICES:[];
     if(conn.provider==='openrouter_tts'){
@@ -1060,7 +1176,7 @@ export async function setup(ctx) {
   // The wizard uses the same connections, catalogue, synthesis, and default
   // format as the settings panel. It never persists a chat cast.
   let setupTestController=null,setupAutoStarted=false;
-  const wizardConnections=async(signal)=>{
+  const wizardConnections=async(signal,refresh=false)=>{
     const paths=['/tts-connections?limit=200','/connections?limit=200','/decision-connections?limit=200'];
     const results=await Promise.allSettled([...paths.map(path=>api(path,{signal}).then(response=>response.json())),rpc('ping',{},signal,8000)]);
     if(signal?.aborted)throw abortError();
@@ -1069,8 +1185,20 @@ export async function setup(ctx) {
       if(results[index].status==='fulfilled')result[kind]=results[index].value.data || [];
       else result.errors.push(`Could not load ${kind==='tts'?'TTS':kind==='llm'?'LLM':'Decision'} connections: ${results[index].reason.message}. Refresh to retry.`);
     });
-    // Use the fresh TTS list for every catalogue and synthesis lookup.
-    if(results[0].status==='fulfilled')nativeConnections=result.tts;
+    // Connection IDs survive edits to their provider/model. Refresh the voice
+    // lists too, including cached routes used by playback after setup closes.
+    if(results[0].status==='fulfilled'){
+      const previous=new Map(nativeConnections.map(connection=>[connection.id,JSON.stringify(connection)]));
+      const changed=refresh || result.tts.length!==nativeConnections.length || result.tts.some(connection=>previous.get(connection.id)!==JSON.stringify(connection));
+      nativeConnections=result.tts;
+      if(changed){
+        const cachedRoutes=[...voiceCatalogues.keys()].filter(route=>nativeConnections.some(connection=>route===`native:${connection.id}`));
+        ++voiceCatalogueRevision;voiceCatalogues.clear();
+        await Promise.allSettled(cachedRoutes.map(route=>ensureCatalogue(route)));
+        if(disposed || signal?.aborted)throw abortError();
+        voices=voiceCatalogues.get(scope(config)) || [];
+      }
+    }
     result.directJev=results[3].status==='fulfilled' && results[3].value.decisionsAvailable===false;
     return result;
   };
@@ -1090,7 +1218,7 @@ export async function setup(ctx) {
     report:message=>status(message,true),
     session:()=>({jev:$('jevKey').value.trim()}),
     setSession:(kind,value)=>{if(kind==='jev')$('jevKey').value=value;},
-    connections:wizardConnections,
+    connections:signal=>wizardConnections(signal,true),
     voices:route=>ensureCatalogue(route),
     stopTest:()=>{if(setupTestController){setupTestController.abort();setupTestController=null;stop(false);}},
     connectionGuide:()=>{tab.activate?.();status('Open Lumiverse’s Connect panel, then TTS, LLM, or Decision to configure a connection. Return to Choir, run setup again, and refresh connections.');},
@@ -1117,13 +1245,13 @@ export async function setup(ctx) {
       if(testSignal.aborted)throw abortError();
       await playBlob(blob,testSignal,actor.speaker || 'NPC',0,draft.normalizeLoudness);
     }),
-    save:async(draft,initial,signal)=>{
+    save:async(draft,initial,signal,onCommit)=>{
       await flushSettings();if(disposed || signal.aborted)throw abortError();
       const route=scope(draft),fixed=draft.fixed.map(actor=>({...actor,route:draft.connectionMode==='one'?route:actor.route || route}));
       const policy={...draft.npcPolicy,route:draft.connectionMode==='one'?'':draft.npcPolicy.route || ''};
       const selected=fixed.filter(actor=>!actor.excluded).map(actor=>({id:actor.voice,route:actor.route}));
       if(['single','preferred'].includes(policy.mode))selected.push(...(policy.mode==='single'?[policy.voice]:policy.voices).map(id=>({id,route:policy.route || route})));
-      const routes=[...new Set([route,...fixed.map(actor=>actor.route),...(policy.mode==='skip'?[]:[policy.route || route])])];
+      const routes=[...new Set([route,...fixed.filter(actor=>!actor.excluded).map(actor=>actor.route),...(policy.mode==='skip'?[]:[policy.route || route])])];
       const lists=await Promise.all(routes.map(async route=>{
         let list;
         try{list=await ensureCatalogue(route);}
@@ -1141,7 +1269,9 @@ export async function setup(ctx) {
         catalogue.set(JSON.stringify([voice.route,voice.id]),{...voice,name:voice.id});
       }
       validateNumericSettings(draft);
-      validateCastConfig({fixed:fixed.map(actor=>actor.excluded?{...actor,voice:''}:actor),npcs:[],voices:[...catalogue.values()],defaultRoute:route,npcPolicy:policy,useStyle:draft.useStyle});
+      // Disabled roles keep their saved choices, but need no catalogue from a
+      // removed connection. Validate their identity on the available default route.
+      validateCastConfig({fixed:fixed.map(actor=>actor.excluded?{...actor,voice:'',route}:actor),npcs:[],voices:[...catalogue.values()],defaultRoute:route,npcPolicy:policy,useStyle:draft.useStyle});
       if(disposed || signal.aborted)throw abortError();
       const [global,preset]=await Promise.all([ctx.settings.get(GLOBAL_SETTINGS_KEY),ctx.settings.get(CAPTURED_DEFAULTS_KEY)]);
       const choices=preferenceSnapshot(draft),baseline=preferenceSnapshot(initial);
@@ -1149,6 +1279,8 @@ export async function setup(ctx) {
       const changes=Object.fromEntries(Object.entries(choices).filter(([name,value])=>!Object.hasOwn(global || {},name) || JSON.stringify(value)!==JSON.stringify(baseline[name])));
       const defaultsPreset={...(preset || {}),version:2,npcPolicy:structuredClone(policy),leadVoices:fixed.map(actor=>Object.fromEntries(defaultVoiceFields.filter(name=>Object.hasOwn(actor,name)).map(name=>[name,actor[name]]))),
         voiceCatalogue:[...new Map([...(preset?.voiceCatalogue || []),...selected.filter(voice=>voice.id).map(voice=>catalogue.get(JSON.stringify([voice.route,voice.id])))].map(voice=>[JSON.stringify([voice.route,voice.id]),voice])).values()]};
+      if(disposed || signal.aborted)throw abortError();
+      onCommit?.();
       await saveSetupSettings(ctx.settings,[[GLOBAL_SETTINGS_KEY,{...(global || {}),...changes}],[CAPTURED_DEFAULTS_KEY,defaultsPreset]],{version:1,completed:true,deferred:false});
       capturedDefaults=defaultsPreset;++defaultsRevision;
       if(!disposed){
@@ -1833,7 +1965,30 @@ export async function setup(ctx) {
     const style=document.createElement('input');style.value=actor.style || '';style.maxLength=600;
     const aliases=document.createElement('input');aliases.value=(actor.aliases || []).join(', ');aliases.maxLength=3000;
     const pronunciation=document.createElement('input');pronunciation.value=actor.pronunciation || '';pronunciation.maxLength=300;pronunciation.placeholder='Optional instruction for supported providers';
+    const sayAsName=document.createElement('select');sayAsName.dataset.choirSayAsName='';sayAsName.setAttribute('aria-label','Name spelling to pronounce');
+    const refreshPronunciationTargets=()=>{
+      const selected=sayAsName.options.length?sayAsName.value:actor.sayAsName || '',written=name.value.trim();sayAsName.replaceChildren();option(sayAsName,'',written);
+      const variants=[...new Map(aliases.value.split(',').map(value=>value.trim()).filter(value=>value && normalizeName(value)!==normalizeName(written)).map(value=>[normalizeName(value),value])).values()];
+      for(const alias of variants)option(sayAsName,alias,alias);
+      if(selected && !variants.includes(selected))option(sayAsName,selected,`${selected} · saved spelling`);
+      sayAsName.value=selected;
+    };
+    refreshPronunciationTargets();
     const sayAs=document.createElement('input');sayAs.value=namePronunciation(actor);sayAs.maxLength=120;sayAs.placeholder='e.g. Eh-Lee-Zah';sayAs.dataset.choirSayAs='';
+    const pronunciationHint=document.createElement('small');pronunciationHint.dataset.choirPronunciationHint='';
+    const updatePronunciationHint=()=>{
+      const spelling=sayAs.value.trim(),written=namePronunciationTarget({speaker:name.value,sayAsName:sayAsName.value});
+      pronunciationHint.textContent=(spelling?`Every voice says “${written}” as “${spelling}”. `:`Enter how to say the written name “${written}”. `)+'Choose the name or alias used in the story under Name spelling to pronounce. Story text stays unchanged. Leave Say name as blank to use its written spelling.';
+    };
+    // An explicit edit of the older field must not silently disappear just
+    // because this editor has already written an empty sayAs property.
+    const promoteNameMapping=()=>{
+      if(!reserved){const spelling=namePronunciation({speaker:name.value.trim(),sayAsName:sayAsName.value,pronunciation:pronunciation.value});if(spelling)sayAs.value=spelling;}
+      updatePronunciationHint();
+    };
+    pronunciation.addEventListener('input',promoteNameMapping);pronunciation.addEventListener('change',promoteNameMapping);
+    sayAs.addEventListener('input',updatePronunciationHint);sayAsName.addEventListener('change',updatePronunciationHint);
+    for(const node of [name,aliases])node.addEventListener('input',()=>{refreshPronunciationTargets();updatePronunciationHint();});updatePronunciationHint();
     const accent=document.createElement('input');accent.value=actor.accent || '';accent.maxLength=300;accent.placeholder='Used only when the provider supports accent or instructions';
     const excluded=document.createElement('input');excluded.type='checkbox';excluded.checked=Boolean(actor.excluded);
 
@@ -1874,11 +2029,11 @@ export async function setup(ctx) {
     voiceSearchRow.append(voiceSearchInput,searchCommBtn,voiceIdBtn,auditionRowBtn);
     voiceWrap.append(voiceSearchRow,voice,voiceIdEditor);
 
-    for (const [label,node] of [['TTS connection',route],['Voice gender filter',gender],['Voice',voiceWrap],['Base delivery style',style],['Aliases (comma separated)',aliases],['Say name as',sayAs],['Speaking instruction',pronunciation],['Accent preference',accent]]) {
+    for (const [label,node] of [['TTS connection',route],['Voice gender filter',gender],['Voice',voiceWrap],['Base delivery style',style],['Aliases (comma separated)',aliases],['Name spelling to pronounce',sayAsName],['Say name as',sayAs],['Speaking instruction',pronunciation],['Accent preference',accent]]) {
       if(node!==route)(node===voiceWrap?voice:node).dataset.choirPersist='';
       const wrap=document.createElement('label');wrap.textContent=label;wrap.append(node);editor.append(wrap);
       if(node===route)wrap.hidden=single;
-      if(node===sayAs)wrap.hidden=reserved;
+      if(node===sayAs || node===sayAsName)wrap.hidden=reserved;
       if(node===pronunciation)wrap.title='Used only when the speech provider supports instructions. Use Say name as for name pronunciation.';
       if(node===gender || node===style)wrap.hidden=true;
       if(node===voiceWrap)wrap.style.cssText='grid-column:1 / -1;margin-top:2px';
@@ -1896,9 +2051,8 @@ export async function setup(ctx) {
     speedSlot.append(speed.root,followButton);speedSection.append(speedHeading,speedSlot);editor.append(speedSection);
     if(!reserved){
       const tools=document.createElement('div');tools.style.gridColumn='1 / -1';
-      const hint=document.createElement('small');hint.textContent='Say name as changes how every voice says this name in this chat. Story text stays unchanged. Leave blank to use its written spelling.';
       const test=document.createElement('button');test.type='button';test.className='et-btn-subtle';test.textContent='Test pronunciation';test.dataset.choirPronunciationTest='';test.setAttribute('aria-label',`Test pronunciation of ${actor.speaker}`);
-      test.onclick=()=>audition(`${name.value.trim()} opened the door.`);tools.append(hint,document.createElement('br'),test);editor.append(tools);
+      test.onclick=()=>audition(`${namePronunciationTarget({speaker:name.value,sayAsName:sayAsName.value})} opened the door.`);tools.append(pronunciationHint,document.createElement('br'),test);editor.append(tools);
     }
     if(!required){
       const move=document.createElement('button');move.type='button';move.className='et-btn-subtle';
@@ -1916,7 +2070,7 @@ export async function setup(ctx) {
     container.append(row);
     paintSpeakerSpeeds();
     updateCardProviderControls();
-    return {row,voiceChoice:()=>[name.value.trim(),voice.value],setExcluded:value=>{excluded.checked=value;},read:()=>({speaker:name.value.trim(),voice:single?actor.voice || '':voice.value,route:single?actor.route || '':route.value,gender:gender.value,style:style.value.trim(),aliases:aliases.value.split(',').map(a=>a.trim()).filter((a,i,list)=>a && normalizeName(a)!==normalizeName(name.value) && list.findIndex(b=>normalizeName(b)===normalizeName(a))===i),pronunciation:pronunciation.value.trim(),sayAs:sayAs.value.trim(),accent:accent.value.trim(),excluded:excluded.checked})};
+    return {row,voiceChoice:()=>[name.value.trim(),voice.value],setExcluded:value=>{excluded.checked=value;},read:()=>({speaker:name.value.trim(),voice:single?actor.voice || '':voice.value,route:single?actor.route || '':route.value,gender:gender.value,style:style.value.trim(),aliases:aliases.value.split(',').map(a=>a.trim()).filter((a,i,list)=>a && normalizeName(a)!==normalizeName(name.value) && list.findIndex(b=>normalizeName(b)===normalizeName(a))===i),pronunciation:pronunciation.value.trim(),sayAs:sayAs.value.trim(),sayAsName:sayAsName.value,accent:accent.value.trim(),excluded:excluded.checked})};
   }
   function renderCast() {
     $('fixed').replaceChildren();$('npcs').replaceChildren();
@@ -2002,6 +2156,7 @@ export async function setup(ctx) {
   }
   function validateNumericSettings(c){
     for(const actor of [...(c.fixed || []),...Object.values(c.casts || {}).flat()])if(actor.sayAs!==undefined && (typeof actor.sayAs!=='string' || actor.sayAs.length>120 || /[<>\[\]\r\n]/u.test(actor.sayAs)))throw new Error('Say name as must be plain pronunciation spelling, up to 120 characters.');
+    for(const actor of [...(c.fixed || []),...Object.values(c.casts || {}).flat()])if(actor.sayAsName!==undefined && (typeof actor.sayAsName!=='string' || actor.sayAsName.length>100 || /[<>\r\n]/u.test(actor.sayAsName)))throw new Error('Name spelling to pronounce must be plain text, up to 100 characters.');
     if(!Number.isInteger(c.chunk) || c.chunk<80 || c.chunk>MAX_SPEECH_CHARS)throw new Error('Max characters per request must be a whole number from 80 to 10000 (default: 1800).');
     if(!Number.isInteger(c.concurrency) || c.concurrency<1 || c.concurrency>4)throw new Error('Choose 1–4 concurrent TTS requests.');
     if(!Number.isInteger(c.prefetch) || c.prefetch<0 || c.prefetch>4)throw new Error('Prefetch must be 0–4 passages.');
@@ -2094,7 +2249,9 @@ export async function setup(ctx) {
   function stop(show=true,keepBed=false,keepMusic=false) {
     if(show)cancelAutoReplies();
     if(activePlayback && currentAudio)savePosition(currentAudio.currentTime || 0);
-    revision++;controller?.abort();controller=null;planningSource=null;advancePlayback=null;skipAudio=null;generationPolicyChanged=null;activePlayback=null;currentSpeaker='';currentGroupLevel=null;currentGroupNames=[];mixerPlaybackSegments=null;
+    revision++;controller?.abort();controller=null;
+    for(const pending of paragraphPrefetchControllers)pending.abort();paragraphPrefetchControllers.clear();
+    planningSource=null;advancePlayback=null;skipAudio=null;generationPolicyChanged=null;activePlayback=null;currentSpeaker='';currentGroupLevel=null;currentGroupNames=[];mixerPlaybackSegments=null;
     currentAudio?.pause();finishAudio?.();currentAudio=null;finishAudio=null;
     if(objectUrl){URL.revokeObjectURL(objectUrl);objectUrl=null;}
     audioReady=false;if(keepBed)pauseBeds(false);else if(keepMusic && continuousMusic()){stopBeds('ambience');pauseBeds(false);}else stopBeds();
@@ -2147,7 +2304,7 @@ export async function setup(ctx) {
   }
   async function loadVoices(version=loadVersion) {
     cataloguesReady=false;
-    voiceCatalogues.clear();
+    ++voiceCatalogueRevision;voiceCatalogues.clear();
     // Keep saved editors available even if the catalogue request fails.
     renderCast();
     const catalogue=await ensureCatalogue(scope(config),version);
@@ -2309,8 +2466,24 @@ export async function setup(ctx) {
   const cardFingerprint=card=>sha256Hex(JSON.stringify(['name','description','personality','scenario','first_mes'].map(field=>card?.[field] || '')));
   function rolesForCard(card){
     const local=characterCardRoles(card || {}),cached=config?.cardCastAnalysis?.key===activeCardKey?validateCardRoles(config.cardCastAnalysis.roles):[];
+    // A saved analysis may predate improved local profile detection. Keep its
+    // extra people, but let explicit profiles restore missing identities and
+    // aliases without charging for another analysis of the unchanged card.
+    const roles=local.map(role=>({...role,aliases:[...(role.aliases || [])]}));
+    const identity=role=>[role.name,...(role.aliases || [])].map(normalizeName);
+    const titles=new Set([card?.name,String(card?.name || '').split(/\s*\|+\s*/)[0]].map(normalizeName));
+    for(const role of cached){
+      if(local.length>1 && titles.has(normalizeName(role.name)))continue;
+      const exact=roles.find(candidate=>normalizeName(candidate.name)===normalizeName(role.name));
+      const names=identity(role),matches=roles.filter(candidate=>identity(candidate).some(name=>names.includes(name)));
+      // One cached group description cannot merge two separately named people.
+      if(!exact && matches.length>1)continue;
+      const existing=exact || matches[0];
+      if(existing)existing.aliases=[...new Set([...existing.aliases,role.name,...(role.aliases || [])])].filter(name=>normalizeName(name)!==normalizeName(existing.name)).slice(0,30);
+      else roles.push({...role,aliases:[...(role.aliases || [])]});
+    }
     const npcNames=new Set((config?.cardCastNPCs || []).map(normalizeName));
-    return (cached.length?cached:local).filter(role=>![role.name,...(role.aliases || [])].some(name=>npcNames.has(normalizeName(name))));
+    return validateCardRoles(roles).filter(role=>![role.name,...(role.aliases || [])].some(name=>npcNames.has(normalizeName(name))));
   }
   function expandCardRoles(value,roles,character){
     let renamed=false;
@@ -2337,7 +2510,7 @@ export async function setup(ctx) {
         const existing=value.fixed.find(actor=>matchesRole(actor,role));
         if(existing){mergeAliases(existing,role);continue;}
         const prior=Object.values(value.casts || {}).flat().find(actor=>matchesRole(actor,role));
-        const added={...template,...prior,speaker:role.name,voice:prior?.voice || '',aliases:role.aliases || [],pronunciation:prior?.pronunciation || '',sayAs:prior?namePronunciation(prior):''};
+        const added={...template,...prior,speaker:role.name,voice:prior?.voice || '',aliases:role.aliases || [],pronunciation:prior?.pronunciation || '',sayAs:prior?namePronunciation(prior):'',sayAsName:prior?.sayAsName || ''};
         transferChoices(prior,added);value.fixed.push(added);renamed=true;
       }
       const names=new Set(value.fixed.flatMap(actor=>[actor.speaker,...(actor.aliases || [])]).map(normalizeName));
@@ -2348,7 +2521,7 @@ export async function setup(ctx) {
       const template=value.fixed[2],occupied=new Set(value.fixed.filter((_,index)=>index!==2).map(actor=>normalizeName(actor.speaker)));
       const leads=roles.filter(role=>!occupied.has(normalizeName(role.name))).map((role,index)=>{
         const prior=Object.values(value.casts || {}).flat().find(actor=>matchesRole(actor,role));
-        const added={...template,...prior,speaker:role.name,voice:prior?.voice || (index===0?template.voice:''),aliases:[...new Set([...(roles.length===1?template.aliases || []:[]),...(role.aliases || [])])],pronunciation:prior?.pronunciation || (roles.length===1?template.pronunciation:'') || '',sayAs:prior?namePronunciation(prior):roles.length===1?namePronunciation(template):''};
+        const added={...template,...prior,speaker:role.name,voice:prior?.voice || (index===0?template.voice:''),aliases:[...new Set([...(roles.length===1?template.aliases || []:[]),...(role.aliases || [])])],pronunciation:prior?.pronunciation || (roles.length===1?template.pronunciation:'') || '',sayAs:prior?namePronunciation(prior):roles.length===1?namePronunciation(template):'',sayAsName:prior?prior.sayAsName || '':roles.length===1?template.sayAsName || '':''};
         transferChoices(prior,added);if(index===0)transferChoices(template,added);
         return added;
       });
@@ -2681,6 +2854,31 @@ export async function setup(ctx) {
   const userScroll=event=>{if(followContainer && (event.type!=='keydown' || /^(?:Arrow(?:Up|Down)|Page(?:Up|Down)|Home|End| )$/.test(event.key) && !event.target.closest?.('input,textarea,select,[contenteditable]')) && (followContainer.contains(event.target) || event.target===document.body))followPaused=true;};
   for(const type of ['wheel','touchmove','keydown'])document.addEventListener(type,userScroll,{capture:true,passive:true});
   unsubs.push(()=>{for(const type of ['wheel','touchmove','keydown'])document.removeEventListener(type,userScroll,{capture:true});});
+  // Decode once when audio arrives, while earlier speech plays. Keep only the
+  // measured gain, not the decoded PCM, and observe background failures here.
+  const loudnessMeasurements=new WeakMap();
+  function prepareLoudness(blob){
+    if(!loudnessMeasurements.has(blob))loudnessMeasurements.set(blob,(async()=>{
+      const AudioContextClass=globalThis.AudioContext || globalThis.webkitAudioContext;
+      if(!AudioContextClass)return {gain:1};
+      audioContext ||= new AudioContextClass();
+      const decoded=await audioContext.decodeAudioData(await blob.arrayBuffer());
+      return {gain:loudnessGain(Array.from({length:decoded.numberOfChannels},(_,i)=>decoded.getChannelData(i)),undefined,decoded.sampleRate)};
+    })().catch(error=>({gain:1,error})));
+    return loudnessMeasurements.get(blob);
+  }
+  function preparePlayback(blob,segment,snapshot){
+    if(blob && snapshot.normalizeLoudness && !segment?.unison && !isBed(segment))void prepareLoudness(blob);
+    return blob;
+  }
+  function playbackLoudness(blob,signal){
+    return new Promise((resolve,reject)=>{
+      const cancel=()=>{signal.removeEventListener('abort',cancel);reject(abortError());};
+      if(signal.aborted){cancel();return;}
+      signal.addEventListener('abort',cancel,{once:true});
+      prepareLoudness(blob).then(value=>{signal.removeEventListener('abort',cancel);resolve(value);});
+    });
+  }
   async function playBlob(blob,signal,speaker='',offset=0,normalize=false,paused=false,track=null) {
     if(signal.aborted)throw abortError();
     const url=URL.createObjectURL(blob);objectUrl=url;currentAudio=new Audio(url);
@@ -2701,9 +2899,10 @@ export async function setup(ctx) {
         audioContext ||= new AudioContextClass();await audioContext.resume();
         if(signal.aborted)throw abortError();
         if(normalize && !item?.unison){
-          const decoded=await audioContext.decodeAudioData(await blob.arrayBuffer());
+          const measured=await playbackLoudness(blob,signal);
           if(signal.aborted)throw abortError();
-          currentNormalize=loudnessGain(Array.from({length:decoded.numberOfChannels},(_,i)=>decoded.getChannelData(i)));
+          currentNormalize=measured.gain;
+          if(measured.error)throw measured.error;
         }
         mediaSource=audioContext.createMediaElementSource(audio);gain=audioContext.createGain();currentGain=gain;
         mediaSource.connect(gain);gain.connect(audioContext.destination);audio.volume=1;applyVolume();
@@ -2753,8 +2952,8 @@ export async function setup(ctx) {
     const prefix=actor?.style?`${actor.style}. `:'',style=segment.style || '';
     return {...segment,style:prefix && style.startsWith(prefix)?style.slice(prefix.length):style===actor?.style?'':style,...(segment.unison?{unison:segment.unison.map(member=>withoutBase(member,cast))}:{})};
   };
-  const actorFor=(segment,snapshot)=>[...(snapshot.fixed || []),...(snapshot.casts?.[scope(snapshot)] || [])].find(actor=>normalizeName(actor.speaker)===normalizeName(segment.speaker));
-  const pronunciationActors=snapshot=>[...(snapshot.fixed || []),...(snapshot.casts?.[scope(snapshot)] || snapshot.npcs || [])];
+  const pronunciationActors=snapshot=>[...(snapshot.fixed || []),...(snapshot.npcs ?? snapshot.casts?.[scope(snapshot)] ?? [])];
+  const actorFor=(segment,snapshot)=>pronunciationActors(snapshot).find(actor=>normalizeName(actor.speaker)===normalizeName(segment.speaker));
   const speechTextOptions=snapshot=>({speechText:text=>respellNames(text,pronunciationActors(snapshot)),atomicWords:namePronunciations(pronunciationActors(snapshot)).map(rule=>rule.name)});
   function recordingSpeechText(segment,snapshot){return segment.kind?null:speechMembers(segment).map(member=>respellNames(member.text,pronunciationActors(snapshot)));}
   function recordedSpeechMatches(recording,index,snapshot){
@@ -2780,7 +2979,7 @@ export async function setup(ctx) {
       if(Array.isArray(allowed) && !allowed.includes(actor.accent))throw new Error(`Accent ${actor.accent} is not supported by ${connection.name}. Supported accents: ${allowed.join(', ')}.`);
       parameters.accent=actor.accent;
     }
-    const legacyMapping=actor && namePronunciation({speaker:actor.speaker,pronunciation:actor.pronunciation});
+    const legacyMapping=actor && namePronunciation({speaker:actor.speaker,sayAsName:actor.sayAsName,pronunciation:actor.pronunciation});
     const instructions=[snapshot.useStyle?segment.style:'',legacyMapping?'':actor?.pronunciation,actor?.accent && !supported.accent?`Accent: ${actor.accent}`:''].filter(Boolean).join('. ');
     if(styleParam && instructions)parameters[styleParam]=instructions;
     return {segment:{...segment,text:respellNames(segment.text,pronunciationActors(snapshot)),route,style:openRouterStyle?instructions:family==='fish_audio' && snapshot.useStyle?segment.style:''},connection,parameters};
@@ -2945,21 +3144,26 @@ export async function setup(ctx) {
     }
     return new Blob([mixUnisonAudio(tracks,audioContext.sampleRate,{normalize:snapshot.normalizeLoudness})],{type:'audio/wav'});
   }
-  function createStreamingPlayer(snapshot,source,cached,ctrl,token) {
+  function createStreamingPlayer(snapshot,source,cached,ctrl,token,{pruneStale=false,retain=[]}={}) {
     const segments=[];
     const warnings=new Set();
     const warnFoley=error=>{warnings.add(error.message);if(token===revision)showFoleyStatus(`SFX skipped: ${[...warnings].join('; ')}. Speech continues.`);};
     const ready=new Map();
     const resolvers=new Map();
     const synthesisStages=new Map();
-    const synthesisStatus=(index,message)=>{synthesisStages.set(index,message);if(token===revision && index===playIdx && !currentAudio)status(message);};
+    const synthesisStatus=(index,format)=>{synthesisStages.set(index,format);if(token===revision && index===playIdx && !currentAudio)status(format());};
     let nextToSynthesize=0;
     let activeWorkers=0;
     let isDoneAdding=false;
     let wakePlayback=null;
     const blobs=[];
-    let totalExpected=0;
     let playIdx=0,failed=false,saveError='',saveQueue=Promise.resolve();
+    const waitForSaves=()=>new Promise((resolve,reject)=>{
+      const cancel=()=>reject(abortError());
+      if(ctrl.signal.aborted){cancel();return;}
+      ctrl.signal.addEventListener('abort',cancel,{once:true});
+      saveQueue.then(resolve,reject).finally(()=>ctrl.signal.removeEventListener('abort',cancel));
+    });
     const skipped=new Set(),failures=new Set(),scheduled=new Set();let jumpTo=null,pauseNext=false,initialized=false,resumePending=Boolean(source.resume),wakePolicy;
     const blockStart=(index)=>{const passage=segments[index]?.passageIndex ?? index;while(index>0 && (segments[index-1].passageIndex ?? index-1)===passage)index--;return index;};
     advancePlayback=(direction=1)=>{
@@ -2975,9 +3179,35 @@ export async function setup(ctx) {
     const inflight=new Map();
     // Upgrade old complete recordings without discarding their audio.
     if(!cached?.passages)for(const [index,segment] of (cached?.segments || []).entries())if(cached.blobs?.[index] && (!segment.turns || segment.turns.length===1) && recordedSpeechMatches(cached,index,snapshot))passages[cacheKey(segment,snapshot)]=cached.blobs[index];
+    let currentKeys=null,savedKeys=null;
+    const currentPassageKeys=()=>currentKeys ||= (()=>{
+      const keys=new Set();
+      // `retain` is the unfiltered plan. It keeps audio for speakers currently
+      // set to No voice, so turning them back on can reuse what was cached.
+      for(const segment of [...segments,...retain]){
+        try{keys.add(cacheKey(segment,snapshot));}catch{}
+        if(segment.unison)for(const member of speechMembers(segment))try{keys.add(cacheKey(member,snapshot));}catch{}
+      }
+      return [...keys];
+    })();
+    const previousPassageKeys=()=>cached?.passageKeys || Object.keys(cached?.passages || {});
+    const savedPassageKeys=()=>savedKeys ||= pruneStale?currentPassageKeys():[...new Set([...previousPassageKeys(),...currentPassageKeys()])];
+    // A full replay keeps the current plan and the immediately previous
+    // generation, so one voice, route, mode or text change can be undone
+    // without paying for the same speech again. Older generations are dropped,
+    // which bounds the record at two plans. Section playback keeps every clip.
+    const pruneStalePassages=()=>{
+      if(!pruneStale)return;
+      const keep=new Set(currentPassageKeys());
+      for(const key of previousPassageKeys())keep.add(key);
+      for(const key of Object.keys(passages))if(!keep.has(key))delete passages[key];
+    };
     const persist=()=>{
-      const value={content:source.content,transcript:source.transcript,segments:[...segments],blobs:[...blobs],speechTexts:segments.map(segment=>recordingSpeechText(segment,snapshot)),passages:{...passages},sfxPlacement:SFX_PLACEMENT_VERSION,retention:snapshot.retention};
-      saveQueue=saveQueue.then(()=>recordingStore('put',recordingKey(source.chatId,source.messageId),value)).catch(error=>{saveError=error.message;});
+      const value={content:source.content,transcript:source.transcript,segments:[...segments],blobs:[...blobs],speechTexts:segments.map(segment=>recordingSpeechText(segment,snapshot)),passages:{...passages},passageKeys:isDoneAdding?savedPassageKeys():(cached?.passageKeys || []),sfxPlacement:SFX_PLACEMENT_VERSION,retention:snapshot.retention};
+      // Submit in order, but do not make synthesis or audible playback wait for
+      // disk commits. IndexedDB orders these read/write transactions itself.
+      const saving=recordingStore('put',recordingKey(source.chatId,source.messageId),value).catch(error=>{saveError=error.message;});
+      saveQueue=Promise.all([saveQueue,saving]).then(()=>{});
       return saveQueue;
     };
     // Beds load beside the speech queue, so a slow download never delays the words.
@@ -2987,7 +3217,7 @@ export async function setup(ctx) {
         const seg=segments[index],key=cacheKey(seg,snapshot);
         const signal=seg.kind==='music' && continuousMusic()?bedPrefetch.signal:ctrl.signal;
         blobs[index]=passages[key] ||= await fetchFoleyAudio(seg,snapshot,signal);
-        await persist();return blobs[index];
+        void persist();return blobs[index];
       })().catch(error=>{if(!ctrl.signal.aborted && token===revision)warnFoley(error);throw error;}));
       return bedLoads.get(index);
     };
@@ -3005,7 +3235,15 @@ export async function setup(ctx) {
 
     function pump() {
       const concurrency=Math.max(1,Number(snapshot.concurrency)||1);
-      while(!failed && !ctrl.signal.aborted && activeWorkers<concurrency && nextToSynthesize<segments.length && nextToSynthesize<=playIdx+Number(snapshot.prefetch ?? 1)) {
+      // Background markers never occupy playback time. Count audible passages
+      // for lookahead, so a music/ambience marker cannot postpone the next TTS
+      // request until the playing clip ends, especially at faster speeds.
+      let prefetchEnd=playIdx, audibleAhead=0;
+      for(;prefetchEnd<segments.length;prefetchEnd++){
+        if(isBed(segments[prefetchEnd]) || playbackExcluded(segments[prefetchEnd]))continue;
+        if(audibleAhead++>=Number(snapshot.prefetch ?? 1))break;
+      }
+      while(!failed && !ctrl.signal.aborted && activeWorkers<concurrency && nextToSynthesize<segments.length && nextToSynthesize<=prefetchEnd) {
         const idx=nextToSynthesize++;
         if(playbackExcluded(segments[idx]))continue;
         if(isBed(segments[idx])){if(!segments[idx][segments[idx].kind].stop)loadBed(idx).catch(()=>{});continue;}
@@ -3017,20 +3255,20 @@ export async function setup(ctx) {
           try {
             const seg=segments[idx];
             if(ctrl.signal.aborted)throw abortError();
-            synthesisStatus(idx,`Synthesizing ${idx+1}/${totalExpected || segments.length}: ${seg.speaker} · ${seg.voice}`);
+            synthesisStatus(idx,()=>`Synthesizing ${audioProgress(segments,idx)}: ${seg.speaker} · ${seg.voice}`);
             const request=synthesisSettings(seg,snapshot),key=cacheKey(seg,snapshot);
             let blob=passages[key];
             if(!blob && inflight.has(key))blob=await inflight.get(key);
             if(!blob){flightKey=key;const promise=new Promise((resolve,reject)=>{resolveFlight=resolve;rejectFlight=reject;});promise.catch(()=>{});inflight.set(key,promise);}
             if(blob) {
-              synthesisStatus(idx,`Loading cached audio ${idx+1}/${totalExpected || segments.length}: ${seg.speaker}`);
+              synthesisStatus(idx,()=>`Loading cached audio ${audioProgress(segments,idx)}: ${seg.speaker}`);
             } else if(seg.kind==='sfx') {
               blob=await fetchFoleyAudio(seg,snapshot,ctrl.signal);
             } else if(seg.unison){
               blob=await synthesizeUnisonBlob(seg,snapshot,ctrl.signal,async member=>{
                 const memberKey=cacheKey(member,snapshot);
                 let audio=passages[memberKey];
-                if(!audio){audio=await synthesizeSpeechBlob(member,snapshot,ctrl.signal);passages[memberKey]=audio;await persist();}
+                if(!audio){audio=await synthesizeSpeechBlob(member,snapshot,ctrl.signal);passages[memberKey]=audio;void persist();}
                 return audio;
               });
             } else {
@@ -3039,7 +3277,8 @@ export async function setup(ctx) {
             if(token!==revision || ctrl.signal.aborted)throw abortError();
             resolveFlight?.(blob);
             blobs[idx]=blob;passages[key]=blob;
-            await persist();
+            preparePlayback(blob,seg,snapshot);
+            void persist();
             void refreshCacheStatus().catch(()=>{});
             resolvers.get(idx)({blob});
           } catch(error) {
@@ -3055,10 +3294,10 @@ export async function setup(ctx) {
       }
     }
 
-    function push(newSegments,total) {
-      if(total)totalExpected=total;
+    function push(newSegments) {
       // Beds load as soon as they are known, so a new bed is ready when its marker plays.
       for(const s of newSegments){segments.push(s);if(isBed(s) && !s[s.kind].stop && !playbackExcluded(s))loadBed(segments.length-1).catch(()=>{});}
+      currentKeys=null;savedKeys=null;
       mixerPlaybackSegments=segments;
       if(!initialized && segments.length){initialized=true;if(source.resume){const start=segments.findIndex(segment=>segment.passageIndex>source.resume.passage || (segment.passageIndex===source.resume.passage && segment.chunkIndex>=(source.resume.chunk || 0)));playIdx=start<0?segments.length:start;nextToSynthesize=playIdx;}}
       pump();
@@ -3067,6 +3306,7 @@ export async function setup(ctx) {
 
     function finish() {
       isDoneAdding=true;
+      pruneStalePassages();
       wakePlayback?.();
     }
 
@@ -3080,15 +3320,15 @@ export async function setup(ctx) {
         }
         if(playbackExcluded(segments[playIdx]) || isBed(segments[playIdx])){playIdx++;nextToSynthesize=Math.max(nextToSynthesize,playIdx);pump();continue;}
         ensureSlot(playIdx);pump();
-        status(synthesisStages.get(playIdx) || `Waiting for audio ${playIdx+1}/${totalExpected || segments.length}: ${segments[playIdx].speaker}`);updateTransport();
+        status(synthesisStages.get(playIdx)?.() || `Waiting for audio ${audioProgress(segments,playIdx)}: ${segments[playIdx].speaker}`);updateTransport();
         const outcome=await Promise.race([ready.get(playIdx),new Promise(resolve=>{wakePolicy=resolve;})]);wakePolicy=null;
         if(outcome.policy)continue;
         if(token!==revision || ctrl.signal.aborted)throw abortError();
         if(outcome.skip){playIdx++;nextToSynthesize=Math.max(nextToSynthesize,playIdx);pump();continue;}
-        if(outcome.error){await saveQueue;throw new Error(`${outcome.error.message} Completed passages were retained.${saveError?` Storage failed: ${saveError}`:''}`);}
+        if(outcome.error){await waitForSaves();throw new Error(`${outcome.error.message} Completed passages were retained.${saveError?` Storage failed: ${saveError}`:''}`);}
         const blob=outcome.blob;
         const seg=segments[playIdx];
-        status(`Playing ${playIdx+1}/${totalExpected || segments.length}: ${seg.speaker}`);
+        status(`Playing ${audioProgress(segments,playIdx)}: ${seg.speaker}`);
         activePlayback={chatId:source.chatId,messageId:source.messageId,content:source.content,passage:seg.passageIndex ?? playIdx,chunk:seg.chunkIndex ?? 0};
         const offset=resumePending && source.resume.passage===activePlayback.passage && source.resume.chunk===activePlayback.chunk?source.resume.seconds:0;resumePending=false;
         const paused=pauseNext;pauseNext=false;
@@ -3102,9 +3342,9 @@ export async function setup(ctx) {
         activePlayback={...activePlayback,passage:segments[playIdx]?.passageIndex ?? (activePlayback.passage+1),chunk:segments[playIdx]?.chunkIndex ?? 0,complete:isDoneAdding && playIdx===segments.length};
         savePosition(0);activePlayback=null;pump();
       }
-      await saveQueue;
+      await waitForSaves();
       if(saveError)status(`Audio could not be saved: ${saveError}`,true);
-      return {blobs,segments,warnings:[...warnings]};
+      return {blobs,segments,warnings:[...warnings],passages,passageKeys:savedPassageKeys()};
     })().finally(()=>{if(token===revision)fadeOutBeds();});
 
     // Observe failures immediately while the next planning section is pending.
@@ -3146,7 +3386,12 @@ export async function setup(ctx) {
     const resume=options.resume?await ctx.settings.get(`position:${chatId}`):null;
     if(token!==revision || ctrl.signal.aborted)throw abortError();
     const validResume=resume?.messageId===planSource.messageId && sameSpeech(resume.content,planSource.content) && !resume.complete?resume:null;
+    // Only a whole-message playback can safely discard other saved clips.
+    const fullPlayback=options.clip===undefined && options.indices===undefined;
     const selected=plan.segments.flatMap((segment,index)=>options.indices && !options.indices.includes(index)?[]:[{...segment,passageIndex:index}]);
+    // Keep every clip the plan can produce, including speakers and sound types
+    // currently switched off, so changing those controls can reuse cached audio.
+    const retain=fullPlayback?playbackBatches(selected,{...snapshot,enableSfx:true,enableAmbience:true,enableMusic:true},{filterMuted:false}):[];
     let segments=snapshot.batchSpeech?playbackBatches(selected,snapshot):selected.flatMap(segment=>playbackBatches([segment],snapshot));
     if(options.clip!==undefined){
       if(!snapshot.batchSpeech || !Number.isInteger(options.clip) || !segments[options.clip] || isBed(segments[options.clip]))throw new Error('This audio clip changed. Choose a current clip.');
@@ -3164,13 +3409,13 @@ export async function setup(ctx) {
     if(source.resume && cached?.signature!==signature && (snapshot.batchSpeech || cached?.segments?.some(segment=>segment.turns?.length>1) || outdatedSfxRecording(cached || {})))source.resume=null;
     setBusy(true);
     try {
-      const player=createStreamingPlayer(snapshot,source,cached,ctrl,token);
-      player.push(segments,segments.length);
+      const player=createStreamingPlayer(snapshot,source,cached,ctrl,token,{pruneStale:fullPlayback,retain});
+      player.push(segments);
       player.finish();
-      const {blobs,warnings}=await player.playbackPromise;
+      const {blobs,warnings,passages,passageKeys}=await player.playbackPromise;
       {
         if(token!==revision || ctrl.signal.aborted)throw abortError();
-        try{const partial=await recordingStore('get',key);await recordingStore('put',key,{...partial,content:source.content,transcript:source.transcript,signature,segments,blobs,speechTexts:segments.map(segment=>recordingSpeechText(segment,snapshot)),sfxPlacement:SFX_PLACEMENT_VERSION,retention:snapshot.retention});storageError='';}
+        try{const partial=await recordingStore('get',key);await recordingStore('put',key,{...partial,content:source.content,transcript:source.transcript,signature,segments,blobs,passages,passageKeys,speechTexts:segments.map(segment=>recordingSpeechText(segment,snapshot)),sfxPlacement:SFX_PLACEMENT_VERSION,retention:snapshot.retention});storageError='';}
         catch(error){storageError=error.message;}
       }
       if(token===revision){renderMessages();status((storageError?`Playback finished. Audio could not be saved: ${storageError}`:snapshot.retention==='session'?'Playback finished. Audio kept for this session; Replay is available beside the message.':'Playback finished. Audio saved on this device; Replay is available beside the message.')+foleyWarning(warnings));}
@@ -3201,7 +3446,7 @@ export async function setup(ctx) {
         status('Updating pronunciation in saved speech…');
         const source={chatId:targetChat,messageId,content:recording.content,transcript:recording.transcript};
         const player=createStreamingPlayer(snapshot,source,recording,ctrl,token);
-        player.push(recording.segments,recording.segments.length);player.finish();
+        player.push(recording.segments);player.finish();
         const {warnings}=await player.playbackPromise;
         if(token===revision)status('Playback finished. Name pronunciation updated.'+foleyWarning(warnings));
         return;
@@ -3213,7 +3458,14 @@ export async function setup(ctx) {
         const blob=recording.blobs[index];
         if(!blob || speakerExcluded(recording.segments[index].speaker) || recording.segments[index].kind==='sfx' && config.enableSfx===false || isBed(recording.segments[index])){index++;continue;}
         if(token!==revision || ctrl.signal.aborted)throw abortError();
-        status(`Replaying ${index+1}/${recording.blobs.length}: ${recording.segments[index].speaker}`);
+        // Cached replay has no synthesis pump. Prepare the current and next
+        // audible clip before handoff, skipping background markers.
+        let ahead=0;
+        for(let next=index;next<recording.blobs.length && ahead<2;next++){
+          if(playbackExcluded(recording.segments[next]) || isBed(recording.segments[next]))continue;
+          preparePlayback(recording.blobs[next],recording.segments[next],snapshot);ahead++;
+        }
+        status(`Replaying ${audioProgress(recording.segments,index)}: ${recording.segments[index].speaker}`);
         const segment=recording.segments[index];
         let nextIndex=index+1;
         advancePlayback=(direction=1)=>{if(!skipAudio || ctrl.signal.aborted || token!==revision)return;const passage=segment.passageIndex ?? index;if(direction<0){let start=index;while(start>0 && (recording.segments[start-1].passageIndex ?? start-1)===passage)start--;nextIndex=Math.max(0,start-1);const previous=recording.segments[nextIndex].passageIndex ?? nextIndex;while(nextIndex>0 && (recording.segments[nextIndex-1].passageIndex ?? nextIndex-1)===previous)nextIndex--;}else while(nextIndex<recording.segments.length && (recording.segments[nextIndex].passageIndex ?? nextIndex)===passage)nextIndex++;pauseNext=heldPaused();skipAudio();};
@@ -3667,7 +3919,7 @@ export async function setup(ctx) {
 
   async function synthesizeSegment(seg,snapshot,signal) {
     if(seg.kind)return fetchFoleyAudio(seg,snapshot,signal);
-    if(seg.unison)return synthesizeUnisonBlob(seg,snapshot,signal,member=>getCachedOrSynthesize(member,snapshot,signal));
+    if(seg.unison)return synthesizeUnisonBlob(seg,snapshot,signal,member=>getCachedOrSynthesize(member,snapshot,signal,false));
     return synthesizeSpeechBlob(seg,snapshot,signal);
   }
 
@@ -3677,13 +3929,13 @@ const paragraphAudioCache = new Map();
   function segmentCacheKey(seg, snap) {
     return cacheKey(seg,snap);
   }
-  function getCachedOrSynthesize(seg, snap, sig) {
+  function getCachedOrSynthesize(seg, snap, sig, prepare=true) {
     const k = segmentCacheKey(seg, snap);
     const cached=paragraphAudioCache.get(k);
-    if(cached && !cached.signal?.aborted)return cached.promise;
+    if(cached && !cached.signal?.aborted)return cached.promise.then(blob=>prepare?preparePlayback(blob,seg,snap):blob);
     const entry={signal:sig};
     const prom = synthesizeSegment(seg, snap, sig).then(blob=>{
-      sig?.throwIfAborted();entry.signal=null;return blob;
+      sig?.throwIfAborted();entry.signal=null;return prepare?preparePlayback(blob,seg,snap):blob;
     }).catch(err => {
       if(paragraphAudioCache.get(k)===entry)paragraphAudioCache.delete(k);
       throw err;
@@ -3799,6 +4051,8 @@ const paragraphAudioCache = new Map();
 
       const ctrl = new AbortController();
       controller = ctrl;
+      paragraphPrefetchControllers.add(ctrl);
+      let finishParagraphWork=()=>Promise.resolve();
       updateTransport();
       const onAbort = () => ctrl.abort();
       signal?.addEventListener('abort', onAbort, { once: true });
@@ -3820,36 +4074,72 @@ const paragraphAudioCache = new Map();
         const prefetchBeds=list=>{for(const batch of list)if(isBed(batch) && !batch[batch.kind].stop && !playbackExcluded(batch))getCachedOrSynthesize(batch,snapshot,bedPrefetch.signal).catch(()=>{});};
         prefetchBeds(batches);
 
-        // Prefetch upcoming paragraph in background for 0ms transition latency
+        // Current speech enters the bounded queue first. Background markers do
+        // not consume lookahead, and the next paragraph uses only spare slots
+        // after the remaining audible batches in this paragraph.
+        const speechJobs=new Map(),pendingSpeech=[];
+        let speechWorkers=0,currentBatchIndex=0,nextBatches=[];
+        const pumpSpeech=()=>{
+          if(ctrl.signal.aborted || token!==revision || disposed){for(const job of pendingSpeech.splice(0))job.reject(abortError());return;}
+          while(pendingSpeech.length && speechWorkers<Math.max(1,Number(snapshot.concurrency)||1)){
+            const job=pendingSpeech.shift();
+            if(playbackExcluded(job.batch)){speechJobs.delete(job.key);job.resolve(null);continue;}
+            speechWorkers++;
+            getCachedOrSynthesize(job.batch,snapshot,ctrl.signal).then(job.resolve,job.reject).finally(()=>{speechWorkers--;pumpSpeech();});
+          }
+        };
+        const queueSpeech=batch=>{
+          const key=segmentCacheKey(batch,snapshot);
+          if(!speechJobs.has(key)){
+            let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b;});promise.catch(()=>{});
+            speechJobs.set(key,promise);pendingSpeech.push({key,batch,resolve,reject});pumpSpeech();
+            return promise;
+          }
+          return speechJobs.get(key);
+        };
+        const prefetchSpeech=index=>{
+          if(ctrl.signal.aborted || token!==revision)return;
+          let remaining=1+Math.max(0,Number(snapshot.prefetch)||0);
+          for(let next=index;next<batches.length && remaining>0;next++){
+            if(isBed(batches[next]) || playbackExcluded(batches[next]))continue;
+            queueSpeech(batches[next]);remaining--;
+          }
+          if(snapshot.prefetch>0)for(const batch of nextBatches){
+            if(remaining<=0)break;
+            if(isBed(batch) || playbackExcluded(batch))continue;
+            queueSpeech(batch);remaining--;
+          }
+        };
+        ctrl.signal.addEventListener('abort',pumpSpeech,{once:true});
+        let nextCueWork=Promise.resolve();
+        finishParagraphWork=async()=>{await nextCueWork;await Promise.allSettled([...speechJobs.values()]);};
+
+        // Discover cues early; speech joins the queue when it falls within lookahead.
         if (snapshot.prefetch>0 && nextText && typeof nextText === 'string' && nextText.trim()) {
           // The current paragraph's music has not started yet, so name it directly.
           const carried = lastMusic(paragraphCues.get(paragraphSegments(text, snapshot, speaker).cleanPara)?.music);
-          void loadParagraphCues(nextText, snapshot, '', ctrl.signal, carried).catch(() => {}).then(() => {
-            const next = planAndBatchParagraph(nextText, snapshot, true), first = next.find(batch => !isBed(batch));
-            if (token === revision) prefetchBeds(next);
-            if (!ctrl.signal.aborted && first && !playbackExcluded(first)) {
-              getCachedOrSynthesize(first, snapshot, ctrl.signal).catch(() => {});
-            }
+          nextCueWork=loadParagraphCues(nextText, snapshot, '', ctrl.signal, carried).catch(() => {}).then(() => {
+            if(ctrl.signal.aborted || token!==revision)return;
+            nextBatches=planAndBatchParagraph(nextText,snapshot,true);
+            prefetchBeds(nextBatches);prefetchSpeech(currentBatchIndex);
           }).catch(() => {});
         }
 
         for (let i = 0; i < batches.length; i++) {
           if (ctrl.signal.aborted || signal?.aborted) throw abortError();
+          currentBatchIndex=i;
           const batch = batches[i];
           if(playbackExcluded(batch))continue;
           // The bed keeps running after this paragraph until another bed, a stop entry, stop() or cancellation.
           if(isBed(batch)){followBed(batch[batch.kind],bedSignal=>getCachedOrSynthesize(batch,snapshot,bedSignal).catch(error=>{if(!bedSignal.aborted)warnFoley(error);throw error;}),batch.kind);continue;}
 
-          // Pipeline next batch synthesis concurrently with current batch playback
-          if (snapshot.prefetch>0 && i + 1 < batches.length && !playbackExcluded(batches[i+1]) && !isBed(batches[i+1])) {
-            getCachedOrSynthesize(batches[i + 1], snapshot, ctrl.signal).catch(() => {});
-          }
+          prefetchSpeech(i);
 
           onStatus?.({ kind: 'loading', speaker: batch.speaker });
           try{
-            const blob = await getCachedOrSynthesize(batch, snapshot, ctrl.signal);
+            const blob = await queueSpeech(batch);
             if (ctrl.signal.aborted || signal?.aborted) throw abortError();
-            if(playbackExcluded(batch))continue;
+            if(!blob || playbackExcluded(batch))continue;
             onStatus?.({ kind: 'playing', speaker: batch.speaker });
             await playBlob(blob,ctrl.signal,batch.speaker,0,snapshot.normalizeLoudness,false,{messageId,items:batches,index:i,gapMs:gapBefore(batches,i)});
             played++;
@@ -3857,17 +4147,21 @@ const paragraphAudioCache = new Map();
             if(batch.kind!=='sfx' || ctrl.signal.aborted || signal?.aborted)throw error;
             paragraphAudioCache.delete(segmentCacheKey(batch,snapshot));foleyCache.delete(foleyKey(batch.sfx));warnFoley(error);
           }
-          if (i < batches.length - 1 && !ctrl.signal.aborted && !signal?.aborted) {
-            await new Promise(r => setTimeout(r, 60));
-          }
         }
         onStatus?.({ kind: 'idle', ...(warnings.size?{message:foleyWarning([...warnings]).trim()}: {}) });
         return { played, ...(warnings.size?{warnings:[...warnings]}: {}) };
       } catch(error) {
+        ctrl.abort();
         if(token===revision)stopBeds();
         throw error;
       } finally {
-        signal?.removeEventListener('abort', onAbort);
+        // A finished paragraph may still be preparing nextText. Keep that work
+        // cancellable by Stop, navigation and the caller until its queue drains.
+        void finishParagraphWork().finally(()=>{
+          paragraphPrefetchControllers.delete(ctrl);
+          signal?.removeEventListener('abort',onAbort);
+          if(!disposed)updateTransport();
+        });
         if (controller === ctrl) controller = null;
         if (token === revision) clearReadAlong();
         updateTransport();
@@ -3893,7 +4187,8 @@ const paragraphAudioCache = new Map();
     if(disposed)return;disposed=true;loadVersion++;cancelAutoReplies();saveOnLeave();stop(false);
     for(const done of [...pending.values()])done(abortError());
     unsubs.splice(0).forEach(fn=>fn());removeStyle();cleanupPlacements();
-    audioDatabase?.then(db=>db.close()).catch(()=>{});
+    try{audioDatabaseHandle?.close();}catch{}
+    audioDatabaseHandle=null;audioDatabase=null;
     sessionAudio.clear();
   };
   mixer.addEventListener('choir:replace',cleanup,{once:true});unsubs.push(()=>mixer.removeEventListener('choir:replace',cleanup));

@@ -96,10 +96,14 @@ const escapePattern = value => value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
 
 // Preserve older free-form instructions. Only unambiguous name mappings and
 // hyphenated respellings are interpreted as pronunciation rules.
+function namePronunciationTarget(actor) {
+  return actor.sayAsName?.trim() || actor.speaker?.trim() || '';
+}
+
 function namePronunciation(actor) {
   if(Object.hasOwn(actor,'sayAs'))return typeof actor.sayAs==='string'?actor.sayAs.trim():'';
   const legacy=actor.pronunciation?.trim() || '';
-  const name=escapePattern(actor.speaker || '');
+  const name=escapePattern(namePronunciationTarget(actor));
   const explicit=name && legacy.match(new RegExp(`^(?:pronounce\\s+)?${name}\\s*(?::|=|is pronounced as|is pronounced|as)\\s*["“']?(.+?)["”']?\\.?$`,'iu'));
   const spelling=(explicit?.[1] || (/^[\p{L}\p{M}]+(?:[-‐‑][\p{L}\p{M}]+)+$/u.test(legacy)?legacy:'')).trim();
   return spelling.length<=120 && !/[<>\[\]\r\n]/u.test(spelling)?spelling:'';
@@ -108,14 +112,20 @@ function namePronunciation(actor) {
 function namePronunciations(actors=[]) {
   const rules=new Map();
   for(const actor of actors){
-    const name=actor.speaker?.trim(),sayAs=namePronunciation(actor);
-    if(name && normalizeName(name)!=='narrator' && sayAs && sayAs!==name)rules.set(normalizeName(name),{name,sayAs});
+    const name=namePronunciationTarget(actor),sayAs=namePronunciation(actor);
+    if(name && normalizeName(actor.speaker)!=='narrator' && sayAs && sayAs!==name)rules.set(normalizeName(name),{name,sayAs});
   }
   return [...rules.values()].sort((a,b)=>b.name.length-a.name.length || a.name.localeCompare(b.name));
 }
 
 function wholeNamePattern(names) {
-  return names.length?new RegExp(`(?<![\\p{L}\\p{M}\\p{N}_-])(?:${names.map(escapePattern).join('|')})(?![\\p{L}\\p{M}\\p{N}_-])`,'giu'):null;
+  // Match the same written name through HTML spacing and equivalent accent
+  // encodings, while keeping unrelated source text byte-for-byte intact.
+  const pattern=name=>name.trim().split(/\s+/u).map(word=>[...word.normalize('NFC')].map(letter=>{
+    const composed=escapePattern(letter),decomposed=escapePattern(letter.normalize('NFD'));
+    return composed===decomposed?composed:`(?:${composed}|${decomposed})`;
+  }).join('')).join('\\s+');
+  return names.length?new RegExp(`(?<![\\p{L}\\p{M}\\p{N}_-])(?:${names.map(pattern).join('|')})(?![\\p{L}\\p{M}\\p{N}_-])`,'giu'):null;
 }
 
 function respellNames(text,actors=[]) {
@@ -140,9 +150,12 @@ function characterCardRoleDiscovery(card={}) {
   const title=String(card.name || '').split(/\s*\|\s*/)[0];
   const titleNames=title.split(/\s+and\s+|\s*[&+]\s*|,\s*/i).map(name=>name.trim()).filter(Boolean);
   const nameFields=text=>[...text.matchAll(/^\s*(?:[-*]\s*)?(?:\*\*)?(?:Character\s+)?Name(?:\*\*)?\s*:\s*([^\n\r]+)/gim)].map(match=>clean(match[1]));
+  const aliasFields=text=>[...text.matchAll(/(?:^|[.!?][ \t]+)[ \t]*(?:[-*]\s*)?(?:\*\*)?(?:Alias(?:es)?|Also known as|Nicknames?)(?:\*\*)?[ \t]*:[ \t]*([^\n\r]+)/gim)]
+    .flatMap(match=>clean(match[1]).replace(/[.!?]+$/g,'').split(/[,;|]|\s+\/\s+/u)).map(alias=>alias.trim())
+    .filter(alias=>alias && alias.length<=100 && !/[.!?][ \t]+/.test(alias));
   const profiles=[];let needsAnalysis=false;
   const secondary=value=>/^(?:NPCs?|supporting (?:cast|characters?)|secondary (?:cast|characters?)|side characters?|incidental characters?)$/i.test(String(value || '').trim());
-  const add=(name,aliases,description,start)=>profiles.push({name,aliases,description:description.trim().slice(0,8000),__start:start});
+  const add=(name,aliases,description,start)=>profiles.push({name,aliases:[...new Set([...aliases,...aliasFields(description)])].slice(0,30),description:description.trim().slice(0,8000),__start:start});
   for(const field of ['description','personality','scenario','first_mes']){
   const fieldStart=profiles.length;
   const description=String(card[field] || '');
@@ -164,9 +177,14 @@ function characterCardRoleDiscovery(card={}) {
     const block=description.slice(heading.end,next?.start),names=nameFields(block);
     if(excludedProfile(heading.start,block))return [];
     const inTitle=titleNames.some(name=>normalizeName(name)===normalizeName(heading.name));
+    // A prefix such as "QA - " belongs to the card title, not the first
+    // person's name. Require that person's own profile before accepting a
+    // heading that only matches a decorated part of the title.
+    const decoratedTitle=titleNames.some(name=>name.split(/\s+-\s+|\s*[–—:]\s*/u).some(part=>normalizeName(part)===normalizeName(heading.name)));
+    const ownProfile=new RegExp(`^\\s*(?:\\*{1,2})?${escape(heading.name)}(?:\\*{1,2})?(?:\\s+(?:is|was|has|uses)\\b|\\s*[:：])`,'iu').test(block);
     const namedSection=sections.some(section=>normalizeName(section.tag.replace(/[_-]/g,' '))===normalizeName(heading.name));
     const explicitLead=/\b(?:lead|primary character|main character|playable character)\b/i.test(block);
-    return names.length===1 || inTitle || namedSection || explicitLead?[{...heading,fullName:names.length===1?names[0]:undefined}]:[];
+    return names.length===1 || inTitle || decoratedTitle && ownProfile || namedSection || explicitLead?[{...heading,fullName:names.length===1?names[0]:undefined}]:[];
   });
   const spans=[],seenSections=new Set();
   for(const section of sections){
@@ -491,6 +509,7 @@ function validateCastConfig(config) {
     }
     for(const field of ['pronunciation','accent'])if(actor[field] !== undefined && (typeof actor[field]!=='string' || actor[field].length>300))throw new Error(`Invalid ${field} preference.`);
     if(actor.sayAs!==undefined && (typeof actor.sayAs!=='string' || actor.sayAs.length>120 || /[<>\[\]\r\n]/u.test(actor.sayAs)))throw new Error('Say name as must be plain pronunciation spelling, up to 120 characters.');
+    if(actor.sayAsName!==undefined && (typeof actor.sayAsName!=='string' || actor.sayAsName.length>100 || /[<>\r\n]/u.test(actor.sayAsName)))throw new Error('Name spelling to pronounce must be plain text, up to 100 characters.');
     if(actor.excluded !== undefined && typeof actor.excluded!=='boolean')throw new Error('Invalid character exclusion.');
   }
   return config;
@@ -725,9 +744,30 @@ function browserPlaybackRate(rate) {
   return Math.min(BROWSER_PLAYBACK_RATE_LIMITS.max,Math.max(BROWSER_PLAYBACK_RATE_LIMITS.min,number));
 }
 
-function loudnessGain(channels, target=0.12) {
-  let squares=0,peak=0,count=0;
-  for(const samples of channels)for(const sample of samples){squares+=sample*sample;peak=Math.max(peak,Math.abs(sample));count++;}
+function loudnessGain(channels, target=0.12, sampleRate=24000) {
+  const length=Math.max(0,...channels.map(samples=>samples.length));
+  const frameSize=Math.max(1,Math.round((Number.isFinite(sampleRate) && sampleRate>0?sampleRate:24000)*0.01));
+  const frames=[];let peak=0,strongest=0;
+  // Measure 10 ms frames, retaining every channel's peak even in an edge frame
+  // excluded below. Provider padding should not make the same speech louder.
+  for(let start=0;start<length;start+=frameSize){
+    let squares=0,count=0;
+    for(const samples of channels)for(let i=start,end=Math.min(start+frameSize,samples.length);i<end;i++){
+      const sample=samples[i],absolute=Math.abs(sample);squares+=sample*sample;count++;
+      if(absolute>peak)peak=absolute;
+    }
+    const rms=count?Math.sqrt(squares/count):0;
+    frames.push({squares,count,rms});strongest=Math.max(strongest,rms);
+  }
+  if(strongest<=0.0001)return 1;
+  // Ignore only quiet leading/trailing frames, below -80 dBFS or 40 dB below
+  // the strongest frame. Internal pauses remain in the loudness measurement;
+  // the audio and its timing are never trimmed.
+  const threshold=Math.max(0.0001,strongest*0.01);
+  let first=0,last=frames.length-1,squares=0,count=0;
+  while(first<=last && frames[first].rms<threshold)first++;
+  while(last>=first && frames[last].rms<threshold)last--;
+  for(let i=first;i<=last;i++){squares+=frames[i].squares;count+=frames[i].count;}
   const rms=count?Math.sqrt(squares/count):0;
   return rms>0.0001?Math.max(0.25,Math.min(4,target/rms,peak?0.95/peak:4)):1;
 }
@@ -743,7 +783,7 @@ function mixUnisonAudio(tracks,sampleRate,{normalize=true}={}) {
     while(start<Math.min(channels[0].length,sampleRate) && channels.every(channel=>Math.abs(channel[start])<0.005))start++;
     const level=track.level ?? 1;
     if(!Number.isFinite(level) || level<0 || level>MAX_CHANNEL_VOLUME)throw new Error('Invalid unison level.');
-    return {channels,start,gain:level*(normalize?loudnessGain(channels):1)};
+    return {channels,start,gain:level*(normalize?loudnessGain(channels,undefined,sampleRate):1)};
   });
   const length=Math.max(...prepared.map(track=>track.channels[0].length-track.start));
   if(!length || length>sampleRate*300)throw new Error('Invalid unison audio length.');
@@ -781,7 +821,8 @@ function castImport(raw) {
   const clean=actor=>{
     if(!actor || typeof actor.speaker!=='string' || typeof actor.voice!=='string' || typeof actor.style!=='string')throw new Error('Invalid imported cast row.');
     if(actor.sayAs!==undefined && (typeof actor.sayAs!=='string' || actor.sayAs.length>120 || /[<>\[\]\r\n]/u.test(actor.sayAs)))throw new Error('Invalid imported name pronunciation.');
-    return Object.fromEntries(['speaker','voice','style','route','gender','aliases','pronunciation','sayAs','accent','excluded'].filter(key=>actor[key]!==undefined).map(key=>[key,structuredClone(actor[key])]));
+    if(actor.sayAsName!==undefined && (typeof actor.sayAsName!=='string' || actor.sayAsName.length>100 || /[<>\r\n]/u.test(actor.sayAsName)))throw new Error('Invalid imported name pronunciation target.');
+    return Object.fromEntries(['speaker','voice','style','route','gender','aliases','pronunciation','sayAs','sayAsName','accent','excluded'].filter(key=>actor[key]!==undefined).map(key=>[key,structuredClone(actor[key])]));
   };
   return {...routing,fixed:raw.fixed.map(clean),casts:Object.fromEntries(Object.entries(raw.casts).map(([route,actors])=>{
     if(!Array.isArray(actors) || actors.length>500 || !/^native:[\w.-]+$/.test(route))throw new Error('Invalid imported cast provider.');
@@ -1552,6 +1593,312 @@ function applySoundCues(segments, {cues=[], ambience=[], music=[]}={}) {
 }
 
 
+// These are diagrams, not screenshots. Reuse the same SVGs in the wizard and docs.
+function guideEscape(value) {
+  return String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
+}
+
+function guideText(x, y, value, size = 13, color = '#eef5fc', weight = 400) {
+  return '<text x="' + x + '" y="' + y + '" font-size="' + size + '" fill="' + color + '" font-weight="' + weight + '">' + guideEscape(value) + '</text>';
+}
+
+function guideBox(x, y, width, height, fill = '#091727', stroke = '#3b526b') {
+  return '<rect x="' + x + '" y="' + y + '" width="' + width + '" height="' + height + '" rx="7" fill="' + fill + '" stroke="' + stroke + '"/>';
+}
+
+function guideField(y, label, value) {
+  return guideText(20, y + 19, label, 12, '#b4c4d6') +
+    guideBox(105, y, 227, 26) + guideText(114, y + 18, value, 12);
+}
+
+function guideButton(x, y, width, label) {
+  return guideBox(x, y, width, 31, '#244e68', '#71deff') + guideText(x + 12, y + 21, label, 13, '#eef5fc', 600);
+}
+
+function guideFocus(x, y, width, height) {
+  return '<rect x="' + (x - 3) + '" y="' + (y - 3) + '" width="' + (width + 6) + '" height="' + (height + 6) + '" rx="9" fill="none" stroke="#71deff" stroke-width="2"/>' +
+    '<path d="M' + (x - 14) + ' ' + (y + height / 2) + 'h9m-4-4 4 4-4 4" fill="none" stroke="#71deff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>';
+}
+
+function guideCheck(y, label) {
+  return guideBox(20, y - 13, 17, 17, '#244e68', '#71deff') +
+    '<path d="M24 ' + (y - 5) + 'l3 3 6-7" fill="none" stroke="#71deff" stroke-width="2"/>' +
+    guideText(47, y, label, 13);
+}
+
+function guideIllustration(title, content, description) {
+  return '<svg xmlns="http://www.w3.org/2000/svg" width="360" height="240" viewBox="0 0 360 240" role="img" aria-labelledby="guide-title guide-description">' +
+    '<title id="guide-title">' + guideEscape(title) + '</title><desc id="guide-description">' + guideEscape(description) + '</desc>' +
+    '<g font-family="Arial, Helvetica, sans-serif">' +
+    '<rect width="360" height="240" rx="14" fill="#091727"/>' +
+    '<path d="M14 0h332a14 14 0 0 1 14 14v28H0V14A14 14 0 0 1 14 0" fill="#15283f"/>' +
+    guideText(16, 27, title, 13, '#eef5fc', 600) +
+    '<rect x="287" y="11" width="59" height="22" rx="11" fill="#244e68"/>' +
+    guideText(296, 26, 'Example', 10, '#bfefff', 600) +
+    content +
+    guideText(16, 234, 'Illustration · layout may change', 10, '#b4c4d6') +
+    '</g></svg>';
+}
+
+function guideStep(id, title, body, links, svg, alt, caption) {
+  return { id, title, body, links, picture: 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg), alt, caption };
+}
+
+const SETUP_GUIDES = {
+  fish: {
+    title: 'How to connect Fish Audio',
+    intro: 'Create a Fish API key, save it in a Lumiverse TTS connection, then choose and test that connection in Choir.',
+    note: 'The pictures are illustrated examples, not screenshots. Labels and page layouts can change. All keys shown are masked placeholders.',
+    steps: [
+      guideStep(
+        'fish-account',
+        'Sign in to Fish Audio',
+        'Sign in or create a Fish Audio account. Verify your email if asked, then open the API keys page.',
+        [{ label: 'Create a Fish Audio account', url: 'https://fish.audio/auth/signup' }, { label: 'API keys page', url: 'https://fish.audio/app/api-keys' }],
+        guideIllustration('Fish Audio · account',
+          guideText(20, 73, 'Create an account or sign in', 17, '#eef5fc', 600) +
+          guideBox(20, 88, 312, 29) + guideText(31, 108, 'Email address', 13, '#b4c4d6') +
+          guideBox(20, 126, 312, 29) + guideText(31, 146, 'Password: ••••••••', 13, '#b4c4d6') +
+          guideButton(20, 169, 151, 'Sign in / sign up') + guideFocus(20, 169, 151, 31) +
+          guideText(20, 216, 'Verify your email if prompted.', 12, '#b4c4d6'),
+          'An example Fish Audio account page highlights signing in or creating an account.'),
+        'Illustration of signing in or creating a Fish Audio account; no account information is shown.',
+        'Start with your Fish Audio account.'
+      ),
+      guideStep(
+        'fish-api-key',
+        'Create and copy an API key',
+        'On API Keys, choose Create New Key and give it a name such as Choir. Set an expiration only if you want one. Copy the new key and keep it private.',
+        [{ label: 'Open API Keys', url: 'https://fish.audio/app/api-keys' }, { label: 'Official API key instructions', url: 'https://docs.fish.audio/developer-guide/getting-started/api-key' }],
+        guideIllustration('Fish Audio · API Keys',
+          guideText(20, 73, 'API keys', 18, '#eef5fc', 600) +
+          guideBox(20, 87, 312, 31) + guideText(31, 108, 'Key name: Choir', 13) +
+          guideButton(20, 136, 161, 'Create New Key') + guideFocus(20, 136, 161, 31) +
+          guideBox(20, 185, 312, 28) + guideText(31, 204, 'New key: •••• •••• ••••', 13, '#b4c4d6'),
+          'An example API Keys page highlights Create New Key and shows a masked key placeholder.'),
+        'Illustration highlighting Create New Key. The API key is masked.',
+        'Create a named API key and copy it securely.'
+      ),
+      guideStep(
+        'fish-lumiverse',
+        'Create the Lumiverse TTS connection',
+        'Open Lumiverse Connect → TTS → New TTS Connection. Give it a name, select Fish Audio, and paste the key into API Key. Leave API URL empty, choose an available Model, and click Create. Existing connections use Save.',
+        [],
+        guideIllustration('Lumiverse · TTS connection',
+          guideField(48, 'Name', 'Choir Fish Audio') +
+          guideField(75, 'Provider', 'Fish Audio') +
+          guideField(102, 'API Key', '•••• •••• ••••') +
+          guideField(129, 'API URL', 'Leave empty') +
+          guideField(156, 'Model', 'Select an available model') +
+          guideButton(235, 187, 97, 'Create') + guideFocus(235, 187, 97, 31),
+          'An example Lumiverse TTS connection contains a masked API Key, an empty API URL, and highlights Create.'),
+        'Illustration of Lumiverse’s connection fields. Leave API URL empty to use the provider default.',
+        'Store the API key in the Lumiverse connection.'
+      ),
+      guideStep(
+        'fish-choose-connection',
+        'Select the saved connection in Choir',
+        'Return to the Choir setup wizard. Click Refresh connections, then choose your saved Fish Audio connection under Default TTS connection.',
+        [],
+        guideIllustration('Choir · setup wizard',
+          guideText(20, 74, 'Choose your TTS connection', 17, '#eef5fc', 600) +
+          guideButton(20, 91, 187, 'Refresh connections') + guideFocus(20, 91, 187, 31) +
+          guideText(20, 153, 'Default TTS connection', 13, '#b4c4d6') +
+          guideBox(20, 165, 312, 34) + guideText(31, 188, 'Choir Fish Audio', 13) + guideText(310, 188, '▾', 14),
+          'An example Choir setup screen highlights Refresh connections and shows the saved Fish Audio connection selected.'),
+        'Illustration of refreshing the connection list and selecting Choir Fish Audio.',
+        'Refresh after creating or changing a connection.'
+      ),
+      guideStep(
+        'fish-voice-id',
+        'Choose a voice, or copy its voice ID',
+        'In TTS & Voices, choose a Narrator voice. For a voice missing from the list, open its Fish Audio voice page and copy its voice ID from the page URL or copy button. In Choir, expand Use a provider voice ID and paste it into Narrator voice ID. A voice ID is different from an API key.',
+        [{ label: 'Browse Fish Audio voices', url: 'https://fish.audio/' }, { label: 'Official voice ID instructions', url: 'https://docs.fish.audio/developer-guide/getting-started/quickstart' }],
+        guideIllustration('Fish Audio · voice page',
+          guideText(20, 73, 'Choose a voice', 18, '#eef5fc', 600) +
+          guideBox(20, 88, 312, 47) + guideText(31, 107, 'fish.audio/m/', 12, '#b4c4d6') +
+          guideText(31, 125, '<voice-id>', 13, '#71deff', 600) +
+          guideButton(20, 151, 148, 'Copy voice ID') + guideFocus(20, 151, 148, 31) +
+          guideText(20, 205, 'Paste into Narrator voice ID in Choir.', 12, '#b4c4d6'),
+          'An example voice page highlights Copy voice ID and distinguishes the voice ID from the API key.'),
+        'Illustration of finding a voice ID. The text <voice-id> is a placeholder.',
+        'API Key identifies your account; Voice identifies the voice.'
+      ),
+      guideStep(
+        'fish-test',
+        'Test the narrator before finishing',
+        'In TTS & Voices, select your narrator voice and click Test narrator voice. Listen to the result. When it works, continue to Review and Finish setup. If Fish reports insufficient credits or access, check API billing and the selected model’s availability.',
+        [{ label: 'Fish API billing', url: 'https://fish.audio/app/billing/' }, { label: 'Current Fish API capabilities', url: 'https://docs.fish.audio/overview/capabilities' }],
+        guideIllustration('Choir · TTS & Voices',
+          guideText(20, 74, 'TTS & Voices', 18, '#eef5fc', 600) +
+          guideText(20, 102, 'Narrator voice', 13, '#b4c4d6') +
+          guideBox(20, 114, 312, 32) + guideText(31, 136, 'Your selected Fish voice', 13) + guideText(310, 136, '▾', 14) +
+          guideButton(20, 169, 193, 'Test narrator voice') + guideFocus(20, 169, 193, 31) +
+          guideText(20, 216, 'Listen, then continue to Review.', 12, '#b4c4d6'),
+          'An example TTS and Voices step highlights Test narrator voice beneath the narrator voice selection.'),
+        'Illustration highlighting Test narrator voice before finishing setup.',
+        'A successful preview confirms that the connection and voice work together.'
+      ),
+    ],
+    sources: [
+      { label: 'Fish Audio: Get Your API Key', url: 'https://docs.fish.audio/developer-guide/getting-started/api-key' },
+      { label: 'Fish Audio: Quick Start and voice IDs', url: 'https://docs.fish.audio/developer-guide/getting-started/quickstart' },
+      { label: 'Fish Audio: Current API capabilities', url: 'https://docs.fish.audio/overview/capabilities' },
+    ],
+    troubleshooting: [
+      'Invalid or missing API key: update API Key in the Lumiverse connection, save it, then refresh Choir’s connections.',
+      'Insufficient credits or access: check Fish API billing and model availability. Available free and paid API options can change; a paid web subscription is not a required setup step here.',
+      'Unavailable voice or reference ID: verify the voice ID on its Fish Audio page and choose a voice your account can use. Never paste an API key into Voice.',
+      'A rate-limit error needs a short wait before retrying. Repeated retries can make it last longer.',
+    ],
+  },
+  freesound: {
+    title: 'How to get a Freesound API key',
+    intro: 'Get a Freesound API key, paste it into Optional Features, then enable the sound features and choose the LLM that selects sound cues.',
+    note: 'The pictures are illustrated examples, not screenshots. Labels and page layouts can change. All keys shown are masked placeholders.',
+    steps: [
+      guideStep(
+        'freesound-account',
+        'Sign in to Freesound',
+        'Sign in to Freesound or create an account. Verify your email if asked before requesting API credentials.',
+        [{ label: 'Open Freesound', url: 'https://freesound.org/' }],
+        guideIllustration('Freesound · account',
+          guideText(20, 73, 'Sign in or create an account', 17, '#eef5fc', 600) +
+          guideBox(20, 88, 312, 29) + guideText(31, 108, 'Your account', 13, '#b4c4d6') +
+          guideBox(20, 126, 312, 29) + guideText(31, 146, 'Password: ••••••••', 13, '#b4c4d6') +
+          guideButton(20, 169, 118, 'Sign in') + guideFocus(20, 169, 118, 31) +
+          guideText(20, 216, 'Verify your email if prompted.', 12, '#b4c4d6'),
+          'An example Freesound account page highlights Sign in.'),
+        'Illustration of signing in to Freesound; no account information is shown.',
+        'Use your Freesound account to request API credentials.'
+      ),
+      guideStep(
+        'freesound-apply',
+        'Request API credentials',
+        'Open the API credentials page and complete the application form shown there. Use a name such as Choir and describe your intended sound-effects and ambience use.',
+        [{ label: 'Open Freesound API credentials', url: 'https://freesound.org/apiv2/apply/' }, { label: 'Official API authentication help', url: 'https://freesound.org/docs/api/authentication.html#token-authentication' }],
+        guideIllustration('Freesound · API credentials',
+          guideText(20, 73, 'Request API credentials', 18, '#eef5fc', 600) +
+          guideBox(20, 91, 312, 34, '#244e68', '#71deff') + guideText(30, 114, 'freesound.org/apiv2/apply/', 13, '#bfefff', 600) +
+          guideFocus(20, 91, 312, 34) +
+          guideText(20, 158, 'Example application name: Choir', 13) +
+          guideText(20, 183, 'Purpose: story effects and ambience', 13) +
+          guideText(20, 210, 'Complete the form on that page.', 12, '#b4c4d6'),
+          'An example diagram highlights the Freesound API credentials address and suggests an application name and purpose.'),
+        'Illustration of where to request credentials. The live page supplies the application form.',
+        'Request credentials for the application you will use.'
+      ),
+      guideStep(
+        'freesound-secret',
+        'Copy Client secret/Api key',
+        'In your API credentials, copy the value under Client secret/Api key. Do not copy Client ID: it is a different value and will not authenticate Choir’s sound searches.',
+        [{ label: 'Open your API credentials', url: 'https://freesound.org/apiv2/apply/' }, { label: 'Official token authentication instructions', url: 'https://freesound.org/docs/api/authentication.html#token-authentication' }],
+        guideIllustration('Freesound · API credentials',
+          guideText(20, 73, 'Your API credentials', 18, '#eef5fc', 600) +
+          guideBox(20, 91, 312, 71) +
+          '<path d="M115 91v71M20 122h312" stroke="#3b526b"/>' +
+          guideText(29, 112, 'Client ID', 12, '#b4c4d6', 600) +
+          guideText(125, 112, 'Client secret/Api key', 12, '#eef5fc', 600) +
+          guideText(29, 146, '(ID)', 13, '#b4c4d6') +
+          guideText(125, 146, '•••• •••• ••••', 15, '#71deff') +
+          guideFocus(119, 94, 209, 64) +
+          guideText(20, 193, 'Copy the secret / API key column.', 13, '#71deff', 600) +
+          guideText(20, 215, 'Client ID is not the API key.', 12, '#b4c4d6'),
+          'An example credentials table highlights the Client secret/Api key column and leaves Client ID unselected.'),
+        'Illustration highlighting Client secret/Api key, with a masked placeholder value.',
+        'Copy the secret/API key column, not Client ID.'
+      ),
+      guideStep(
+        'freesound-paste',
+        'Paste the key into Choir',
+        'In the Choir setup wizard, open Optional Features. Paste the copied secret into Freesound API key. Keep the key private; the field hides it while you type.',
+        [],
+        guideIllustration('Choir · Optional Features',
+          guideText(20, 74, 'Optional Features', 18, '#eef5fc', 600) +
+          guideText(20, 112, 'Freesound API key', 13, '#b4c4d6') +
+          guideBox(20, 127, 312, 36) + guideText(31, 151, '•••• •••• ••••', 15) +
+          guideFocus(20, 127, 312, 36) +
+          guideText(20, 195, 'Paste Client secret/Api key here.', 13, '#71deff', 600),
+          'An example Optional Features step highlights Choir’s masked Freesound API key field.'),
+        'Illustration showing the Freesound API key field in Optional Features.',
+        'Paste the Freesound key into Choir’s dedicated field.'
+      ),
+      guideStep(
+        'freesound-enable',
+        'Enable sounds and choose the cue LLM',
+        'Enable Sound effects and/or Ambient sound. Select a working Sound cue LLM connection so Choir can choose relevant sounds for the story. You can leave these features off if you do not want sounds.',
+        [],
+        guideIllustration('Choir · Optional Features',
+          guideText(20, 74, 'Choose your sound features', 17, '#eef5fc', 600) +
+          guideCheck(106, 'Sound effects') +
+          guideCheck(139, 'Ambient sound') +
+          guideText(20, 174, 'Sound cue LLM connection', 13, '#b4c4d6') +
+          guideBox(20, 186, 312, 29) + guideText(31, 206, 'Your working LLM connection', 12) + guideText(310, 206, '▾', 14) +
+          guideFocus(20, 186, 312, 29),
+          'An example Optional Features step enables sound effects and ambient sound and highlights the Sound cue LLM connection.'),
+        'Illustration highlighting the LLM used to choose sound cues.',
+        'The Freesound key finds audio; the cue LLM chooses when to use it.'
+      ),
+      guideStep(
+        'freesound-finish',
+        'Finish setup and try Plan & Play',
+        'Continue to Review and click Finish setup to save your choices. In Choir’s Plan & Play section, use Plan latest on a story with a sound or ambience cue, then Play in the voice mixer to check the result.',
+        [],
+        guideIllustration('Choir · Review',
+          guideText(20, 74, 'Review', 18, '#eef5fc', 600) +
+          guideCheck(105, 'Freesound API key added') +
+          guideCheck(134, 'Sound features enabled') +
+          guideCheck(163, 'Sound cue LLM selected') +
+          guideButton(20, 181, 139, 'Finish setup') + guideFocus(20, 181, 139, 31) +
+          guideText(184, 202, 'Then Plan & Play', 12, '#b4c4d6'),
+          'An example Review step highlights Finish setup after the key, sound features, and cue LLM have been chosen.'),
+        'Illustration highlighting Finish setup; then try a story in Plan & Play.',
+        'Finish setup saves the choices for your sound test.'
+      ),
+    ],
+    sources: [
+      { label: 'Freesound: API credentials', url: 'https://freesound.org/apiv2/apply/' },
+      { label: 'Freesound: Token authentication', url: 'https://freesound.org/docs/api/authentication.html#token-authentication' },
+    ],
+    troubleshooting: [
+      'Authentication fails: confirm you copied Client secret/Api key, not Client ID, and removed any surrounding spaces.',
+      'No effects or ambience: check the relevant feature toggle and Sound cue LLM connection, then try a story with a clear sound cue. A cue can have no suitable search result.',
+      'For Choir’s sound search and previews, use the API key. You do not need to set up an OAuth authorization flow.',
+      'You can finish setup without Freesound and add the key later. Leave sound effects and ambience off until you want to use them.',
+    ],
+  },
+};
+
+function guideGetAssetEntries() {
+  return Object.values(SETUP_GUIDES).flatMap(guide => guide.steps.map(step => ({
+    fileName: step.id + '.svg',
+    svg: decodeURIComponent(step.picture.slice('data:image/svg+xml;charset=utf-8,'.length)),
+  })));
+}
+
+function guideBuildMarkdown() {
+  const lines = [
+    '# Illustrated sound setup',
+    '',
+    'These pictures are diagrams of the steps, not screenshots. Website layouts can change. Every key shown is a masked placeholder; never share your real API keys.',
+    '',
+  ];
+  for (const guide of Object.values(SETUP_GUIDES)) {
+    lines.push('## ' + guide.title, '', guide.intro, '');
+    guide.steps.forEach((step, index) => {
+      lines.push('### ' + (index + 1) + '. ' + step.title, '', step.body, '');
+      for (const link of step.links) lines.push('[' + link.label + '](' + link.url + ')', '');
+      lines.push('![' + step.alt.replaceAll('[', '').replaceAll(']', '') + '](../assets/guides/' + step.id + '.svg)', '', '*' + step.caption + '*', '');
+    });
+    lines.push('### Troubleshooting', '');
+    for (const item of guide.troubleshooting) lines.push('- ' + item);
+    lines.push('', '### Official sources', '');
+    for (const source of guide.sources) lines.push('- [' + source.label + '](' + source.url + ')');
+    lines.push('');
+  }
+  return lines.join('\n');
+}
+
 // Onboarding owns a draft only. All provider, voice and storage operations are
 // supplied by Choir's frontend so the wizard cannot diverge from playback.
 const ONBOARDING_KEY = 'onboarding:state';
@@ -1563,13 +1910,15 @@ function shouldOpenSetup(state) {
 
 function setupDraft(value, preset, existing) {
   const draft = structuredClone(value);
+  for (const [key, fallback] of Object.entries({chunk:1800, prefetch:1, concurrency:1, retention:'forever',
+    normalizeLoudness:true, batchSpeech:false, fishVoiceSource:'community'})) draft[key] ??= fallback;
   draft.fixed = ['Narrator','Persona','Character'].map((speaker,index)=>draft.fixed[index] || {speaker,voice:'',style:''});
   if (preset?.leadVoices) draft.fixed = draft.fixed.map((actor, index) => ({...actor, ...preset.leadVoices[index]}));
   if (preset?.npcPolicy) draft.npcPolicy = structuredClone(preset.npcPolicy);
   // Legacy defaults enable Foley without a key. New installations opt in.
   if (!existing) {
     Object.assign(draft, {enableSfx:false, enableAmbience:false, enableMusic:false, autoDesignNPCs:false,
-      auto:false, autoPlan:false, plannerMode:'heuristic', useFastClassifier:true, useJev:false});
+      auto:false, autoPlan:false, allowLlmFallback:false, enableMixer:true, plannerMode:'heuristic', useFastClassifier:true, useJev:false});
     draft.npcPolicy = {...draft.npcPolicy, mode:'skip'};
   }
   delete draft.jevApiKey;
@@ -1582,9 +1931,9 @@ function setupDraft(value, preset, existing) {
 function setupIssues(draft, connections, session = {}) {
   const issues = [];
   const route = `native:${draft.connection}`;
-  const requireRoute = (selected, label) => {
+  const requireRoute = (selected, label, step = 1) => {
     const connection = connections.tts.find(item => `native:${item.id}` === selected);
-    if (!connection?.model) issues.push({step:1, message:`Choose an available TTS connection with a model for ${label}.`});
+    if (!connection?.model) issues.push({step, message:`Choose an available TTS connection with a model for ${label}.`});
   };
   requireRoute(route, 'Default speech');
   const llm = connections.llm.find(item => draft.planner ? item.id === draft.planner : item.is_default);
@@ -1592,19 +1941,39 @@ function setupIssues(draft, connections, session = {}) {
   if (!['heuristic','jev','llm'].includes(draft.plannerMode)) issues.push({step:1,message:'Choose a planner engine.'});
   if (draft.plannerMode === 'llm' && !llm?.model) issues.push({step:1,message:'Choose an available Planner LLM connection with a model.'});
   if (draft.plannerMode === 'jev' && !decision && !(connections.directJev && session.jev)) issues.push({step:1,message:connections.directJev?'Choose a Decision connection or provide a session Jev key.':'Choose an available Decision connection in Lumiverse’s Connect panel.'});
+  if (draft.plannerMode === 'jev' && draft.allowLlmFallback && !llm?.model) issues.push({step:1,message:'LLM fallback needs an available Planner LLM connection with a model.'});
   for (const actor of draft.fixed) {
+    if (actor.gender != null && !['auto','female','male','neutral'].includes(actor.gender)) issues.push({step:2,message:`Choose a valid voice gender preference for ${actor.speaker}.`});
     if (actor.excluded) continue;
-    requireRoute(draft.connectionMode === 'one' ? route : actor.route || route, actor.speaker);
+    requireRoute(draft.connectionMode === 'one' ? route : actor.route || route, actor.speaker, 2);
     if (!actor.voice && draft.plannerMode==='heuristic') issues.push({step:2,message:`Choose a voice for ${actor.speaker}, turn off that voice, or switch to Standard LLM on Connections to let the LLM choose. Heuristic attribution needs an assigned voice.`});
+    if (actor===draft.fixed[0] && !actor.voice && jevNeedsNarratorVoice(draft,connections)) issues.push({step:2,message:'Choose a narrator voice for Jev on this connection, turn off narrator speech, or switch to the Standard LLM planner.'});
   }
   const policy = draft.npcPolicy || {mode:'skip'};
-  if (policy.mode !== 'skip') requireRoute(draft.connectionMode === 'one' ? route : policy.route || route, 'NPC speech');
+  if (policy.mode !== 'skip') requireRoute(draft.connectionMode === 'one' ? route : policy.route || route, 'NPC speech', 2);
   if (policy.mode === 'single' && !policy.voice) issues.push({step:2,message:'Choose a shared NPC voice.'});
   if (policy.mode === 'preferred' && !policy.voices?.length) issues.push({step:2,message:'Select at least one preferred NPC voice.'});
   if (policy.mode === 'llm' && draft.plannerMode === 'heuristic') issues.push({step:2,message:'Automatic NPC voice selection needs Jev or an LLM planner. Choose shared, preferred, or disabled NPC speech.'});
   if ((draft.enableSfx || draft.enableAmbience) && !draft.freesoundApiKey?.trim()) issues.push({step:3,message:'Sound effects and ambient sound need a Freesound API key.'});
   if ((draft.enableSfx || draft.enableAmbience || draft.enableMusic) && !llm?.model) issues.push({step:3,message:'Sound effects, ambience, and music need a Planner LLM connection for cue selection.'});
+  if (draft.fishVoiceSource != null && !['community','own','both'].includes(draft.fishVoiceSource)) issues.push({step:2,message:'Choose a valid Fish voice source.'});
+  if (draft.retention != null && !['session','1','7','30','forever'].includes(draft.retention)) issues.push({step:3,message:'Choose a valid audio retention policy.'});
+  for (const [key,min,max,label] of [['prefetch',0,4,'Prefetch passages'],['concurrency',1,4,'Concurrent TTS requests'],['chunk',80,10000,'Max characters per request']]) {
+    if (draft[key] != null && (!Number.isInteger(draft[key]) || draft[key]<min || draft[key]>max)) issues.push({step:3,message:`${label} must be a whole number from ${min} to ${max}.`});
+  }
   return issues.filter((item,index,all) => all.findIndex(other => other.message === item.message) === index);
+}
+
+function isFishConnection(connection) {
+  return connection?.provider==='fish_audio' || connection?.provider==='openrouter_tts' && /fish-audio\//i.test(connection.model || '');
+}
+
+function jevNeedsNarratorVoice(draft, connections) {
+  if(draft.plannerMode!=='jev')return false;
+  const route=draft.connectionMode==='one'?`native:${draft.connection}`:draft.fixed[0]?.route || `native:${draft.connection}`;
+  const connection=connections.tts.find(item=>`native:${item.id}`===route);
+  const community=isFishConnection(connection);
+  return !community || draft.fishVoiceSource==='own';
 }
 
 // Spindle settings writes are separate requests. Complete last, compensate on
@@ -1656,6 +2025,19 @@ function createSetupWizard(ctx, adapter) {
     .choir-setup .cs-guide ol{padding-left:22px;margin:12px 0;list-style:decimal}
     .choir-setup .cs-guide li{display:list-item;list-style:decimal;margin:8px 0;overflow-wrap:anywhere}
     .choir-setup .cs-guide a{color:var(--lumiverse-primary,inherit);text-decoration:underline;text-underline-offset:3px}
+    .choir-setup .cs-guide-steps{display:grid;gap:16px}
+    .choir-setup .cs-guide-steps>li{margin:0;padding:12px;border:1px solid var(--lumiverse-border,#8884);border-radius:10px;min-width:0}
+    .choir-setup .cs-guide-steps h4{font-size:1em;margin:0 0 8px}
+    .choir-setup .cs-guide-steps p{margin:8px 0}
+    .choir-setup .cs-guide figure{margin:12px 0 0;min-width:0}
+    .choir-setup .cs-guide-picture{overflow:auto;max-height:440px;border-radius:8px}
+    .choir-setup .cs-guide-picture img{display:block;width:100%;max-width:360px;height:auto;margin:auto}
+    .choir-setup .cs-guide-picture.cs-picture-large img{width:720px;max-width:none;margin:0}
+    .choir-setup .cs-guide figcaption{font-size:.8em;color:var(--lumiverse-text-muted,inherit);margin:6px 0}
+    .choir-setup .cs-guide .cs-picture-toggle{font-size:.82em;padding:5px 10px;min-height:36px}
+    .choir-setup .cs-guide-links{display:flex;flex-wrap:wrap;gap:8px 14px;margin:8px 0}
+    .choir-setup .cs-guide .cs-guide-help{padding-left:20px;list-style:disc}
+    .choir-setup .cs-guide .cs-guide-help li{list-style:disc}
     .choir-setup label{display:flex;flex-direction:column;gap:6px;margin:8px 0;font-size:.92em;min-width:0}
     .choir-setup input,.choir-setup select,.choir-setup textarea{font:inherit;width:100%;min-width:0;min-height:42px;padding:8px 10px;border:1px solid var(--lumiverse-border,#8886);border-radius:8px;background:var(--lumiverse-bg-elevated,transparent);color:inherit}
     .choir-setup option{background:var(--lumiverse-bg,Canvas);color:var(--lumiverse-text,CanvasText)}
@@ -1701,7 +2083,7 @@ function createSetupWizard(ctx, adapter) {
     const doc = modal.root.ownerDocument;
     const shell = doc.createElement('div');shell.className='choir-setup';shell.dataset.choirSetup='';modal.root.append(shell);
     const draft = setupDraft(snapshot.config, snapshot.preset, snapshot.existing);
-    let connections = snapshot.connections, step = 0, visited = 0, busy = false, closed = false, completed = false, ctrl = null, renderId = 0;
+    let connections = snapshot.connections, step = 0, visited = 0, busy = false, closed = false, completed = false, ctrl = null, renderId = 0, cancellable = false;
     const tests = new Map();
     const element = (tag,text,parent) => {const node=doc.createElement(tag);if(text)node.textContent=text;parent?.append(node);return node;};
     const nav = element('ol','',shell);nav.className='cs-progress';nav.setAttribute('aria-label','Setup progress');
@@ -1715,7 +2097,8 @@ function createSetupWizard(ctx, adapter) {
     const actions = element('div','',shell);actions.className='cs-actions';
     const button = (text,parent,action) => {const node=element('button',text,parent);node.type='button';node.onclick=action;return node;};
     const back = button('Back',actions,()=>navigate(step-1));
-    const skip = button('Skip for now',actions,()=>task(async()=>{await defer();modal.dismiss();},'Saving your choice…'));
+    const skip = button('Skip for now',actions,()=>task(async()=>{await defer();modal.dismiss();},'Saving your choice…',false));
+    const cancel = button('Cancel',actions,()=>{if(cancellable){ctrl?.abort();adapter.stopTest();}});cancel.hidden=true;
     const next = button('Next',actions,()=>step===4?finish():navigate(step+1));next.className='cs-primary';
     const say = (message,error=false) => {if(closed)return;feedback.textContent=message;feedback.classList.toggle('cs-error',error);feedback.setAttribute('role',error?'alert':'status');};
     const session = () => adapter.session();
@@ -1729,13 +2112,16 @@ function createSetupWizard(ctx, adapter) {
       for(const node of body.querySelectorAll('input,select,button'))node.disabled=busy || node.dataset.unavailable==='true';
       navButtons.forEach((node,index)=>{node.disabled=busy || completed || index>visited;node.setAttribute('aria-current',index===step?'step':'false');});
       back.disabled=busy || completed || step===0;skip.disabled=busy || completed;next.disabled=busy;
+      cancel.hidden=!busy || !cancellable;cancel.disabled=!busy || !cancellable;
     };
-    async function task(operation,message) {
+    async function task(operation,message,canCancel=true) {
       if(busy || closed)return;
-      busy=true;ctrl=new AbortController();say(message);lock();
-      try {await operation(ctrl.signal);}
-      catch(error){if(!closed && error.name!=='AbortError')say(safeError(error),true);}
-      finally {busy=false;ctrl=null;if(!closed)lock();}
+      busy=true;cancellable=canCancel;const current=new AbortController();ctrl=current;say(message);lock();
+      let aborted;
+      const cancellation=new Promise((_,reject)=>{aborted=()=>reject(Object.assign(new Error('Operation cancelled.'),{name:'AbortError'}));current.signal.addEventListener('abort',aborted,{once:true});});
+      try {await Promise.race([operation(current.signal),cancellation]);}
+      catch(error){if(!closed)say(error.name==='AbortError'?'Operation cancelled.':safeError(error),error.name!=='AbortError');}
+      finally {current.signal.removeEventListener('abort',aborted);busy=false;cancellable=false;ctrl=null;if(!closed)lock();}
     }
     async function defer() {
       if(completed || previousState?.completed)return;
@@ -1768,9 +2154,23 @@ function createSetupWizard(ctx, adapter) {
       const wrap=element('label','',parent);wrap.className='cs-check';node.setAttribute('aria-label',label);wrap.append(node);element('span',label,wrap);
       if(hint)element('p',hint,parent).className='cs-hint';return node;
     }
+    function number(label,key,min,max,parent,hint) {
+      const node=element('input');node.type='number';node.min=min;node.max=max;node.step=1;node.value=draft[key];
+      node.oninput=()=>{draft[key]=node.value===''?NaN:Number(node.value);};return field(label,node,parent,hint);
+    }
+    function disclosure(title,parent) {
+      const node=element('details','',parent);node.className='cs-guide';element('summary',title,node);return node;
+    }
     const defaultRoute = () => `native:${draft.connection}`;
+    const effectiveRoute = actor => draft.connectionMode==='one'?defaultRoute():actor.route || defaultRoute();
+    const hasFishRoute = () => [...draft.fixed.filter(actor=>!actor.excluded),...(draft.npcPolicy.mode!=='skip'?[draft.npcPolicy]:[])].some(actor=>isFishConnection(connections.tts.find(item=>`native:${item.id}`===effectiveRoute(actor))));
+    function changeSpeechRouting(change) {
+      const actors=[...draft.fixed,draft.npcPolicy],before=actors.map(effectiveRoute);change();
+      actors.forEach((actor,index)=>{if(before[index]!==effectiveRoute(actor)){actor.voice='';if(actor===draft.npcPolicy)actor.voices=[];}});
+      tests.delete('tts');render();
+    }
     const routes = () => [['','Use default speech connection'],...connections.tts.map(item=>[`native:${item.id}`,`${item.name} · ${item.provider} · ${item.model || 'no model'}`])];
-    const signature = kind => JSON.stringify(kind==='planner'?[draft.plannerMode,draft.planner,draft.decisionConnection,Boolean(session().jev)]:[defaultRoute(),draft.connectionMode,draft.fixed[0]?.route,draft.fixed[0]?.voice]);
+    const signature = kind => JSON.stringify(kind==='planner'?[draft.plannerMode,draft.planner,draft.decisionConnection,draft.allowLlmFallback,Boolean(session().jev)]:[defaultRoute(),draft.connectionMode,draft.fixed[0]?.route,draft.fixed[0]?.voice]);
     function navigate(target) {
       if(busy || completed || target<0 || target>4)return;
       if(target>step){
@@ -1781,55 +2181,80 @@ function createSetupWizard(ctx, adapter) {
       body.scrollTop=0;modal.root.scrollTop=0;
     }
     function refresh() {
-      return task(async signal=>{connections=await adapter.connections(signal);tests.clear();render();say('Connections refreshed. No synthesis or planner test was run.');},'Refreshing connection lists…');
+      return task(async signal=>{const latest=await adapter.connections(signal);if(closed || signal.aborted)return;connections=latest;tests.clear();render();say('Connections refreshed. No synthesis or planner test was run.');},'Refreshing connection lists…');
     }
     function testPlanner() {
       const key=signature('planner');
-      return task(async signal=>{const result=await adapter.testPlanner(draft,signal);tests.set('planner',{key,message:result});say(result);},draft.plannerMode==='heuristic'?'Checking local attribution…':'Sending one planner test request…');
+      return task(async signal=>{const result=await adapter.testPlanner(draft,signal);if(closed || signal.aborted)return;tests.set('planner',{key,message:result});say(result);},draft.plannerMode==='heuristic'?'Checking local attribution…':'Sending one planner test request…');
     }
     function testVoice(actor = draft.fixed[0]) {
       if(!actor?.voice){say('This voice is set to automatic selection. Choir chooses it when you plan a reply. Select a specific voice to audition it now.',true);return;}
       const key=signature('tts');
-      return task(async signal=>{await adapter.testVoice(draft,actor,signal);if(actor===draft.fixed[0])tests.set('tts',{key,message:'A narrator sample was synthesized and played.'});say(`Voice test passed: ${actor.voice}. A sample was synthesized and played.`);},'Synthesizing a short voice sample…');
+      return task(async signal=>{await adapter.testVoice(draft,actor,signal);if(closed || signal.aborted)return;if(actor===draft.fixed[0])tests.set('tts',{key,message:'A narrator sample was synthesized and played.'});say(`Voice test passed: ${actor.voice}. A sample was synthesized and played.`);},'Synthesizing a short voice sample…');
     }
     function voiceField(actor,parent,label,changed,allowAutomatic=false) {
       const row=element('div','',parent),id=renderId;
       const effective=()=>draft.connectionMode==='one'?defaultRoute():actor.route || defaultRoute();
       const automaticLabel=draft.plannerMode==='jev'?'Let Choir choose (Jev)':'Let the LLM choose';
       const emptyLabel=allowAutomatic?automaticLabel:'Choose a voice';
-      const choices=select(`${label} voice`,[['',emptyLabel]],actor.voice,row,value=>{actor.voice=value;changed?.();});
+      let voiceId,catalogue=[];
+      const isLead=draft.fixed.includes(actor);
+      if(isLead)select(`${label} voice gender`,[['auto','Any / automatic'],['female','Female'],['male','Male'],['neutral','Neutral']],actor.gender || 'auto',row,value=>{actor.gender=value;populate();},'Guides automatic casting and filters known voices. Unknown metadata stays visible; changing this keeps your selected voice.');
+      const choices=select(`${label} voice`,[['',emptyLabel]],actor.voice,row,value=>{actor.voice=value;if(voiceId)voiceId.value=value;populate();changed?.();});
       const note=element('small','Loading voices…',row);
+      function populate() {
+        const known=new Map(catalogue.map(item=>[item.id,item])),gender=isLead?actor.gender || 'auto':'auto';
+        choices.replaceChildren();const empty=element('option',emptyLabel,choices);empty.value='';
+        for(const item of known.values()){
+          const metadata=['female','male','neutral'].includes(item.gender)?item.gender:'';
+          const mismatch=gender!=='auto' && metadata && metadata!==gender;
+          if(mismatch && item.id!==actor.voice)continue;
+          const description=metadata?metadata[0].toUpperCase()+metadata.slice(1):'Gender unknown';
+          const option=element('option',`${item.name || item.id} · ${description}${mismatch?' · selected voice differs from preference':''}`,choices);option.value=item.id;
+        }
+        if(actor.voice && !known.has(actor.voice)){const option=element('option',`${actor.voice} · custom or saved ID`,choices);option.value=actor.voice;}
+        choices.value=actor.voice || '';
+        const selected=known.get(actor.voice),mismatch=gender!=='auto' && ['female','male','neutral'].includes(selected?.gender) && selected.gender!==gender;
+        note.textContent=[selected?.description,mismatch?'Your selected voice differs from the gender preference. Choose another voice if needed.':'', 'Voice IDs belong to this connection. Test before relying on them.'].filter(Boolean).join(' ');
+      }
       if(allowAutomatic)element('small',draft.plannerMode==='heuristic'?'Let the LLM choose requires switching the planner to Standard LLM on Connections.':'Automatic selection happens during planning, using this connection’s catalogue and Choir’s existing casting logic. Planner calls may incur charges.',row);
       const custom=element('details','',row);element('summary','Use a provider voice ID',custom);
-      input(`${label} voice ID`,actor.voice,custom,value=>{
-        actor.voice=value;if(value && ![...choices.options].some(item=>item.value===value)){const entry=element('option',`${value} · custom ID`,choices);entry.value=value;}
-        choices.value=value;changed?.();
+      voiceId=input(`${label} voice ID`,actor.voice,custom,value=>{
+        actor.voice=value;populate();changed?.();
       },{hint:'Use an ID from this provider. Choir validates it with the selected route; a successful test confirms synthesis.'});
       const token=effective();
-      void adapter.voices(token).then(catalogue=>{
+      void adapter.voices(token).then(list=>{
         if(closed || id!==renderId || token!==effective())return;
-        const known=new Map(catalogue.map(item=>[item.id,item]));
-        choices.replaceChildren();const empty=element('option',emptyLabel,choices);empty.value='';
-        for(const item of known.values()){const option=element('option',item.name || item.id,choices);option.value=item.id;}
-        if(actor.voice && !known.has(actor.voice)){const option=element('option',`${actor.voice} · custom or saved ID`,choices);option.value=actor.voice;}
-        choices.value=actor.voice || '';note.textContent='Voice IDs belong to this connection. Test before relying on them.';
+        catalogue=list;populate();
       }).catch(error=>{if(!closed && id===renderId){note.textContent=`Voice list unavailable: ${safeError(error)}. Retry or enter a provider voice ID.`;button('Retry voice list',row,()=>{render();});}});
       return choices;
     }
     function externalLink(parent,title,url) {
       const node=element('a',title,parent);node.href=url;node.target='_blank';node.rel='noopener noreferrer';return node;
     }
-    function fishGuide(parent) {
-      const guide=element('details','',parent);guide.className='cs-guide';element('summary','How to connect Fish Audio',guide);
-      const steps=element('ol','',guide);
-      const account=element('li','',steps);externalLink(account,'Sign in to Fish Audio','https://fish.audio/auth/signup');account.append(' or create an account.');
-      const key=element('li','',steps);externalLink(key,'Open API Keys','https://fish.audio/app/api-keys');key.append(' and create a key with a name such as Choir. Copy the key when Fish shows it.');
-      element('li','In Lumiverse, open Connect → TTS, add a Fish Audio connection, paste the API key, choose a model available to your account, and save.',steps);
-      element('li','Return to this wizard and choose Refresh connections, then select your saved Fish Audio connection above.',steps);
-      element('li','On TTS & Voices, choose a voice and use Test narrator voice to check that speech plays.',steps);
-      element('p','The API key gives Lumiverse access to Fish Audio. A voice ID selects a particular voice; they are different values. Keep the API key in the Lumiverse connection, not the voice ID field.',guide).className='cs-hint';
-      element('p','If a test fails, check the reported error: an invalid key, account access or balance, and an unavailable voice require different fixes.',guide).className='cs-hint';
-      externalLink(guide,'Official Fish Audio getting-started guide','https://docs.fish.audio/developer-guide/getting-started/quickstart');
+    function illustratedGuide(parent,id) {
+      const data=SETUP_GUIDES[id],guide=element('details','',parent);guide.className='cs-guide';guide.dataset.setupGuide=id;
+      element('summary',data.title,guide);
+      element('p',data.intro,guide);element('p',data.note,guide).className='cs-hint';
+      const steps=element('ol','',guide);steps.className='cs-guide-steps';
+      for(const step of data.steps){
+        const item=element('li','',steps);item.dataset.guideStep=step.id;
+        element('h4',step.title,item);element('p',step.body,item);
+        if(step.links?.length){const links=element('div','',item);links.className='cs-guide-links';for(const link of step.links)externalLink(links,link.label,link.url);}
+        const figure=element('figure','',item),picture=element('div','',figure);picture.className='cs-guide-picture';
+        const image=element('img','',picture);image.src=step.picture;image.alt=step.alt;image.width=360;image.height=240;image.loading='lazy';image.decoding='async';
+        const caption=element('figcaption',step.caption,figure);caption.id=`cs-${step.id}-caption`;picture.setAttribute('aria-describedby',caption.id);
+        const toggle=button('Enlarge picture',figure,()=>{
+          const enlarged=picture.classList.toggle('cs-picture-large');toggle.textContent=enlarged?'Reduce picture':'Enlarge picture';
+          toggle.setAttribute('aria-expanded',String(enlarged));toggle.setAttribute('aria-label',`${enlarged?'Reduce':'Enlarge'} picture: ${step.title}`);
+          picture.tabIndex=enlarged?0:-1;if(enlarged)picture.focus();
+        });
+        toggle.className='cs-picture-toggle';toggle.setAttribute('aria-expanded','false');toggle.setAttribute('aria-label',`Enlarge picture: ${step.title}`);
+      }
+      const help=disclosure('If something does not work',guide),items=element('ul','',help);items.className='cs-guide-help';
+      for(const message of data.troubleshooting)element('li',message,items);
+      const sources=element('div','',guide);sources.className='cs-guide-links';
+      for(const link of data.sources)externalLink(sources,link.label,link.url);
     }
     function render() {
       ++renderId;body.replaceChildren();
@@ -1838,6 +2263,7 @@ function createSetupWizard(ctx, adapter) {
       if(completed){
         element('div','♪',body).className='cs-mark';
         element('p','Your setup is saved. New chats will use these cast defaults. Existing chats keep their voices.',body);
+        element('p','Use Plan latest, then Play in the voice mixer. Open a character’s editor in Lead cast to adjust names, aliases, or “Say name as” pronunciation.',body).className='cs-hint';
         button('Test final playback',body,()=>testVoice());element('p','Optional: this synthesizes and plays one short narrator sample and may incur provider charges.',body).className='cs-hint';lock();return;
       }
       if(step===0){
@@ -1850,12 +2276,13 @@ function createSetupWizard(ctx, adapter) {
         element('p','Speech & Planner preferences are shared across chats. Voice defaults are used by new chats; existing chat casts stay independent. Skip saves no configuration.',body).className='cs-hint';
       } else if(step===1){
         element('p','Choose a speech connection saved in Lumiverse. Your API key and model are managed in Lumiverse’s Connect panel.',body);
-        select('Default TTS connection',[['','Choose a connection'],...connections.tts.map(item=>[item.id,`${item.name} · ${item.provider} · ${item.model || 'no model'}`])],draft.connection,body,value=>{draft.connection=value;tests.delete('tts');render();});
-        fishGuide(body);
+        select('Default TTS connection',[['','Choose a connection'],...connections.tts.map(item=>[item.id,`${item.name} · ${item.provider} · ${item.model || 'no model'}`])],draft.connection,body,value=>changeSpeechRouting(()=>{draft.connection=value;}));
+        illustratedGuide(body,'fish');
         select('Planner engine',[['heuristic','Heuristic · local, no planner API'],['jev','Jev · Decision classification'],['llm','Standard LLM planner']],draft.plannerMode,body,value=>{draft.plannerMode=value;draft.useFastClassifier=value==='heuristic';draft.useJev=value==='jev';tests.delete('planner');render();});
-        element('p',draft.plannerMode==='heuristic'?'Heuristic attribution works locally for narration and simple dialogue. Ambiguous speakers can stop planning. Assign voices explicitly; use Jev or LLM for complex scenes. Speech still uses your TTS provider.':draft.plannerMode==='jev'?'Jev classifies dialogue through a Decision connection. LLM fallback stays controlled by your existing Choir preference. Tests and classification can incur charges.':'An LLM identifies speakers and chooses voices. Planning and connection tests can incur charges.',body).className='cs-hint';
+        element('p',draft.plannerMode==='heuristic'?'Heuristic attribution works locally for narration and simple dialogue. Ambiguous speakers can stop planning. Assign voices explicitly; use Jev or LLM for complex scenes. Speech still uses your TTS provider.':draft.plannerMode==='jev'?'Jev classifies dialogue through a Decision connection. Tests and classification can incur charges.':'An LLM identifies speakers and chooses voices. Planning and connection tests can incur charges.',body).className='cs-hint';
         if(draft.plannerMode==='jev'){
           select('Decision connection',[['','Default Decision connection'],...connections.decision.map(item=>[item.id,`${item.name} · ${item.provider} · ${item.model || 'Jev'}`])],draft.decisionConnection,body,value=>{draft.decisionConnection=value;tests.delete('planner');});
+          check('Allow LLM fallback after Jev fails',draft.allowLlmFallback,body,value=>{draft.allowLlmFallback=value;tests.delete('planner');},'Retries failed Jev classification with your Planner LLM. This can add a paid request.');
           if(connections.directJev){
             const advanced=element('details','',body);element('summary','Session Jev key for older Lumiverse hosts',advanced);
             input('Jev session API key',session().jev,advanced,value=>{adapter.setSession('jev',value);tests.delete('planner');},{password:true,hint:'Used by Choir’s existing fallback on hosts without Decision APIs. Never saved.'});
@@ -1871,25 +2298,27 @@ function createSetupWizard(ctx, adapter) {
         element('p','TTS connection testing is on the next step, using an actual voice sample.',body).className='cs-hint';
         const guide=element('div','',body);guide.className='cs-card';element('h3','Missing a connection?',guide);
         element('p','Open Lumiverse’s Connect panel and select TTS, LLM, or Decision. Create or edit your connection there, choose its model, then reopen this wizard and refresh. Choir uses your connections; it does not create host-managed connections.',guide);
-        button('Configure connections later',guide,()=>task(async()=>{await defer();modal.dismiss();adapter.connectionGuide();},'Saving your choice…'));
+        button('Configure connections later',guide,()=>task(async()=>{await defer();modal.dismiss();adapter.connectionGuide();},'Saving your choice…',false));
         button('Refresh connections',guide,refresh);
         for(const error of connections.errors || [])element('p',error,guide).className='cs-error';
       } else if(step===2){
         element('p','Choose voices for new chats. Existing chats keep their cast. A voice test synthesizes and plays one short sample.',body);
-        select('Voice connection mode',[['one','One connection for the whole cast'],['several','A connection for each character']],draft.connectionMode,body,value=>{draft.connectionMode=value;render();});
+        select('Voice connection mode',[['one','One connection for the whole cast'],['several','A connection for each character']],draft.connectionMode,body,value=>changeSpeechRouting(()=>{draft.connectionMode=value;}));
         {
           const selected=connections.tts.find(item=>item.id===draft.connection);
-          const provider=select('Default TTS provider',[['','Choose provider'],...[...new Set(connections.tts.map(item=>item.provider))].map(id=>[id,id])],selected?.provider,body,value=>{draft.connection=connections.tts.find(item=>item.provider===value)?.id || '';tests.delete('tts');render();});
-          select('TTS model and connection',[['','Choose model'],...connections.tts.filter(item=>item.provider===provider.value).map(item=>[item.id,`${item.model || 'No model configured'} · ${item.name}`])],draft.connection,body,value=>{draft.connection=value;tests.delete('tts');render();},'Native models are configured in Lumiverse’s Connect panel. Selecting one here selects its saved connection.');
+          const provider=select('Default TTS provider',[['','Choose provider'],...[...new Set(connections.tts.map(item=>item.provider))].map(id=>[id,id])],selected?.provider,body,value=>changeSpeechRouting(()=>{draft.connection=connections.tts.find(item=>item.provider===value)?.id || '';}));
+          select('TTS model and connection',[['','Choose model'],...connections.tts.filter(item=>item.provider===provider.value).map(item=>[item.id,`${item.model || 'No model configured'} · ${item.name}`])],draft.connection,body,value=>changeSpeechRouting(()=>{draft.connection=value;}),'Native models are configured in Lumiverse’s Connect panel. Selecting one here selects its saved connection.');
         }
         const grid=element('div','',body);grid.className='cs-grid';
         draft.fixed.forEach((actor,index)=>{
           const name=['Narrator','Persona','Main character'][index],card=element('div','',grid);card.className='cs-card';element('h3',name,card);
           if(draft.connectionMode==='several') select(`${name} connection`,routes(),actor.route || '',card,value=>{actor.route=value;actor.voice='';tests.delete('tts');render();});
-          voiceField(actor,card,name,()=>tests.delete('tts'),true);
-          check(`Enable ${name.toLowerCase()} speech`,!actor.excluded,card,value=>{actor.excluded=!value;});
+          voiceField(actor,card,name,()=>tests.delete('tts'),index!==0 || !jevNeedsNarratorVoice(draft,connections));
+          check(`Enable ${name.toLowerCase()} speech`,!actor.excluded,card,value=>{actor.excluded=!value;fishSourceWrap.hidden=!hasFishRoute();});
           button(`Test ${name.toLowerCase()} voice`,card,()=>testVoice(actor));
         });
+        const fishSourceWrap=element('div','',body);fishSourceWrap.hidden=!hasFishRoute();
+        select('Voices the planner picks from',[['community','Fish community library'],['own','My Fish voices'],['both','Both']],draft.fishVoiceSource,fishSourceWrap,value=>{draft.fishVoiceSource=value;render();},'Applies to automatic Fish casting. “My Fish voices” uses your assigned and added voices; add custom IDs in the drawer. Explicit voice assignments stay unchanged.');
         const npc=element('div','',body);npc.className='cs-card';element('h3','NPC casting',npc);
         const policy=draft.npcPolicy;
         select('NPC casting',[['skip','Disabled'],['single','Shared voice'],['preferred','Preferred voices'],['llm','Automatic selection']],policy.mode,npc,value=>{policy.mode=value;render();});
@@ -1904,18 +2333,12 @@ function createSetupWizard(ctx, adapter) {
         element('p','Start with speech, then add the extras you want. Unconfigured features should stay off.',body);
         const sound=element('div','',body);sound.className='cs-card';element('h3','A soundscape for your story',sound);
         input('Freesound API key',draft.freesoundApiKey,sound,value=>{draft.freesoundApiKey=value;},{password:true,hint:'Saved in Choir’s existing preferences. Sound effects and ambience need this key plus an LLM for cue selection.'});
-        const guide=element('details','',sound);guide.className='cs-guide';element('summary','How to get a Freesound API key',guide);
-        const link=(parent,title,url)=>{const node=element('a',title,parent);node.href=url;node.target='_blank';node.rel='noopener noreferrer';return node;};
-        const steps=element('ol','',guide);
-        const account=element('li','',steps);link(account,'Sign in to Freesound','https://freesound.org/');account.append(' or create an account. Verify your email if Freesound asks.');
-        const apply=element('li','',steps);link(apply,'Open the API key page','https://freesound.org/apiv2/apply/');apply.append(' and request an API credential for your Choir setup. Suggested application name: Choir. Describe your use, such as sound effects and ambience for personal story playback.');
-        element('li','Copy the value labelled “Client secret/Api key” from your credentials. The Client ID is a different value; Choir needs the API key.',steps);
-        element('li','Return here, paste the key above, enable Sound effects and/or Ambient sound, and choose a Sound cue LLM connection. Select Finish setup on Review to save.',steps);
-        element('p','You can leave these features off and finish without a key. Choir uses the key to search sounds and play previews; no OAuth setup is needed.',guide).className='cs-hint';
-        link(guide,'Official Freesound key instructions','https://freesound.org/docs/api/authentication.html#token-authentication');
+        illustratedGuide(sound,'freesound');
         check('Sound effects',draft.enableSfx,sound,value=>{draft.enableSfx=value;});
         check('Ambient sound',draft.enableAmbience,sound,value=>{draft.enableAmbience=value;});
-        check('Background music',draft.enableMusic,sound,value=>{draft.enableMusic=value;},'Music uses Choir’s existing library and attribution. Sound cue planning uses your LLM and may incur charges.');
+        check('Background music',draft.enableMusic,sound,value=>{draft.enableMusic=value;loop.hidden=!value;},'Music uses Choir’s existing library and attribution. Sound cue planning uses your LLM and may incur charges.');
+        const loop=element('div','',sound);loop.hidden=!draft.enableMusic;
+        check('Loop music between replies',draft.loopMusic,loop,value=>{draft.loopMusic=value;},'Keep music playing between replies while the music channel is active.');
         select('Sound cue LLM connection',[['','Default LLM connection'],...connections.llm.map(item=>[item.id,`${item.name} · ${item.model || 'no model'}`])],draft.planner,sound,value=>{draft.planner=value;tests.delete('planner');});
         const reading=element('div','',body);reading.className='cs-card';element('h3','Reading',reading);
         check('Skip non-story blocks',draft.skipMeta!==false,reading,value=>{draft.skipMeta=value;},'Keep automatic filtering of trackers, recaps and interface panels. LLM and Jev modes can also use your planner to find non-story text.');
@@ -1924,9 +2347,20 @@ function createSetupWizard(ctx, adapter) {
         select('Highlight spoken text',[['off','Off'],['passage','Passage'],['word','Word by word']],draft.readAlong || 'off',reading,value=>{draft.readAlong=value;});
         check('Follow narration',Boolean(draft.followNarration),reading,value=>{draft.followNarration=value;});
         element('p','Set name pronunciation in the character’s editor after setup. “Say name as” applies when any voice says that name in the chat.',reading).className='cs-hint';
+        const playback=element('div','',body);playback.className='cs-card';element('h3','Playback & saved audio',playback);
+        check('Floating audio mixer',draft.enableMixer,playback,value=>{draft.enableMixer=value;},'Show playback, speed and volume controls over the chat. Adjust speed and volume there after setup.');
+        check('Match passage loudness',draft.normalizeLoudness,playback,value=>{draft.normalizeLoudness=value;},'Reduce volume differences between generated speech passages.');
+        select('Audio retention for new recordings',[['session','This session only'],['1','1 day'],['7','7 days'],['30','30 days'],['forever','Indefinitely']],draft.retention,playback,value=>{draft.retention=value;},'Existing recordings keep their current retention policy. Manage or clear saved audio in the drawer.');
+        const buffering=disclosure('Buffering and request limits',playback);
+        element('p','Prefetch prepares speech ahead of playback. More requests can reduce gaps but increase provider load and generate unused audio. Fast playback can still catch up to a slow provider.',buffering).className='cs-hint';
+        number('Prefetch passages','prefetch',0,4,buffering,'0 disables lookahead. For faster playback, try 2 with 2 concurrent requests. More lookahead may generate speech you do not finish.');
+        number('Concurrent TTS requests','concurrency',1,4,buffering,'Limit simultaneous speech requests. Try 2 for faster playback if your provider allows it; playback speed does not speed up synthesis.');
+        number('Max characters per request','chunk',80,10000,buffering,'Long passages are split at this limit. Smaller requests can start sooner but require more calls.');
+        check('Group speech requests',draft.batchSpeech,buffering,value=>{draft.batchSpeech=value;},'Used only by compatible providers and models, with compatible voice levels and speeds and no added voice gap.');
+        const controls=disclosure('Drawer and message controls',playback);
+        check('Show message play controls',draft.sectionButtons,controls,value=>{draft.sectionButtons=value;});
+        check('Show automatic planning shortcut',draft.showAutoPlanAction,controls,value=>{draft.showAutoPlanAction=value;},'Shows a shortcut for the Auto-plan preference. Showing it does not turn automatic planning on.');
         const automation=element('div','',body);automation.className='cs-card';element('h3','Automation',automation);
-        const previousPolicy=draft.npcPolicy.mode==='llm'?'skip':draft.npcPolicy.mode;
-        check('Automatic NPC voice casting',draft.npcPolicy.mode==='llm',automation,value=>{draft.npcPolicy.mode=value?'llm':previousPolicy;},'Chooses NPC voices with your Jev or LLM planner. It may use paid planner calls; local heuristic attribution needs shared, preferred, or disabled NPC speech.');
         check('Auto-plan new replies',draft.autoPlan,automation,value=>{draft.autoPlan=value;},'Plans incoming replies automatically. LLM or Jev calls may incur charges.');
         check('Auto-play new replies',draft.auto,automation,value=>{draft.auto=value;},'Automatically generates speech for new replies. Provider charges and browser playback restrictions can apply.');
         element('p','Automatic voice selection is controlled by NPC casting on the previous step. Nothing plays or calls a planner as part of saving setup.',body).className='cs-hint';
@@ -1938,10 +2372,14 @@ function createSetupWizard(ctx, adapter) {
         };
         const tts=connections.tts.find(item=>item.id===draft.connection);
         review('Speech',`${tts?.name || 'Missing TTS connection'} · ${tts?.provider || ''} · ${tts?.model || 'no model'}`,1,issues.some(item=>item.step===1)?'Needs Attention':'Ready');
-        review('Planner',draft.plannerMode==='heuristic'?'Local heuristic · ambiguous dialogue may need manual help':`${draft.plannerMode} · ${draft.planner || draft.decisionConnection || 'host default'}`,1,issues.some(item=>item.step===1)?'Needs Attention':'Ready');
-        review('Cast defaults',draft.fixed.map((actor,index)=>`${['Narrator','Persona','Main character'][index]}: ${actor.excluded?'disabled':actor.voice || (draft.plannerMode==='llm'?'LLM chooses during planning':draft.plannerMode==='jev'?'Choir chooses with Jev':'needs a voice')}`).join(' · ')+` · NPCs: ${draft.npcPolicy.mode}`,2,issues.some(item=>item.step===2)?'Needs Attention':'Ready');
-        review('Optional features',[['Sound effects',draft.enableSfx],['Ambience',draft.enableAmbience],['Music',draft.enableMusic],['Auto-plan',draft.autoPlan],['Auto-play',draft.auto]].filter(item=>item[1]).map(item=>item[0]).join(', ') || 'All optional features are off',3,issues.some(item=>item.step===3)?'Needs Attention':'Optional');
-        review('Reading',`Custom skip rules: ${draft.ignoredTags || 'none'} · Automatic non-story filtering: ${draft.skipMeta===false?'off':'on'} · Highlight: ${draft.readAlong || 'off'}`,3,'Optional');
+        const plannerConnection=(draft.plannerMode==='jev'?connections.decision:connections.llm).find(item=>draft.plannerMode==='jev'?(draft.decisionConnection?item.id===draft.decisionConnection:item.is_default):(draft.planner?item.id===draft.planner:item.is_default));
+        const plannerDetail=draft.plannerMode==='heuristic'?'Local heuristic · ambiguous dialogue may need manual help':`${draft.plannerMode==='jev'?'Jev':'Standard LLM'} · ${plannerConnection?.name || (draft.plannerMode==='jev' && connections.directJev && session().jev?'Session Jev connection':'Missing planner connection')}${plannerConnection?.model?` · ${plannerConnection.model}`:''}`;
+        review('Planner',plannerDetail+(draft.plannerMode==='jev'?` · LLM fallback: ${draft.allowLlmFallback?'on':'off'}`:''),1,issues.some(item=>item.step===1)?'Needs Attention':'Ready');
+        review('Cast defaults',draft.fixed.map((actor,index)=>`${['Narrator','Persona','Main character'][index]}: ${actor.excluded?'disabled':(actor.voice || (draft.plannerMode==='llm'?'LLM chooses during planning':draft.plannerMode==='jev'?'Choir chooses with Jev':'needs a voice'))+` (gender preference: ${actor.gender || 'auto'})`}`).join(' · ')+` · NPCs: ${draft.npcPolicy.mode}`+(hasFishRoute()?` · Fish voice source: ${draft.fishVoiceSource}`:''),2,issues.some(item=>item.step===2)?'Needs Attention':'Ready');
+        review('Optional features',[['Sound effects',draft.enableSfx],['Ambience',draft.enableAmbience],[draft.loopMusic?'Music (loop between replies)':'Music',draft.enableMusic],['Auto-plan',draft.autoPlan],['Auto-play',draft.auto]].filter(item=>item[1]).map(item=>item[0]).join(', ') || 'All optional features are off',3,issues.some(item=>item.step===3)?'Needs Attention':'Optional');
+        review('Reading',`Custom skip rules: ${draft.ignoredTags || 'none'} · Automatic non-story filtering: ${draft.skipMeta===false?'off':'on'} · Highlight: ${draft.readAlong || 'off'} · Follow narration: ${draft.followNarration?'on':'off'} · Message controls: ${draft.sectionButtons?'on':'off'} · Auto-plan shortcut: ${draft.showAutoPlanAction?'shown':'hidden'}`,3,'Optional');
+        const retentionLabel={session:'this session only',1:'1 day',7:'7 days',30:'30 days',forever:'indefinitely'}[draft.retention] || 'invalid';
+        review('Playback & saved audio',`Mixer: ${draft.enableMixer?'on':'off'} · Loudness matching: ${draft.normalizeLoudness?'on':'off'} · New recordings: ${retentionLabel} · Prefetch: ${draft.prefetch} · Concurrent TTS: ${draft.concurrency} · Request size: ${draft.chunk} · Group speech: ${draft.batchSpeech?'on':'off'}`,3,issues.some(item=>item.step===3)?'Needs Attention':'Ready');
         for(const kind of ['tts','planner']){const test=tests.get(kind);element('p',test?.key===signature(kind)?`${kind==='tts'?'Speech':'Planner'} test passed: ${test.message}`:`${kind==='tts'?'Speech':'Planner'} connection has not been tested with these choices.`,body).className='cs-hint';}
         if(issues.length)say(issues.map(item=>item.message).join('\n'),true);
         element('p','Finish saves shared Speech & Planner preferences and defaults for new chats. Existing chat voice choices remain intact. You can run setup again from Choir settings.',body).className='cs-hint';
@@ -1952,15 +2390,18 @@ function createSetupWizard(ctx, adapter) {
       const issues=setupIssues(draft,connections,session());
       if(issues.length){say(issues.map(item=>item.message).join('\n'),true);return;}
       return task(async signal=>{
-        saving=true;
+        let committing=false;
         try {
         // Re-read connections to catch deleted connections before committing.
-        connections=await adapter.connections(signal);
+        const latestConnections=await adapter.connections(signal);
+        if(closed || signal.aborted)return;
+        connections=latestConnections;
         const latest=setupIssues(draft,connections,session());
         if(latest.length)throw new Error(latest.map(item=>item.message).join('\n'));
-        await adapter.save(draft,snapshot.config,signal);
+        await adapter.save(draft,snapshot.config,signal,()=>{committing=true;saving=true;cancellable=false;lock();});
+        if(closed || signal.aborted)return;
         completed=true;if(!closed){render();say('Setup completed successfully.');}
-        } finally {saving=false;}
+        } finally {if(committing)saving=false;}
       },'Validating and saving setup…');
     }
     render();
@@ -2368,7 +2809,8 @@ export async function setup(ctx) {
         <label hidden>Lumiverse API base<input data-et="apiBase" value="/api/v1"></label>
         <label>Freesound API key (Foley)<input data-et="freesoundApiKey" type="password" placeholder="Freesound token"></label>
       </div>
-      <p id="choir-chunk-hint" style="font-size:.85em;opacity:.75">Smaller chunks start playing sooner.</p>
+      <p id="choir-chunk-hint" style="font-size:.85em;opacity:.75">Shorter chunks can reduce the first wait, but many short requests can cause gaps at faster speeds.</p>
+      <p style="font-size:.85em;opacity:.75">For faster playback, try 2 prefetched passages and 2 concurrent TTS requests if your provider allows it. Prefetch 0 disables lookahead. More lookahead may generate speech you do not finish; changing playback speed does not speed up synthesis.</p>
       <div class="et-row">
         <label class="et-check"><input data-et="sectionButtons" type="checkbox"> Show message play controls</label>
         <label class="et-check"><input data-et="enableMixer" type="checkbox"> Floating audio mixer</label>
@@ -2399,44 +2841,46 @@ export async function setup(ctx) {
   for(const button of root.querySelectorAll('button'))button.type='button';
   const pending = new Map();
   let audioNamespace,audioNamespaceError;
-  try {
-    audioNamespace=await ctx.settings.get('audio:namespace');
-    if(!audioNamespace){audioNamespace=randomUuid();await ctx.settings.set('audio:namespace',audioNamespace);}
-  } catch(error){audioNamespaceError=error;}
-  let audioDatabase;
+  for(let attempt=0;attempt<2;attempt++){
+    try{
+      audioNamespace=await ctx.settings.get('audio:namespace');
+      if(!audioNamespace){audioNamespace=randomUuid();await ctx.settings.set('audio:namespace',audioNamespace);}
+      audioNamespaceError=null;break;
+    }catch(error){
+      audioNamespaceError=error;
+      if(attempt===0)await new Promise(resolve=>setTimeout(resolve,150));
+    }
+  }
+  let audioDatabase,audioDatabaseHandle;
   const sessionAudio=new Map();
-  async function recordingStore(operation,key,value) {
-    if(operation==='policy' && value.retention!=='session') {
-      for(const [sessionKey,record] of [...sessionAudio]) {
-        if(JSON.parse(sessionKey)[1]===JSON.parse(key)[1])await recordingStore('put',sessionKey,{...record,retention:value.retention});
-      }
+  function openRecordingDatabase(){
+    if(!audioDatabase){
+      const opening=new Promise((resolve,reject)=>{
+        const request=indexedDB.open('choir-recordings',1);
+        let settled=false;
+        const fail=error=>{if(settled)return;settled=true;reject(error);};
+        request.onupgradeneeded=()=>request.result.createObjectStore('recordings');
+        request.onsuccess=()=>{if(settled){try{request.result.close();}catch{}return;}settled=true;resolve(request.result);};
+        request.onerror=()=>fail(request.error || new Error('Device audio storage could not be opened.'));
+        request.onblocked=()=>fail(new Error('Close other Lumiverse tabs to enable recording storage.'));
+      });
+      audioDatabase=opening;
+      opening.then(db=>{
+        // A failed open is forgotten in the rejection handler, so a later call can retry.
+        if(audioDatabase!==opening){db.close();return;}
+        audioDatabaseHandle=db;
+        const forget=()=>{if(audioDatabaseHandle===db){audioDatabaseHandle=null;audioDatabase=null;}};
+        db.onversionchange=()=>{db.close();forget();};
+        db.onclose=forget;
+      },()=>{if(audioDatabase===opening)audioDatabase=null;});
     }
-    if(operation==='delete')sessionAudio.delete(key);
-    if(operation==='deleteChat')for(const sessionKey of [...sessionAudio.keys()]) {
-      if(JSON.parse(sessionKey)[1]===JSON.parse(key)[1])sessionAudio.delete(sessionKey);
-    }
-    if(operation==='get' && sessionAudio.has(key)){
-      const record=sessionAudio.get(key);
-      if(record.expiresAt==null || record.expiresAt>Date.now())return record;
-      sessionAudio.delete(key);
-    }
-    if(operation==='put') {
-      const createdAt=value.createdAt ?? Date.now(),retention=value.retention || 'forever';
-      value={...value,createdAt,expiresAt:retention==='forever' || retention==='session'?null:createdAt+Number(retention)*86400000};
-      if(retention==='session'){sessionAudio.set(key,value);return;}
-      // Keep a session copy if IndexedDB is unavailable or full.
-      sessionAudio.set(key,value);
-    }
-    if(audioNamespaceError)throw new Error(`Audio storage settings could not be loaded: ${audioNamespaceError.message}`);
-    if(!globalThis.indexedDB)throw new Error('Device audio storage is unavailable in this browser.');
-    if(!audioDatabase)audioDatabase=new Promise((resolve,reject)=>{
-      const request=indexedDB.open('choir-recordings',1);
-      request.onupgradeneeded=()=>request.result.createObjectStore('recordings');
-      request.onsuccess=()=>resolve(request.result);
-      request.onerror=()=>reject(request.error);
-      request.onblocked=()=>reject(new Error('Close other Lumiverse tabs to enable recording storage.'));
-    });
-    const db=await audioDatabase;
+    return audioDatabase;
+  }
+  // A request error bubbles to the transaction before transaction.error is
+  // guaranteed to be populated. The event target always carries the request's
+  // error, so use it first and never reject with null.
+  const recordingFailure=(event,fallback)=>event?.target?.error || event?.target?.transaction?.error || event?.currentTarget?.error || fallback;
+  function runRecordingTransaction(db,operation,key,value){
     return new Promise((resolve,reject)=>{
       const transaction=db.transaction('recordings','readwrite');
       const store=transaction.objectStore('recordings');
@@ -2444,7 +2888,10 @@ export async function setup(ctx) {
       if(!['policy','prune','deleteChat'].includes(operation)){
         const request=operation==='put'?store.put(value,key):operation==='delete'?store.delete(key):store.get(key);
         request.onsuccess=()=>{result=request.result;if(operation==='get' && result?.expiresAt!=null && result.expiresAt<=Date.now()){store.delete(key);result=undefined;}};
-        transaction.oncomplete=()=>{if(operation==='put')sessionAudio.delete(key);resolve(result);};transaction.onerror=()=>reject(transaction.error);transaction.onabort=()=>reject(transaction.error || new Error('Recording storage failed.'));return;
+        transaction.oncomplete=()=>{if(operation==='put')sessionAudio.delete(key);resolve(result);};
+        transaction.onerror=event=>reject(recordingFailure(event,new Error('Recording storage failed.')));
+        transaction.onabort=event=>reject(recordingFailure(event,new Error('Recording storage failed.')));
+        return;
       }
       const cursorRequest=store.openCursor();
       cursorRequest.onsuccess=()=>{
@@ -2468,9 +2915,100 @@ export async function setup(ctx) {
         request.onsuccess=()=>{result=request.result;};
       };
       transaction.oncomplete=()=>resolve(result);
-      transaction.onerror=()=>reject(transaction.error);
-      transaction.onabort=()=>reject(transaction.error || new Error('Recording storage failed.'));
+      transaction.onerror=event=>reject(recordingFailure(event,new Error('Recording storage failed.')));
+      transaction.onabort=event=>reject(recordingFailure(event,new Error('Recording storage failed.')));
     });
+  }
+  function recordingInUse(key){
+    for(const entry of [activePlayback,planSource])if(entry && recordingKey(entry.chatId,entry.messageId)===key)return true;
+    return Boolean(chatId && messagePlaybackId && recordingKey(chatId,messagePlaybackId)===key);
+  }
+  // Only the selected retention policy may end a recording's life. Indefinite
+  // audio (expiresAt === null) and unexpired timed audio are never removed here.
+  function purgeExpiredRecordings(db,keepKey){
+    return new Promise((resolve,reject)=>{
+      const transaction=db.transaction('recordings','readwrite');
+      const store=transaction.objectStore('recordings');
+      let removed=0;
+      const request=store.openCursor();
+      request.onsuccess=()=>{
+        const cursor=request.result;
+        if(cursor){
+          let identity;try{identity=JSON.parse(cursor.key);}catch{}
+          const record=cursor.value;
+          const expired=record?.expiresAt!=null && record.expiresAt<=Date.now();
+          if(identity?.[0]===audioNamespace && cursor.key!==keepKey && !recordingInUse(cursor.key) && expired){store.delete(cursor.key);removed++;}
+          cursor.continue();
+        }
+      };
+      transaction.oncomplete=()=>resolve(removed);
+      transaction.onerror=event=>reject(recordingFailure(event,new Error('Recording storage cleanup failed.')));
+      transaction.onabort=event=>reject(recordingFailure(event,new Error('Recording storage cleanup failed.')));
+    });
+  }
+  function recordingStore(operation,key,value) {
+    // Storage is optional for playback. A suspended IndexedDB request may still
+    // finish later, so keep it running while bounding how long the UI waits.
+    if(!['get','put'].includes(operation))return accessRecordingStore(operation,key,value);
+    let timer;
+    const deadline=new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error('Device audio storage is taking too long. Audio remains available in this session; pending saves continue in the background.')),5000);});
+    return Promise.race([accessRecordingStore(operation,key,value),deadline]).finally(()=>clearTimeout(timer));
+  }
+  async function accessRecordingStore(operation,key,value) {
+    if(operation==='policy' && value.retention!=='session') {
+      for(const [sessionKey,record] of [...sessionAudio]) {
+        if(JSON.parse(sessionKey)[1]===JSON.parse(key)[1])await recordingStore('put',sessionKey,{...record,retention:value.retention});
+      }
+    }
+    if(operation==='delete')sessionAudio.delete(key);
+    if(operation==='deleteChat')for(const sessionKey of [...sessionAudio.keys()]) {
+      if(JSON.parse(sessionKey)[1]===JSON.parse(key)[1])sessionAudio.delete(sessionKey);
+    }
+    if(operation==='get' && sessionAudio.has(key)){
+      const record=sessionAudio.get(key);
+      if(record.expiresAt==null || record.expiresAt>Date.now())return record;
+      sessionAudio.delete(key);
+    }
+    if(operation==='put') {
+      const createdAt=value.createdAt ?? Date.now(),retention=value.retention || 'forever';
+      value={...value,createdAt,expiresAt:retention==='forever' || retention==='session'?null:createdAt+Number(retention)*86400000};
+      if(retention==='session'){sessionAudio.set(key,value);return;}
+      // Keep a session copy if IndexedDB is unavailable or full.
+      sessionAudio.set(key,value);
+    }
+    if(audioNamespaceError)throw new Error(`Audio storage settings could not be loaded: ${audioNamespaceError.message}`);
+    if(!globalThis.indexedDB)throw new Error('Device audio storage is unavailable in this browser.');
+    let db=await openRecordingDatabase();
+    try{return await runRecordingTransaction(db,operation,key,value);}
+    catch(error){
+      error ||= new Error('Recording storage failed.');
+      if(error?.name==='InvalidStateError' || error?.name==='TransactionInactiveError'){
+        // The browser or another tab closed the connection. Reopen once instead of
+        // disabling saved audio for the rest of the session.
+        audioDatabaseHandle=null;audioDatabase=null;
+        db=await openRecordingDatabase();
+        return runRecordingTransaction(db,operation,key,value);
+      }
+      if(operation==='put' && error?.name==='QuotaExceededError'){
+        let removed=0;
+        try{removed=await purgeExpiredRecordings(db,key);}
+        catch(purgeError){
+          if(purgeError?.name==='InvalidStateError' || purgeError?.name==='TransactionInactiveError')throw purgeError;
+        }
+        if(removed){
+          try{
+            const result=await runRecordingTransaction(db,operation,key,value);
+            status(`Storage was full. Removed ${removed} expired recording${removed===1?'':'s'}; audio kept indefinitely was not touched.`);
+            return result;
+          }catch(retryError){
+            if(retryError?.name!=='QuotaExceededError')throw retryError;
+            error=retryError;
+          }
+        }
+        throw new Error(`Device audio storage is full.${removed?` ${removed} expired recording${removed===1?' was':'s were'} removed, but the new audio still did not fit.`:' Choir does not delete audio saved with “Indefinitely” retention automatically.'} Clear saved audio for another message or chat, or choose a shorter retention period. (${error.message})`);
+      }
+      throw error;
+    }
   }
   const recordingKey=(chat,message)=>JSON.stringify([audioNamespace,chat,message]);
   const unsubs = [];
@@ -2483,8 +3021,9 @@ export async function setup(ctx) {
   let activeCharacterCard=null,activePersonaName='',activeCardKey='';
   const autoReplyQueue=new Map(),seenAutoGenerations=new Set();let autoReplyTimer=null,autoReplyActive=null;
   let voices=[...GEMINI_VOICES], nativeConnections=[], nativeProviders=[], castRows=[], npcRows=[], voiceIdEditorCount=0;
-  const voiceCatalogues=new Map();
+  const voiceCatalogues=new Map();let voiceCatalogueRevision=0;
   let controller=null, currentAudio=null, finishAudio=null, objectUrl=null;
+  const paragraphPrefetchControllers=new Set();
   const defaults = () => ({planner:'',connection:'',decisionConnection:'',styleParam:'',apiBase:'/api/v1',chunk:1800,batchSpeech:false,concurrency:1,plannerTokens:8192,
     prefetch:1,normalizeLoudness:true,skipMeta:true,allowLlmFallback:false,sectionButtons:false,connectionMode:'several',enableMixer:false,singleVoices:{},
     extraVoices:'',ignoredTags:'',useStyle:true,auto:false,autoPlan:false,showAutoPlanAction:false,muteNarrator:false,enableSfx:true,enableAmbience:true,enableMusic:false,loopMusic:false,freesoundApiKey:'',npcPolicy:{mode:'llm',route:'',voice:'',voices:[]},fishVoiceSource:'community',plannerMode:'llm',useFastClassifier:false,useJev:false,jevApiKey:'',jevEndpoint:'https://api.typesafe.ai/v1',planBatchChars:3600,planBatchUnits:24,retention:'forever',readAlong:'off',followNarration:false,casts:{},fixed:[
@@ -2909,12 +3448,22 @@ export async function setup(ctx) {
     const latest=latestReply(),paused=voiceGapHold?voiceGapHold.paused:(!currentAudio || currentAudio.paused),label=currentAudio?(paused?'Resume Choir audio':'Pause Choir audio'):'Play latest reply';
     mixerPlay.innerHTML=(paused?ICON_TRANSPORT_PLAY:ICON_TRANSPORT_PAUSE).replace(/<circle[^>]*\/>/,'');mixerPlay.title=label;mixerPlay.setAttribute('aria-label',label);mixerPlay.disabled=currentAudio?!audioReady:busy || Boolean(controller) || !chatId || !latest;
     mixerPlanLatest.disabled=busy || Boolean(controller) || !chatId || !latest;
-    mixerStop.disabled=!controller && !currentAudio && !autoReplyQueue.size && !beds.ambience && !beds.music;
+    mixerStop.disabled=!controller && !currentAudio && !paragraphPrefetchControllers.size && !autoReplyQueue.size && !beds.ambience && !beds.music;
     $('stop').disabled=mixerStop.disabled;
     mixer.dataset.playState=currentAudio?(paused?'paused':'playing'):busy?'loading':'idle';playbackCaption.textContent=currentAudio?(paused?'Paused':'Now playing'):busy?(planningSource?'Planning speech':'Preparing audio'):'Playback';
   }
   function speakerExcluded(speaker){return normalizeName(speaker)==='narrator' && Boolean(config?.muteNarrator) || [...(config?.fixed || []),...Object.values(config?.casts || {}).flat()].some(actor=>normalizeName(actor.speaker)===normalizeName(speaker) && actor.excluded) || config?.npcPolicy?.mode==='skip' && Object.values(config.casts || {}).flat().some(actor=>normalizeName(actor.speaker)===normalizeName(speaker));}
   function playbackExcluded(segment){return (segment.unison?segment.unison.every(member=>speakerExcluded(member.speaker)):speakerExcluded(segment.speaker)) || segment.kind==='sfx' && config?.enableSfx===false || segment.kind==='ambience' && config?.enableAmbience===false || segment.kind==='music' && config?.enableMusic!==true;}
+  // Background markers have no standalone playback duration. Keep the display
+  // in audible clips while cache, resume and navigation retain plan indexes.
+  function audioProgress(items,index){
+    let current=0,total=0;
+    for(let i=0;i<items.length;i++){
+      if(isBed(items[i]) || playbackExcluded(items[i]))continue;
+      total++;if(i<=index)current++;
+    }
+    return `${current}/${total}`;
+  }
   function syncAmbiencePlayback(){if(!$('enableAmbience').checked)stopBeds('ambience');showFoleyStatus();updateTransport();}
   function syncMusicPlayback(){if(!$('enableMusic').checked)stopBeds('music');updateTransport();}
   function syncSfxPlayback(){showFoleyStatus();generationPolicyChanged?.();if(config?.enableSfx===false && currentSpeaker==='SFX')skipAudio?.();applyVolume();}
@@ -3010,6 +3559,7 @@ export async function setup(ctx) {
   async function ensureCatalogue(route,version=loadVersion) {
     if(disposed || version!==loadVersion)return [];
     if(voiceCatalogues.has(route))return voiceCatalogues.get(route);
+    const catalogueRevision=voiceCatalogueRevision;
     scopeLegacyExtraVoices();
     let extra=[...additionalVoices(config.extraVoices).filter(voice=>extraVoiceRoutes(voice.id).includes(route)),...(capturedDefaults?.voiceCatalogue || []).filter(voice=>voice.route===route)];
     const connectionId=route.startsWith('native:')?route.slice(7):'';
@@ -3024,8 +3574,15 @@ export async function setup(ctx) {
     const fallback=nativeProviders.find(item=>item.id===conn.provider)?.capabilities?.staticVoices || [];
     let data;
     try{data=await api(`/tts-connections/${encodeURIComponent(connectionId)}/voices`).then(response=>response.json());}
-    catch(error){if(!fallback.length && !extra.length && provider!=='openai_tts')throw error;data={voices:[]};}
+    catch(error){
+      if(disposed || version!==loadVersion)return [];
+      if(catalogueRevision!==voiceCatalogueRevision)return ensureCatalogue(route,version);
+      if(!fallback.length && !extra.length && provider!=='openai_tts')throw error;data={voices:[]};
+    }
     if(disposed || version!==loadVersion)return [];
+    // A refreshed connection may keep its ID while changing models or voices.
+    // Late responses must retry against the current connection, never cache the old list.
+    if(catalogueRevision!==voiceCatalogueRevision)return ensureCatalogue(route,version);
     let baseVoices=data.voices || [];
     if(!baseVoices.length)baseVoices=fallback.length?fallback:provider==='openai_tts'?OPENAI_VOICES:[];
     if(conn.provider==='openrouter_tts'){
@@ -3068,7 +3625,7 @@ export async function setup(ctx) {
   // The wizard uses the same connections, catalogue, synthesis, and default
   // format as the settings panel. It never persists a chat cast.
   let setupTestController=null,setupAutoStarted=false;
-  const wizardConnections=async(signal)=>{
+  const wizardConnections=async(signal,refresh=false)=>{
     const paths=['/tts-connections?limit=200','/connections?limit=200','/decision-connections?limit=200'];
     const results=await Promise.allSettled([...paths.map(path=>api(path,{signal}).then(response=>response.json())),rpc('ping',{},signal,8000)]);
     if(signal?.aborted)throw abortError();
@@ -3077,8 +3634,20 @@ export async function setup(ctx) {
       if(results[index].status==='fulfilled')result[kind]=results[index].value.data || [];
       else result.errors.push(`Could not load ${kind==='tts'?'TTS':kind==='llm'?'LLM':'Decision'} connections: ${results[index].reason.message}. Refresh to retry.`);
     });
-    // Use the fresh TTS list for every catalogue and synthesis lookup.
-    if(results[0].status==='fulfilled')nativeConnections=result.tts;
+    // Connection IDs survive edits to their provider/model. Refresh the voice
+    // lists too, including cached routes used by playback after setup closes.
+    if(results[0].status==='fulfilled'){
+      const previous=new Map(nativeConnections.map(connection=>[connection.id,JSON.stringify(connection)]));
+      const changed=refresh || result.tts.length!==nativeConnections.length || result.tts.some(connection=>previous.get(connection.id)!==JSON.stringify(connection));
+      nativeConnections=result.tts;
+      if(changed){
+        const cachedRoutes=[...voiceCatalogues.keys()].filter(route=>nativeConnections.some(connection=>route===`native:${connection.id}`));
+        ++voiceCatalogueRevision;voiceCatalogues.clear();
+        await Promise.allSettled(cachedRoutes.map(route=>ensureCatalogue(route)));
+        if(disposed || signal?.aborted)throw abortError();
+        voices=voiceCatalogues.get(scope(config)) || [];
+      }
+    }
     result.directJev=results[3].status==='fulfilled' && results[3].value.decisionsAvailable===false;
     return result;
   };
@@ -3098,7 +3667,7 @@ export async function setup(ctx) {
     report:message=>status(message,true),
     session:()=>({jev:$('jevKey').value.trim()}),
     setSession:(kind,value)=>{if(kind==='jev')$('jevKey').value=value;},
-    connections:wizardConnections,
+    connections:signal=>wizardConnections(signal,true),
     voices:route=>ensureCatalogue(route),
     stopTest:()=>{if(setupTestController){setupTestController.abort();setupTestController=null;stop(false);}},
     connectionGuide:()=>{tab.activate?.();status('Open Lumiverse’s Connect panel, then TTS, LLM, or Decision to configure a connection. Return to Choir, run setup again, and refresh connections.');},
@@ -3125,13 +3694,13 @@ export async function setup(ctx) {
       if(testSignal.aborted)throw abortError();
       await playBlob(blob,testSignal,actor.speaker || 'NPC',0,draft.normalizeLoudness);
     }),
-    save:async(draft,initial,signal)=>{
+    save:async(draft,initial,signal,onCommit)=>{
       await flushSettings();if(disposed || signal.aborted)throw abortError();
       const route=scope(draft),fixed=draft.fixed.map(actor=>({...actor,route:draft.connectionMode==='one'?route:actor.route || route}));
       const policy={...draft.npcPolicy,route:draft.connectionMode==='one'?'':draft.npcPolicy.route || ''};
       const selected=fixed.filter(actor=>!actor.excluded).map(actor=>({id:actor.voice,route:actor.route}));
       if(['single','preferred'].includes(policy.mode))selected.push(...(policy.mode==='single'?[policy.voice]:policy.voices).map(id=>({id,route:policy.route || route})));
-      const routes=[...new Set([route,...fixed.map(actor=>actor.route),...(policy.mode==='skip'?[]:[policy.route || route])])];
+      const routes=[...new Set([route,...fixed.filter(actor=>!actor.excluded).map(actor=>actor.route),...(policy.mode==='skip'?[]:[policy.route || route])])];
       const lists=await Promise.all(routes.map(async route=>{
         let list;
         try{list=await ensureCatalogue(route);}
@@ -3149,7 +3718,9 @@ export async function setup(ctx) {
         catalogue.set(JSON.stringify([voice.route,voice.id]),{...voice,name:voice.id});
       }
       validateNumericSettings(draft);
-      validateCastConfig({fixed:fixed.map(actor=>actor.excluded?{...actor,voice:''}:actor),npcs:[],voices:[...catalogue.values()],defaultRoute:route,npcPolicy:policy,useStyle:draft.useStyle});
+      // Disabled roles keep their saved choices, but need no catalogue from a
+      // removed connection. Validate their identity on the available default route.
+      validateCastConfig({fixed:fixed.map(actor=>actor.excluded?{...actor,voice:'',route}:actor),npcs:[],voices:[...catalogue.values()],defaultRoute:route,npcPolicy:policy,useStyle:draft.useStyle});
       if(disposed || signal.aborted)throw abortError();
       const [global,preset]=await Promise.all([ctx.settings.get(GLOBAL_SETTINGS_KEY),ctx.settings.get(CAPTURED_DEFAULTS_KEY)]);
       const choices=preferenceSnapshot(draft),baseline=preferenceSnapshot(initial);
@@ -3157,6 +3728,8 @@ export async function setup(ctx) {
       const changes=Object.fromEntries(Object.entries(choices).filter(([name,value])=>!Object.hasOwn(global || {},name) || JSON.stringify(value)!==JSON.stringify(baseline[name])));
       const defaultsPreset={...(preset || {}),version:2,npcPolicy:structuredClone(policy),leadVoices:fixed.map(actor=>Object.fromEntries(defaultVoiceFields.filter(name=>Object.hasOwn(actor,name)).map(name=>[name,actor[name]]))),
         voiceCatalogue:[...new Map([...(preset?.voiceCatalogue || []),...selected.filter(voice=>voice.id).map(voice=>catalogue.get(JSON.stringify([voice.route,voice.id])))].map(voice=>[JSON.stringify([voice.route,voice.id]),voice])).values()]};
+      if(disposed || signal.aborted)throw abortError();
+      onCommit?.();
       await saveSetupSettings(ctx.settings,[[GLOBAL_SETTINGS_KEY,{...(global || {}),...changes}],[CAPTURED_DEFAULTS_KEY,defaultsPreset]],{version:1,completed:true,deferred:false});
       capturedDefaults=defaultsPreset;++defaultsRevision;
       if(!disposed){
@@ -3841,7 +4414,30 @@ export async function setup(ctx) {
     const style=document.createElement('input');style.value=actor.style || '';style.maxLength=600;
     const aliases=document.createElement('input');aliases.value=(actor.aliases || []).join(', ');aliases.maxLength=3000;
     const pronunciation=document.createElement('input');pronunciation.value=actor.pronunciation || '';pronunciation.maxLength=300;pronunciation.placeholder='Optional instruction for supported providers';
+    const sayAsName=document.createElement('select');sayAsName.dataset.choirSayAsName='';sayAsName.setAttribute('aria-label','Name spelling to pronounce');
+    const refreshPronunciationTargets=()=>{
+      const selected=sayAsName.options.length?sayAsName.value:actor.sayAsName || '',written=name.value.trim();sayAsName.replaceChildren();option(sayAsName,'',written);
+      const variants=[...new Map(aliases.value.split(',').map(value=>value.trim()).filter(value=>value && normalizeName(value)!==normalizeName(written)).map(value=>[normalizeName(value),value])).values()];
+      for(const alias of variants)option(sayAsName,alias,alias);
+      if(selected && !variants.includes(selected))option(sayAsName,selected,`${selected} · saved spelling`);
+      sayAsName.value=selected;
+    };
+    refreshPronunciationTargets();
     const sayAs=document.createElement('input');sayAs.value=namePronunciation(actor);sayAs.maxLength=120;sayAs.placeholder='e.g. Eh-Lee-Zah';sayAs.dataset.choirSayAs='';
+    const pronunciationHint=document.createElement('small');pronunciationHint.dataset.choirPronunciationHint='';
+    const updatePronunciationHint=()=>{
+      const spelling=sayAs.value.trim(),written=namePronunciationTarget({speaker:name.value,sayAsName:sayAsName.value});
+      pronunciationHint.textContent=(spelling?`Every voice says “${written}” as “${spelling}”. `:`Enter how to say the written name “${written}”. `)+'Choose the name or alias used in the story under Name spelling to pronounce. Story text stays unchanged. Leave Say name as blank to use its written spelling.';
+    };
+    // An explicit edit of the older field must not silently disappear just
+    // because this editor has already written an empty sayAs property.
+    const promoteNameMapping=()=>{
+      if(!reserved){const spelling=namePronunciation({speaker:name.value.trim(),sayAsName:sayAsName.value,pronunciation:pronunciation.value});if(spelling)sayAs.value=spelling;}
+      updatePronunciationHint();
+    };
+    pronunciation.addEventListener('input',promoteNameMapping);pronunciation.addEventListener('change',promoteNameMapping);
+    sayAs.addEventListener('input',updatePronunciationHint);sayAsName.addEventListener('change',updatePronunciationHint);
+    for(const node of [name,aliases])node.addEventListener('input',()=>{refreshPronunciationTargets();updatePronunciationHint();});updatePronunciationHint();
     const accent=document.createElement('input');accent.value=actor.accent || '';accent.maxLength=300;accent.placeholder='Used only when the provider supports accent or instructions';
     const excluded=document.createElement('input');excluded.type='checkbox';excluded.checked=Boolean(actor.excluded);
 
@@ -3882,11 +4478,11 @@ export async function setup(ctx) {
     voiceSearchRow.append(voiceSearchInput,searchCommBtn,voiceIdBtn,auditionRowBtn);
     voiceWrap.append(voiceSearchRow,voice,voiceIdEditor);
 
-    for (const [label,node] of [['TTS connection',route],['Voice gender filter',gender],['Voice',voiceWrap],['Base delivery style',style],['Aliases (comma separated)',aliases],['Say name as',sayAs],['Speaking instruction',pronunciation],['Accent preference',accent]]) {
+    for (const [label,node] of [['TTS connection',route],['Voice gender filter',gender],['Voice',voiceWrap],['Base delivery style',style],['Aliases (comma separated)',aliases],['Name spelling to pronounce',sayAsName],['Say name as',sayAs],['Speaking instruction',pronunciation],['Accent preference',accent]]) {
       if(node!==route)(node===voiceWrap?voice:node).dataset.choirPersist='';
       const wrap=document.createElement('label');wrap.textContent=label;wrap.append(node);editor.append(wrap);
       if(node===route)wrap.hidden=single;
-      if(node===sayAs)wrap.hidden=reserved;
+      if(node===sayAs || node===sayAsName)wrap.hidden=reserved;
       if(node===pronunciation)wrap.title='Used only when the speech provider supports instructions. Use Say name as for name pronunciation.';
       if(node===gender || node===style)wrap.hidden=true;
       if(node===voiceWrap)wrap.style.cssText='grid-column:1 / -1;margin-top:2px';
@@ -3904,9 +4500,8 @@ export async function setup(ctx) {
     speedSlot.append(speed.root,followButton);speedSection.append(speedHeading,speedSlot);editor.append(speedSection);
     if(!reserved){
       const tools=document.createElement('div');tools.style.gridColumn='1 / -1';
-      const hint=document.createElement('small');hint.textContent='Say name as changes how every voice says this name in this chat. Story text stays unchanged. Leave blank to use its written spelling.';
       const test=document.createElement('button');test.type='button';test.className='et-btn-subtle';test.textContent='Test pronunciation';test.dataset.choirPronunciationTest='';test.setAttribute('aria-label',`Test pronunciation of ${actor.speaker}`);
-      test.onclick=()=>audition(`${name.value.trim()} opened the door.`);tools.append(hint,document.createElement('br'),test);editor.append(tools);
+      test.onclick=()=>audition(`${namePronunciationTarget({speaker:name.value,sayAsName:sayAsName.value})} opened the door.`);tools.append(pronunciationHint,document.createElement('br'),test);editor.append(tools);
     }
     if(!required){
       const move=document.createElement('button');move.type='button';move.className='et-btn-subtle';
@@ -3924,7 +4519,7 @@ export async function setup(ctx) {
     container.append(row);
     paintSpeakerSpeeds();
     updateCardProviderControls();
-    return {row,voiceChoice:()=>[name.value.trim(),voice.value],setExcluded:value=>{excluded.checked=value;},read:()=>({speaker:name.value.trim(),voice:single?actor.voice || '':voice.value,route:single?actor.route || '':route.value,gender:gender.value,style:style.value.trim(),aliases:aliases.value.split(',').map(a=>a.trim()).filter((a,i,list)=>a && normalizeName(a)!==normalizeName(name.value) && list.findIndex(b=>normalizeName(b)===normalizeName(a))===i),pronunciation:pronunciation.value.trim(),sayAs:sayAs.value.trim(),accent:accent.value.trim(),excluded:excluded.checked})};
+    return {row,voiceChoice:()=>[name.value.trim(),voice.value],setExcluded:value=>{excluded.checked=value;},read:()=>({speaker:name.value.trim(),voice:single?actor.voice || '':voice.value,route:single?actor.route || '':route.value,gender:gender.value,style:style.value.trim(),aliases:aliases.value.split(',').map(a=>a.trim()).filter((a,i,list)=>a && normalizeName(a)!==normalizeName(name.value) && list.findIndex(b=>normalizeName(b)===normalizeName(a))===i),pronunciation:pronunciation.value.trim(),sayAs:sayAs.value.trim(),sayAsName:sayAsName.value,accent:accent.value.trim(),excluded:excluded.checked})};
   }
   function renderCast() {
     $('fixed').replaceChildren();$('npcs').replaceChildren();
@@ -4010,6 +4605,7 @@ export async function setup(ctx) {
   }
   function validateNumericSettings(c){
     for(const actor of [...(c.fixed || []),...Object.values(c.casts || {}).flat()])if(actor.sayAs!==undefined && (typeof actor.sayAs!=='string' || actor.sayAs.length>120 || /[<>\[\]\r\n]/u.test(actor.sayAs)))throw new Error('Say name as must be plain pronunciation spelling, up to 120 characters.');
+    for(const actor of [...(c.fixed || []),...Object.values(c.casts || {}).flat()])if(actor.sayAsName!==undefined && (typeof actor.sayAsName!=='string' || actor.sayAsName.length>100 || /[<>\r\n]/u.test(actor.sayAsName)))throw new Error('Name spelling to pronounce must be plain text, up to 100 characters.');
     if(!Number.isInteger(c.chunk) || c.chunk<80 || c.chunk>MAX_SPEECH_CHARS)throw new Error('Max characters per request must be a whole number from 80 to 10000 (default: 1800).');
     if(!Number.isInteger(c.concurrency) || c.concurrency<1 || c.concurrency>4)throw new Error('Choose 1–4 concurrent TTS requests.');
     if(!Number.isInteger(c.prefetch) || c.prefetch<0 || c.prefetch>4)throw new Error('Prefetch must be 0–4 passages.');
@@ -4102,7 +4698,9 @@ export async function setup(ctx) {
   function stop(show=true,keepBed=false,keepMusic=false) {
     if(show)cancelAutoReplies();
     if(activePlayback && currentAudio)savePosition(currentAudio.currentTime || 0);
-    revision++;controller?.abort();controller=null;planningSource=null;advancePlayback=null;skipAudio=null;generationPolicyChanged=null;activePlayback=null;currentSpeaker='';currentGroupLevel=null;currentGroupNames=[];mixerPlaybackSegments=null;
+    revision++;controller?.abort();controller=null;
+    for(const pending of paragraphPrefetchControllers)pending.abort();paragraphPrefetchControllers.clear();
+    planningSource=null;advancePlayback=null;skipAudio=null;generationPolicyChanged=null;activePlayback=null;currentSpeaker='';currentGroupLevel=null;currentGroupNames=[];mixerPlaybackSegments=null;
     currentAudio?.pause();finishAudio?.();currentAudio=null;finishAudio=null;
     if(objectUrl){URL.revokeObjectURL(objectUrl);objectUrl=null;}
     audioReady=false;if(keepBed)pauseBeds(false);else if(keepMusic && continuousMusic()){stopBeds('ambience');pauseBeds(false);}else stopBeds();
@@ -4155,7 +4753,7 @@ export async function setup(ctx) {
   }
   async function loadVoices(version=loadVersion) {
     cataloguesReady=false;
-    voiceCatalogues.clear();
+    ++voiceCatalogueRevision;voiceCatalogues.clear();
     // Keep saved editors available even if the catalogue request fails.
     renderCast();
     const catalogue=await ensureCatalogue(scope(config),version);
@@ -4317,8 +4915,24 @@ export async function setup(ctx) {
   const cardFingerprint=card=>sha256Hex(JSON.stringify(['name','description','personality','scenario','first_mes'].map(field=>card?.[field] || '')));
   function rolesForCard(card){
     const local=characterCardRoles(card || {}),cached=config?.cardCastAnalysis?.key===activeCardKey?validateCardRoles(config.cardCastAnalysis.roles):[];
+    // A saved analysis may predate improved local profile detection. Keep its
+    // extra people, but let explicit profiles restore missing identities and
+    // aliases without charging for another analysis of the unchanged card.
+    const roles=local.map(role=>({...role,aliases:[...(role.aliases || [])]}));
+    const identity=role=>[role.name,...(role.aliases || [])].map(normalizeName);
+    const titles=new Set([card?.name,String(card?.name || '').split(/\s*\|+\s*/)[0]].map(normalizeName));
+    for(const role of cached){
+      if(local.length>1 && titles.has(normalizeName(role.name)))continue;
+      const exact=roles.find(candidate=>normalizeName(candidate.name)===normalizeName(role.name));
+      const names=identity(role),matches=roles.filter(candidate=>identity(candidate).some(name=>names.includes(name)));
+      // One cached group description cannot merge two separately named people.
+      if(!exact && matches.length>1)continue;
+      const existing=exact || matches[0];
+      if(existing)existing.aliases=[...new Set([...existing.aliases,role.name,...(role.aliases || [])])].filter(name=>normalizeName(name)!==normalizeName(existing.name)).slice(0,30);
+      else roles.push({...role,aliases:[...(role.aliases || [])]});
+    }
     const npcNames=new Set((config?.cardCastNPCs || []).map(normalizeName));
-    return (cached.length?cached:local).filter(role=>![role.name,...(role.aliases || [])].some(name=>npcNames.has(normalizeName(name))));
+    return validateCardRoles(roles).filter(role=>![role.name,...(role.aliases || [])].some(name=>npcNames.has(normalizeName(name))));
   }
   function expandCardRoles(value,roles,character){
     let renamed=false;
@@ -4345,7 +4959,7 @@ export async function setup(ctx) {
         const existing=value.fixed.find(actor=>matchesRole(actor,role));
         if(existing){mergeAliases(existing,role);continue;}
         const prior=Object.values(value.casts || {}).flat().find(actor=>matchesRole(actor,role));
-        const added={...template,...prior,speaker:role.name,voice:prior?.voice || '',aliases:role.aliases || [],pronunciation:prior?.pronunciation || '',sayAs:prior?namePronunciation(prior):''};
+        const added={...template,...prior,speaker:role.name,voice:prior?.voice || '',aliases:role.aliases || [],pronunciation:prior?.pronunciation || '',sayAs:prior?namePronunciation(prior):'',sayAsName:prior?.sayAsName || ''};
         transferChoices(prior,added);value.fixed.push(added);renamed=true;
       }
       const names=new Set(value.fixed.flatMap(actor=>[actor.speaker,...(actor.aliases || [])]).map(normalizeName));
@@ -4356,7 +4970,7 @@ export async function setup(ctx) {
       const template=value.fixed[2],occupied=new Set(value.fixed.filter((_,index)=>index!==2).map(actor=>normalizeName(actor.speaker)));
       const leads=roles.filter(role=>!occupied.has(normalizeName(role.name))).map((role,index)=>{
         const prior=Object.values(value.casts || {}).flat().find(actor=>matchesRole(actor,role));
-        const added={...template,...prior,speaker:role.name,voice:prior?.voice || (index===0?template.voice:''),aliases:[...new Set([...(roles.length===1?template.aliases || []:[]),...(role.aliases || [])])],pronunciation:prior?.pronunciation || (roles.length===1?template.pronunciation:'') || '',sayAs:prior?namePronunciation(prior):roles.length===1?namePronunciation(template):''};
+        const added={...template,...prior,speaker:role.name,voice:prior?.voice || (index===0?template.voice:''),aliases:[...new Set([...(roles.length===1?template.aliases || []:[]),...(role.aliases || [])])],pronunciation:prior?.pronunciation || (roles.length===1?template.pronunciation:'') || '',sayAs:prior?namePronunciation(prior):roles.length===1?namePronunciation(template):'',sayAsName:prior?prior.sayAsName || '':roles.length===1?template.sayAsName || '':''};
         transferChoices(prior,added);if(index===0)transferChoices(template,added);
         return added;
       });
@@ -4689,6 +5303,31 @@ export async function setup(ctx) {
   const userScroll=event=>{if(followContainer && (event.type!=='keydown' || /^(?:Arrow(?:Up|Down)|Page(?:Up|Down)|Home|End| )$/.test(event.key) && !event.target.closest?.('input,textarea,select,[contenteditable]')) && (followContainer.contains(event.target) || event.target===document.body))followPaused=true;};
   for(const type of ['wheel','touchmove','keydown'])document.addEventListener(type,userScroll,{capture:true,passive:true});
   unsubs.push(()=>{for(const type of ['wheel','touchmove','keydown'])document.removeEventListener(type,userScroll,{capture:true});});
+  // Decode once when audio arrives, while earlier speech plays. Keep only the
+  // measured gain, not the decoded PCM, and observe background failures here.
+  const loudnessMeasurements=new WeakMap();
+  function prepareLoudness(blob){
+    if(!loudnessMeasurements.has(blob))loudnessMeasurements.set(blob,(async()=>{
+      const AudioContextClass=globalThis.AudioContext || globalThis.webkitAudioContext;
+      if(!AudioContextClass)return {gain:1};
+      audioContext ||= new AudioContextClass();
+      const decoded=await audioContext.decodeAudioData(await blob.arrayBuffer());
+      return {gain:loudnessGain(Array.from({length:decoded.numberOfChannels},(_,i)=>decoded.getChannelData(i)),undefined,decoded.sampleRate)};
+    })().catch(error=>({gain:1,error})));
+    return loudnessMeasurements.get(blob);
+  }
+  function preparePlayback(blob,segment,snapshot){
+    if(blob && snapshot.normalizeLoudness && !segment?.unison && !isBed(segment))void prepareLoudness(blob);
+    return blob;
+  }
+  function playbackLoudness(blob,signal){
+    return new Promise((resolve,reject)=>{
+      const cancel=()=>{signal.removeEventListener('abort',cancel);reject(abortError());};
+      if(signal.aborted){cancel();return;}
+      signal.addEventListener('abort',cancel,{once:true});
+      prepareLoudness(blob).then(value=>{signal.removeEventListener('abort',cancel);resolve(value);});
+    });
+  }
   async function playBlob(blob,signal,speaker='',offset=0,normalize=false,paused=false,track=null) {
     if(signal.aborted)throw abortError();
     const url=URL.createObjectURL(blob);objectUrl=url;currentAudio=new Audio(url);
@@ -4709,9 +5348,10 @@ export async function setup(ctx) {
         audioContext ||= new AudioContextClass();await audioContext.resume();
         if(signal.aborted)throw abortError();
         if(normalize && !item?.unison){
-          const decoded=await audioContext.decodeAudioData(await blob.arrayBuffer());
+          const measured=await playbackLoudness(blob,signal);
           if(signal.aborted)throw abortError();
-          currentNormalize=loudnessGain(Array.from({length:decoded.numberOfChannels},(_,i)=>decoded.getChannelData(i)));
+          currentNormalize=measured.gain;
+          if(measured.error)throw measured.error;
         }
         mediaSource=audioContext.createMediaElementSource(audio);gain=audioContext.createGain();currentGain=gain;
         mediaSource.connect(gain);gain.connect(audioContext.destination);audio.volume=1;applyVolume();
@@ -4761,8 +5401,8 @@ export async function setup(ctx) {
     const prefix=actor?.style?`${actor.style}. `:'',style=segment.style || '';
     return {...segment,style:prefix && style.startsWith(prefix)?style.slice(prefix.length):style===actor?.style?'':style,...(segment.unison?{unison:segment.unison.map(member=>withoutBase(member,cast))}:{})};
   };
-  const actorFor=(segment,snapshot)=>[...(snapshot.fixed || []),...(snapshot.casts?.[scope(snapshot)] || [])].find(actor=>normalizeName(actor.speaker)===normalizeName(segment.speaker));
-  const pronunciationActors=snapshot=>[...(snapshot.fixed || []),...(snapshot.casts?.[scope(snapshot)] || snapshot.npcs || [])];
+  const pronunciationActors=snapshot=>[...(snapshot.fixed || []),...(snapshot.npcs ?? snapshot.casts?.[scope(snapshot)] ?? [])];
+  const actorFor=(segment,snapshot)=>pronunciationActors(snapshot).find(actor=>normalizeName(actor.speaker)===normalizeName(segment.speaker));
   const speechTextOptions=snapshot=>({speechText:text=>respellNames(text,pronunciationActors(snapshot)),atomicWords:namePronunciations(pronunciationActors(snapshot)).map(rule=>rule.name)});
   function recordingSpeechText(segment,snapshot){return segment.kind?null:speechMembers(segment).map(member=>respellNames(member.text,pronunciationActors(snapshot)));}
   function recordedSpeechMatches(recording,index,snapshot){
@@ -4788,7 +5428,7 @@ export async function setup(ctx) {
       if(Array.isArray(allowed) && !allowed.includes(actor.accent))throw new Error(`Accent ${actor.accent} is not supported by ${connection.name}. Supported accents: ${allowed.join(', ')}.`);
       parameters.accent=actor.accent;
     }
-    const legacyMapping=actor && namePronunciation({speaker:actor.speaker,pronunciation:actor.pronunciation});
+    const legacyMapping=actor && namePronunciation({speaker:actor.speaker,sayAsName:actor.sayAsName,pronunciation:actor.pronunciation});
     const instructions=[snapshot.useStyle?segment.style:'',legacyMapping?'':actor?.pronunciation,actor?.accent && !supported.accent?`Accent: ${actor.accent}`:''].filter(Boolean).join('. ');
     if(styleParam && instructions)parameters[styleParam]=instructions;
     return {segment:{...segment,text:respellNames(segment.text,pronunciationActors(snapshot)),route,style:openRouterStyle?instructions:family==='fish_audio' && snapshot.useStyle?segment.style:''},connection,parameters};
@@ -4953,21 +5593,26 @@ export async function setup(ctx) {
     }
     return new Blob([mixUnisonAudio(tracks,audioContext.sampleRate,{normalize:snapshot.normalizeLoudness})],{type:'audio/wav'});
   }
-  function createStreamingPlayer(snapshot,source,cached,ctrl,token) {
+  function createStreamingPlayer(snapshot,source,cached,ctrl,token,{pruneStale=false,retain=[]}={}) {
     const segments=[];
     const warnings=new Set();
     const warnFoley=error=>{warnings.add(error.message);if(token===revision)showFoleyStatus(`SFX skipped: ${[...warnings].join('; ')}. Speech continues.`);};
     const ready=new Map();
     const resolvers=new Map();
     const synthesisStages=new Map();
-    const synthesisStatus=(index,message)=>{synthesisStages.set(index,message);if(token===revision && index===playIdx && !currentAudio)status(message);};
+    const synthesisStatus=(index,format)=>{synthesisStages.set(index,format);if(token===revision && index===playIdx && !currentAudio)status(format());};
     let nextToSynthesize=0;
     let activeWorkers=0;
     let isDoneAdding=false;
     let wakePlayback=null;
     const blobs=[];
-    let totalExpected=0;
     let playIdx=0,failed=false,saveError='',saveQueue=Promise.resolve();
+    const waitForSaves=()=>new Promise((resolve,reject)=>{
+      const cancel=()=>reject(abortError());
+      if(ctrl.signal.aborted){cancel();return;}
+      ctrl.signal.addEventListener('abort',cancel,{once:true});
+      saveQueue.then(resolve,reject).finally(()=>ctrl.signal.removeEventListener('abort',cancel));
+    });
     const skipped=new Set(),failures=new Set(),scheduled=new Set();let jumpTo=null,pauseNext=false,initialized=false,resumePending=Boolean(source.resume),wakePolicy;
     const blockStart=(index)=>{const passage=segments[index]?.passageIndex ?? index;while(index>0 && (segments[index-1].passageIndex ?? index-1)===passage)index--;return index;};
     advancePlayback=(direction=1)=>{
@@ -4983,9 +5628,35 @@ export async function setup(ctx) {
     const inflight=new Map();
     // Upgrade old complete recordings without discarding their audio.
     if(!cached?.passages)for(const [index,segment] of (cached?.segments || []).entries())if(cached.blobs?.[index] && (!segment.turns || segment.turns.length===1) && recordedSpeechMatches(cached,index,snapshot))passages[cacheKey(segment,snapshot)]=cached.blobs[index];
+    let currentKeys=null,savedKeys=null;
+    const currentPassageKeys=()=>currentKeys ||= (()=>{
+      const keys=new Set();
+      // `retain` is the unfiltered plan. It keeps audio for speakers currently
+      // set to No voice, so turning them back on can reuse what was cached.
+      for(const segment of [...segments,...retain]){
+        try{keys.add(cacheKey(segment,snapshot));}catch{}
+        if(segment.unison)for(const member of speechMembers(segment))try{keys.add(cacheKey(member,snapshot));}catch{}
+      }
+      return [...keys];
+    })();
+    const previousPassageKeys=()=>cached?.passageKeys || Object.keys(cached?.passages || {});
+    const savedPassageKeys=()=>savedKeys ||= pruneStale?currentPassageKeys():[...new Set([...previousPassageKeys(),...currentPassageKeys()])];
+    // A full replay keeps the current plan and the immediately previous
+    // generation, so one voice, route, mode or text change can be undone
+    // without paying for the same speech again. Older generations are dropped,
+    // which bounds the record at two plans. Section playback keeps every clip.
+    const pruneStalePassages=()=>{
+      if(!pruneStale)return;
+      const keep=new Set(currentPassageKeys());
+      for(const key of previousPassageKeys())keep.add(key);
+      for(const key of Object.keys(passages))if(!keep.has(key))delete passages[key];
+    };
     const persist=()=>{
-      const value={content:source.content,transcript:source.transcript,segments:[...segments],blobs:[...blobs],speechTexts:segments.map(segment=>recordingSpeechText(segment,snapshot)),passages:{...passages},sfxPlacement:SFX_PLACEMENT_VERSION,retention:snapshot.retention};
-      saveQueue=saveQueue.then(()=>recordingStore('put',recordingKey(source.chatId,source.messageId),value)).catch(error=>{saveError=error.message;});
+      const value={content:source.content,transcript:source.transcript,segments:[...segments],blobs:[...blobs],speechTexts:segments.map(segment=>recordingSpeechText(segment,snapshot)),passages:{...passages},passageKeys:isDoneAdding?savedPassageKeys():(cached?.passageKeys || []),sfxPlacement:SFX_PLACEMENT_VERSION,retention:snapshot.retention};
+      // Submit in order, but do not make synthesis or audible playback wait for
+      // disk commits. IndexedDB orders these read/write transactions itself.
+      const saving=recordingStore('put',recordingKey(source.chatId,source.messageId),value).catch(error=>{saveError=error.message;});
+      saveQueue=Promise.all([saveQueue,saving]).then(()=>{});
       return saveQueue;
     };
     // Beds load beside the speech queue, so a slow download never delays the words.
@@ -4995,7 +5666,7 @@ export async function setup(ctx) {
         const seg=segments[index],key=cacheKey(seg,snapshot);
         const signal=seg.kind==='music' && continuousMusic()?bedPrefetch.signal:ctrl.signal;
         blobs[index]=passages[key] ||= await fetchFoleyAudio(seg,snapshot,signal);
-        await persist();return blobs[index];
+        void persist();return blobs[index];
       })().catch(error=>{if(!ctrl.signal.aborted && token===revision)warnFoley(error);throw error;}));
       return bedLoads.get(index);
     };
@@ -5013,7 +5684,15 @@ export async function setup(ctx) {
 
     function pump() {
       const concurrency=Math.max(1,Number(snapshot.concurrency)||1);
-      while(!failed && !ctrl.signal.aborted && activeWorkers<concurrency && nextToSynthesize<segments.length && nextToSynthesize<=playIdx+Number(snapshot.prefetch ?? 1)) {
+      // Background markers never occupy playback time. Count audible passages
+      // for lookahead, so a music/ambience marker cannot postpone the next TTS
+      // request until the playing clip ends, especially at faster speeds.
+      let prefetchEnd=playIdx, audibleAhead=0;
+      for(;prefetchEnd<segments.length;prefetchEnd++){
+        if(isBed(segments[prefetchEnd]) || playbackExcluded(segments[prefetchEnd]))continue;
+        if(audibleAhead++>=Number(snapshot.prefetch ?? 1))break;
+      }
+      while(!failed && !ctrl.signal.aborted && activeWorkers<concurrency && nextToSynthesize<segments.length && nextToSynthesize<=prefetchEnd) {
         const idx=nextToSynthesize++;
         if(playbackExcluded(segments[idx]))continue;
         if(isBed(segments[idx])){if(!segments[idx][segments[idx].kind].stop)loadBed(idx).catch(()=>{});continue;}
@@ -5025,20 +5704,20 @@ export async function setup(ctx) {
           try {
             const seg=segments[idx];
             if(ctrl.signal.aborted)throw abortError();
-            synthesisStatus(idx,`Synthesizing ${idx+1}/${totalExpected || segments.length}: ${seg.speaker} · ${seg.voice}`);
+            synthesisStatus(idx,()=>`Synthesizing ${audioProgress(segments,idx)}: ${seg.speaker} · ${seg.voice}`);
             const request=synthesisSettings(seg,snapshot),key=cacheKey(seg,snapshot);
             let blob=passages[key];
             if(!blob && inflight.has(key))blob=await inflight.get(key);
             if(!blob){flightKey=key;const promise=new Promise((resolve,reject)=>{resolveFlight=resolve;rejectFlight=reject;});promise.catch(()=>{});inflight.set(key,promise);}
             if(blob) {
-              synthesisStatus(idx,`Loading cached audio ${idx+1}/${totalExpected || segments.length}: ${seg.speaker}`);
+              synthesisStatus(idx,()=>`Loading cached audio ${audioProgress(segments,idx)}: ${seg.speaker}`);
             } else if(seg.kind==='sfx') {
               blob=await fetchFoleyAudio(seg,snapshot,ctrl.signal);
             } else if(seg.unison){
               blob=await synthesizeUnisonBlob(seg,snapshot,ctrl.signal,async member=>{
                 const memberKey=cacheKey(member,snapshot);
                 let audio=passages[memberKey];
-                if(!audio){audio=await synthesizeSpeechBlob(member,snapshot,ctrl.signal);passages[memberKey]=audio;await persist();}
+                if(!audio){audio=await synthesizeSpeechBlob(member,snapshot,ctrl.signal);passages[memberKey]=audio;void persist();}
                 return audio;
               });
             } else {
@@ -5047,7 +5726,8 @@ export async function setup(ctx) {
             if(token!==revision || ctrl.signal.aborted)throw abortError();
             resolveFlight?.(blob);
             blobs[idx]=blob;passages[key]=blob;
-            await persist();
+            preparePlayback(blob,seg,snapshot);
+            void persist();
             void refreshCacheStatus().catch(()=>{});
             resolvers.get(idx)({blob});
           } catch(error) {
@@ -5063,10 +5743,10 @@ export async function setup(ctx) {
       }
     }
 
-    function push(newSegments,total) {
-      if(total)totalExpected=total;
+    function push(newSegments) {
       // Beds load as soon as they are known, so a new bed is ready when its marker plays.
       for(const s of newSegments){segments.push(s);if(isBed(s) && !s[s.kind].stop && !playbackExcluded(s))loadBed(segments.length-1).catch(()=>{});}
+      currentKeys=null;savedKeys=null;
       mixerPlaybackSegments=segments;
       if(!initialized && segments.length){initialized=true;if(source.resume){const start=segments.findIndex(segment=>segment.passageIndex>source.resume.passage || (segment.passageIndex===source.resume.passage && segment.chunkIndex>=(source.resume.chunk || 0)));playIdx=start<0?segments.length:start;nextToSynthesize=playIdx;}}
       pump();
@@ -5075,6 +5755,7 @@ export async function setup(ctx) {
 
     function finish() {
       isDoneAdding=true;
+      pruneStalePassages();
       wakePlayback?.();
     }
 
@@ -5088,15 +5769,15 @@ export async function setup(ctx) {
         }
         if(playbackExcluded(segments[playIdx]) || isBed(segments[playIdx])){playIdx++;nextToSynthesize=Math.max(nextToSynthesize,playIdx);pump();continue;}
         ensureSlot(playIdx);pump();
-        status(synthesisStages.get(playIdx) || `Waiting for audio ${playIdx+1}/${totalExpected || segments.length}: ${segments[playIdx].speaker}`);updateTransport();
+        status(synthesisStages.get(playIdx)?.() || `Waiting for audio ${audioProgress(segments,playIdx)}: ${segments[playIdx].speaker}`);updateTransport();
         const outcome=await Promise.race([ready.get(playIdx),new Promise(resolve=>{wakePolicy=resolve;})]);wakePolicy=null;
         if(outcome.policy)continue;
         if(token!==revision || ctrl.signal.aborted)throw abortError();
         if(outcome.skip){playIdx++;nextToSynthesize=Math.max(nextToSynthesize,playIdx);pump();continue;}
-        if(outcome.error){await saveQueue;throw new Error(`${outcome.error.message} Completed passages were retained.${saveError?` Storage failed: ${saveError}`:''}`);}
+        if(outcome.error){await waitForSaves();throw new Error(`${outcome.error.message} Completed passages were retained.${saveError?` Storage failed: ${saveError}`:''}`);}
         const blob=outcome.blob;
         const seg=segments[playIdx];
-        status(`Playing ${playIdx+1}/${totalExpected || segments.length}: ${seg.speaker}`);
+        status(`Playing ${audioProgress(segments,playIdx)}: ${seg.speaker}`);
         activePlayback={chatId:source.chatId,messageId:source.messageId,content:source.content,passage:seg.passageIndex ?? playIdx,chunk:seg.chunkIndex ?? 0};
         const offset=resumePending && source.resume.passage===activePlayback.passage && source.resume.chunk===activePlayback.chunk?source.resume.seconds:0;resumePending=false;
         const paused=pauseNext;pauseNext=false;
@@ -5110,9 +5791,9 @@ export async function setup(ctx) {
         activePlayback={...activePlayback,passage:segments[playIdx]?.passageIndex ?? (activePlayback.passage+1),chunk:segments[playIdx]?.chunkIndex ?? 0,complete:isDoneAdding && playIdx===segments.length};
         savePosition(0);activePlayback=null;pump();
       }
-      await saveQueue;
+      await waitForSaves();
       if(saveError)status(`Audio could not be saved: ${saveError}`,true);
-      return {blobs,segments,warnings:[...warnings]};
+      return {blobs,segments,warnings:[...warnings],passages,passageKeys:savedPassageKeys()};
     })().finally(()=>{if(token===revision)fadeOutBeds();});
 
     // Observe failures immediately while the next planning section is pending.
@@ -5154,7 +5835,12 @@ export async function setup(ctx) {
     const resume=options.resume?await ctx.settings.get(`position:${chatId}`):null;
     if(token!==revision || ctrl.signal.aborted)throw abortError();
     const validResume=resume?.messageId===planSource.messageId && sameSpeech(resume.content,planSource.content) && !resume.complete?resume:null;
+    // Only a whole-message playback can safely discard other saved clips.
+    const fullPlayback=options.clip===undefined && options.indices===undefined;
     const selected=plan.segments.flatMap((segment,index)=>options.indices && !options.indices.includes(index)?[]:[{...segment,passageIndex:index}]);
+    // Keep every clip the plan can produce, including speakers and sound types
+    // currently switched off, so changing those controls can reuse cached audio.
+    const retain=fullPlayback?playbackBatches(selected,{...snapshot,enableSfx:true,enableAmbience:true,enableMusic:true},{filterMuted:false}):[];
     let segments=snapshot.batchSpeech?playbackBatches(selected,snapshot):selected.flatMap(segment=>playbackBatches([segment],snapshot));
     if(options.clip!==undefined){
       if(!snapshot.batchSpeech || !Number.isInteger(options.clip) || !segments[options.clip] || isBed(segments[options.clip]))throw new Error('This audio clip changed. Choose a current clip.');
@@ -5172,13 +5858,13 @@ export async function setup(ctx) {
     if(source.resume && cached?.signature!==signature && (snapshot.batchSpeech || cached?.segments?.some(segment=>segment.turns?.length>1) || outdatedSfxRecording(cached || {})))source.resume=null;
     setBusy(true);
     try {
-      const player=createStreamingPlayer(snapshot,source,cached,ctrl,token);
-      player.push(segments,segments.length);
+      const player=createStreamingPlayer(snapshot,source,cached,ctrl,token,{pruneStale:fullPlayback,retain});
+      player.push(segments);
       player.finish();
-      const {blobs,warnings}=await player.playbackPromise;
+      const {blobs,warnings,passages,passageKeys}=await player.playbackPromise;
       {
         if(token!==revision || ctrl.signal.aborted)throw abortError();
-        try{const partial=await recordingStore('get',key);await recordingStore('put',key,{...partial,content:source.content,transcript:source.transcript,signature,segments,blobs,speechTexts:segments.map(segment=>recordingSpeechText(segment,snapshot)),sfxPlacement:SFX_PLACEMENT_VERSION,retention:snapshot.retention});storageError='';}
+        try{const partial=await recordingStore('get',key);await recordingStore('put',key,{...partial,content:source.content,transcript:source.transcript,signature,segments,blobs,passages,passageKeys,speechTexts:segments.map(segment=>recordingSpeechText(segment,snapshot)),sfxPlacement:SFX_PLACEMENT_VERSION,retention:snapshot.retention});storageError='';}
         catch(error){storageError=error.message;}
       }
       if(token===revision){renderMessages();status((storageError?`Playback finished. Audio could not be saved: ${storageError}`:snapshot.retention==='session'?'Playback finished. Audio kept for this session; Replay is available beside the message.':'Playback finished. Audio saved on this device; Replay is available beside the message.')+foleyWarning(warnings));}
@@ -5209,7 +5895,7 @@ export async function setup(ctx) {
         status('Updating pronunciation in saved speech…');
         const source={chatId:targetChat,messageId,content:recording.content,transcript:recording.transcript};
         const player=createStreamingPlayer(snapshot,source,recording,ctrl,token);
-        player.push(recording.segments,recording.segments.length);player.finish();
+        player.push(recording.segments);player.finish();
         const {warnings}=await player.playbackPromise;
         if(token===revision)status('Playback finished. Name pronunciation updated.'+foleyWarning(warnings));
         return;
@@ -5221,7 +5907,14 @@ export async function setup(ctx) {
         const blob=recording.blobs[index];
         if(!blob || speakerExcluded(recording.segments[index].speaker) || recording.segments[index].kind==='sfx' && config.enableSfx===false || isBed(recording.segments[index])){index++;continue;}
         if(token!==revision || ctrl.signal.aborted)throw abortError();
-        status(`Replaying ${index+1}/${recording.blobs.length}: ${recording.segments[index].speaker}`);
+        // Cached replay has no synthesis pump. Prepare the current and next
+        // audible clip before handoff, skipping background markers.
+        let ahead=0;
+        for(let next=index;next<recording.blobs.length && ahead<2;next++){
+          if(playbackExcluded(recording.segments[next]) || isBed(recording.segments[next]))continue;
+          preparePlayback(recording.blobs[next],recording.segments[next],snapshot);ahead++;
+        }
+        status(`Replaying ${audioProgress(recording.segments,index)}: ${recording.segments[index].speaker}`);
         const segment=recording.segments[index];
         let nextIndex=index+1;
         advancePlayback=(direction=1)=>{if(!skipAudio || ctrl.signal.aborted || token!==revision)return;const passage=segment.passageIndex ?? index;if(direction<0){let start=index;while(start>0 && (recording.segments[start-1].passageIndex ?? start-1)===passage)start--;nextIndex=Math.max(0,start-1);const previous=recording.segments[nextIndex].passageIndex ?? nextIndex;while(nextIndex>0 && (recording.segments[nextIndex-1].passageIndex ?? nextIndex-1)===previous)nextIndex--;}else while(nextIndex<recording.segments.length && (recording.segments[nextIndex].passageIndex ?? nextIndex)===passage)nextIndex++;pauseNext=heldPaused();skipAudio();};
@@ -5675,7 +6368,7 @@ export async function setup(ctx) {
 
   async function synthesizeSegment(seg,snapshot,signal) {
     if(seg.kind)return fetchFoleyAudio(seg,snapshot,signal);
-    if(seg.unison)return synthesizeUnisonBlob(seg,snapshot,signal,member=>getCachedOrSynthesize(member,snapshot,signal));
+    if(seg.unison)return synthesizeUnisonBlob(seg,snapshot,signal,member=>getCachedOrSynthesize(member,snapshot,signal,false));
     return synthesizeSpeechBlob(seg,snapshot,signal);
   }
 
@@ -5685,13 +6378,13 @@ const paragraphAudioCache = new Map();
   function segmentCacheKey(seg, snap) {
     return cacheKey(seg,snap);
   }
-  function getCachedOrSynthesize(seg, snap, sig) {
+  function getCachedOrSynthesize(seg, snap, sig, prepare=true) {
     const k = segmentCacheKey(seg, snap);
     const cached=paragraphAudioCache.get(k);
-    if(cached && !cached.signal?.aborted)return cached.promise;
+    if(cached && !cached.signal?.aborted)return cached.promise.then(blob=>prepare?preparePlayback(blob,seg,snap):blob);
     const entry={signal:sig};
     const prom = synthesizeSegment(seg, snap, sig).then(blob=>{
-      sig?.throwIfAborted();entry.signal=null;return blob;
+      sig?.throwIfAborted();entry.signal=null;return prepare?preparePlayback(blob,seg,snap):blob;
     }).catch(err => {
       if(paragraphAudioCache.get(k)===entry)paragraphAudioCache.delete(k);
       throw err;
@@ -5807,6 +6500,8 @@ const paragraphAudioCache = new Map();
 
       const ctrl = new AbortController();
       controller = ctrl;
+      paragraphPrefetchControllers.add(ctrl);
+      let finishParagraphWork=()=>Promise.resolve();
       updateTransport();
       const onAbort = () => ctrl.abort();
       signal?.addEventListener('abort', onAbort, { once: true });
@@ -5828,36 +6523,72 @@ const paragraphAudioCache = new Map();
         const prefetchBeds=list=>{for(const batch of list)if(isBed(batch) && !batch[batch.kind].stop && !playbackExcluded(batch))getCachedOrSynthesize(batch,snapshot,bedPrefetch.signal).catch(()=>{});};
         prefetchBeds(batches);
 
-        // Prefetch upcoming paragraph in background for 0ms transition latency
+        // Current speech enters the bounded queue first. Background markers do
+        // not consume lookahead, and the next paragraph uses only spare slots
+        // after the remaining audible batches in this paragraph.
+        const speechJobs=new Map(),pendingSpeech=[];
+        let speechWorkers=0,currentBatchIndex=0,nextBatches=[];
+        const pumpSpeech=()=>{
+          if(ctrl.signal.aborted || token!==revision || disposed){for(const job of pendingSpeech.splice(0))job.reject(abortError());return;}
+          while(pendingSpeech.length && speechWorkers<Math.max(1,Number(snapshot.concurrency)||1)){
+            const job=pendingSpeech.shift();
+            if(playbackExcluded(job.batch)){speechJobs.delete(job.key);job.resolve(null);continue;}
+            speechWorkers++;
+            getCachedOrSynthesize(job.batch,snapshot,ctrl.signal).then(job.resolve,job.reject).finally(()=>{speechWorkers--;pumpSpeech();});
+          }
+        };
+        const queueSpeech=batch=>{
+          const key=segmentCacheKey(batch,snapshot);
+          if(!speechJobs.has(key)){
+            let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b;});promise.catch(()=>{});
+            speechJobs.set(key,promise);pendingSpeech.push({key,batch,resolve,reject});pumpSpeech();
+            return promise;
+          }
+          return speechJobs.get(key);
+        };
+        const prefetchSpeech=index=>{
+          if(ctrl.signal.aborted || token!==revision)return;
+          let remaining=1+Math.max(0,Number(snapshot.prefetch)||0);
+          for(let next=index;next<batches.length && remaining>0;next++){
+            if(isBed(batches[next]) || playbackExcluded(batches[next]))continue;
+            queueSpeech(batches[next]);remaining--;
+          }
+          if(snapshot.prefetch>0)for(const batch of nextBatches){
+            if(remaining<=0)break;
+            if(isBed(batch) || playbackExcluded(batch))continue;
+            queueSpeech(batch);remaining--;
+          }
+        };
+        ctrl.signal.addEventListener('abort',pumpSpeech,{once:true});
+        let nextCueWork=Promise.resolve();
+        finishParagraphWork=async()=>{await nextCueWork;await Promise.allSettled([...speechJobs.values()]);};
+
+        // Discover cues early; speech joins the queue when it falls within lookahead.
         if (snapshot.prefetch>0 && nextText && typeof nextText === 'string' && nextText.trim()) {
           // The current paragraph's music has not started yet, so name it directly.
           const carried = lastMusic(paragraphCues.get(paragraphSegments(text, snapshot, speaker).cleanPara)?.music);
-          void loadParagraphCues(nextText, snapshot, '', ctrl.signal, carried).catch(() => {}).then(() => {
-            const next = planAndBatchParagraph(nextText, snapshot, true), first = next.find(batch => !isBed(batch));
-            if (token === revision) prefetchBeds(next);
-            if (!ctrl.signal.aborted && first && !playbackExcluded(first)) {
-              getCachedOrSynthesize(first, snapshot, ctrl.signal).catch(() => {});
-            }
+          nextCueWork=loadParagraphCues(nextText, snapshot, '', ctrl.signal, carried).catch(() => {}).then(() => {
+            if(ctrl.signal.aborted || token!==revision)return;
+            nextBatches=planAndBatchParagraph(nextText,snapshot,true);
+            prefetchBeds(nextBatches);prefetchSpeech(currentBatchIndex);
           }).catch(() => {});
         }
 
         for (let i = 0; i < batches.length; i++) {
           if (ctrl.signal.aborted || signal?.aborted) throw abortError();
+          currentBatchIndex=i;
           const batch = batches[i];
           if(playbackExcluded(batch))continue;
           // The bed keeps running after this paragraph until another bed, a stop entry, stop() or cancellation.
           if(isBed(batch)){followBed(batch[batch.kind],bedSignal=>getCachedOrSynthesize(batch,snapshot,bedSignal).catch(error=>{if(!bedSignal.aborted)warnFoley(error);throw error;}),batch.kind);continue;}
 
-          // Pipeline next batch synthesis concurrently with current batch playback
-          if (snapshot.prefetch>0 && i + 1 < batches.length && !playbackExcluded(batches[i+1]) && !isBed(batches[i+1])) {
-            getCachedOrSynthesize(batches[i + 1], snapshot, ctrl.signal).catch(() => {});
-          }
+          prefetchSpeech(i);
 
           onStatus?.({ kind: 'loading', speaker: batch.speaker });
           try{
-            const blob = await getCachedOrSynthesize(batch, snapshot, ctrl.signal);
+            const blob = await queueSpeech(batch);
             if (ctrl.signal.aborted || signal?.aborted) throw abortError();
-            if(playbackExcluded(batch))continue;
+            if(!blob || playbackExcluded(batch))continue;
             onStatus?.({ kind: 'playing', speaker: batch.speaker });
             await playBlob(blob,ctrl.signal,batch.speaker,0,snapshot.normalizeLoudness,false,{messageId,items:batches,index:i,gapMs:gapBefore(batches,i)});
             played++;
@@ -5865,17 +6596,21 @@ const paragraphAudioCache = new Map();
             if(batch.kind!=='sfx' || ctrl.signal.aborted || signal?.aborted)throw error;
             paragraphAudioCache.delete(segmentCacheKey(batch,snapshot));foleyCache.delete(foleyKey(batch.sfx));warnFoley(error);
           }
-          if (i < batches.length - 1 && !ctrl.signal.aborted && !signal?.aborted) {
-            await new Promise(r => setTimeout(r, 60));
-          }
         }
         onStatus?.({ kind: 'idle', ...(warnings.size?{message:foleyWarning([...warnings]).trim()}: {}) });
         return { played, ...(warnings.size?{warnings:[...warnings]}: {}) };
       } catch(error) {
+        ctrl.abort();
         if(token===revision)stopBeds();
         throw error;
       } finally {
-        signal?.removeEventListener('abort', onAbort);
+        // A finished paragraph may still be preparing nextText. Keep that work
+        // cancellable by Stop, navigation and the caller until its queue drains.
+        void finishParagraphWork().finally(()=>{
+          paragraphPrefetchControllers.delete(ctrl);
+          signal?.removeEventListener('abort',onAbort);
+          if(!disposed)updateTransport();
+        });
         if (controller === ctrl) controller = null;
         if (token === revision) clearReadAlong();
         updateTransport();
@@ -5901,7 +6636,8 @@ const paragraphAudioCache = new Map();
     if(disposed)return;disposed=true;loadVersion++;cancelAutoReplies();saveOnLeave();stop(false);
     for(const done of [...pending.values()])done(abortError());
     unsubs.splice(0).forEach(fn=>fn());removeStyle();cleanupPlacements();
-    audioDatabase?.then(db=>db.close()).catch(()=>{});
+    try{audioDatabaseHandle?.close();}catch{}
+    audioDatabaseHandle=null;audioDatabase=null;
     sessionAudio.clear();
   };
   mixer.addEventListener('choir:replace',cleanup,{once:true});unsubs.push(()=>mixer.removeEventListener('choir:replace',cleanup));

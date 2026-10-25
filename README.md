@@ -6,7 +6,7 @@
 
 [![Version](https://img.shields.io/badge/version-1.1.6--staging.30-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/staging)
 [![Platform](https://img.shields.io/badge/platform-Lumiverse%20Spindle-purple.svg)](https://docs.lumiverse.chat/)
-[![Tests](https://img.shields.io/badge/tests-437%20tests-blue.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-447%20tests-blue.svg)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 An installable Lumiverse Spindle extension for multi-voice narration, dialogue attribution, sound effects, ambience and background music.
@@ -96,6 +96,8 @@ A single-character card title with a scenario suffix is saved as a lead alias wh
 
 Cast and connection changes save automatically with Saving / Saved / Save failed feedback. A **Retry save** button appears only after saving fails; normal edits need no Save button. **Speech & Planner** settings, including advanced preferences and ignored tags, are shared across every chat. Opening an existing chat uses the latest global preferences instead of its older saved preferences. Each chat retains its own cast, voice assignments and NPC policy. Provider API keys are managed in Lumiverse connections; legacy Jev session keys are not saved. Saved plans and completed audio survive navigation and provider failures. Connection defaults such as speed and output format are included in the audio cache identity; changing them regenerates only affected speech without asking the planner again. Companion paragraph playback applies the same pronunciation, accent, style and voice fallback settings as the main player. Stop also cancels its pending sound-effect choices.
 
+Saved audio follows the **Audio retention** setting in Advanced Settings. **This session only** stays in memory. **1**, **7** and **30 days** remove a recording after its expiry. **Indefinitely** audio is never reclaimed automatically, even when the device is full; Choir reports the storage limit instead and asks you to delete a message or chat, or choose a shorter retention period. A completed full replay also trims older passage generations from that message. It keeps the current plan, the immediately previous recording, audio for speakers set to **No voice**, and clips from other sections, so one voice, route, connection-mode or text change can be undone without paying for the same speech again, while older generations are discarded.
+
 Click **Set default** beside **Lead Cast** or **NPC Cast** to open the corresponding tab of the cast defaults popup. It contains only lead roles (**Narrator**, **`{{user}}`** and **`{{char}}`**) and **NPC cast** settings. Each lead role has its own TTS connection and voice, including **Let the LLM decide**. NPCs can **Do not generate NPC speech**, **Use one voice for everyone**, **Choose from preferred voices**, or **Let the LLM decide**. The preferred pool limits automatic NPC choices without restricting the lead cast. **Save default** supplies voices for new chats; existing chats keep their casts until you click **Apply default** beside that cast group. Applying a cast default keeps all global Speech & Planner preferences. Names, aliases, pronunciation instructions and individual NPC identities are not copied into defaults. Reopen the popup to edit the saved default, or choose **Use current chat settings** to start from the active cast. Cancel discards the draft. Existing defaults migrate their cast choices automatically.
 
 Choir removes complete tabbed interface panels and phone widgets before Jev, heuristic or LLM attribution, including status, notifications and expandable notes. Detection uses grouped radio controls with matching labels and tab content, ARIA tabs and panels, or a checkbox/radio with a matching label and a local CSS `:checked` rule, within a styled UI surface. It keeps ordinary HTML story text and surrounding narration, including a story `<div>` that contains a panel. Interface controls, SVG/canvas decorations and explicitly hidden content are excluded too. This filter is local and makes no additional Jev or LLM request. Incomplete or ambiguous layouts are retained conservatively; precise exclusions can handle them.
@@ -115,6 +117,10 @@ Automatic replies wait for the completed message or regenerated swipe to appear 
 The drawer's **Stop** button cancels planning, speech generation, and playback, including paused audio, while keeping completed cached passages. Saved-settings feedback sits above the aligned action buttons. **Test planner** follows the selected engine: heuristic tests run locally; Jev and LLM tests use their selected connections. Heuristic mode still uses your TTS provider when you play speech. Select actual voices for the current chat; voices saved in **Set default** only reach an existing cast after **Apply default**. For one-character dialogue with a named persona, select that persona in the Lumiverse chat persona picker. If planning stops, Choir names the missing voice or shows the first quote it could not attribute.
 
 Advanced **Max characters per request** accepts a whole number from **80 to 10000**, default **1800**. Larger chunks reduce request count but can delay initial playback. If the Lumiverse relay returns HTTP 524, try **1800** characters and **1** concurrent TTS request; smaller requests and less parallel work may help them finish before the relay timeout. A persistent 524 needs investigation on the relay or provider side. Invalid edits are shown and are not saved. The limit applies to individual speech requests, so longer replies are split automatically.
+
+For faster playback, try **2 Prefetch passages** and **2 Concurrent TTS requests** if your provider allows parallel requests. Prefetch counts audible clips across ambience/music markers; **0** disables lookahead. Choir and companion paragraphs both respect the concurrency limit and prioritize current speech. More lookahead can generate audio you do not finish. Speed changes reuse the audio and do not accelerate synthesis; a provider that generates one second of speech per second cannot sustain 2× playback indefinitely. Very small chunks can worsen this by paying request overhead more often.
+
+**Match passage loudness** measures audio during prefetch and reuses that measurement for cached blobs. Quiet provider padding at the beginning/end does not make otherwise identical speech louder. Internal pauses and audio timing remain intact; gain is bounded and peaks retain headroom. This is RMS level matching, so voices with different timbres can still sound different in perceived loudness.
 
 **Planner LLM connection** stays visible for every planner engine. Selecting a connection does not make heuristic attribution use an LLM; it also supplies optional sound-cue planning.
 
@@ -156,6 +162,8 @@ Choir also applies limits per voice route: Fish Audio uses up to the 10,000-char
 The extension includes pre-built bundles in `dist/`. No build step is required to run it.
 
 ## Configuration
+
+New to Fish Audio or Freesound? Follow the [step-by-step illustrated setup guides](docs/setup-guides.md). The same pictures are available in **Set up Choir → Connections → How to connect Fish Audio** and **Optional Features → How to get a Freesound API key**. Pictures use example fields and masked keys; **Enlarge picture** makes them easier to read on phones.
 
 Open **Choir** from the drawer or its input-bar action.
 
@@ -224,3 +232,5 @@ npm run test:ui
 If the environment prevents spawning test workers, use `node --test --test-isolation=none --test-concurrency=1 tests/*.test.mjs tests/*.browser.mjs` after building.
 
 `npm test` validates core parsing, Jev integration, sound effect, ambience and music cue validation, music ranking, and cast validation. `npm run test:ui` executes browser-environment DOM, mixer, and companion bridge integration tests.
+
+With Playwright and Chromium installed, `npm run test:fluidity:chromium` measures transitions at 0.75–4× with deterministic synthesis delays, checks configured gaps/concurrency, and injects slow decoding to catch loudness work at handoff. It uses synthetic audio and makes no live provider calls.
