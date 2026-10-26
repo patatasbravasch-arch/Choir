@@ -24,7 +24,7 @@ test('Fish preferred voices can be pasted into the chat, persist and constrain s
  for(const relay of [false,true]){
   const h=await fishGroupingHarness();try{
    if(relay){h.connections[0].provider='openrouter_tts';h.connections[0].model='fish-audio/s2.1-pro';}
-   const saved=h.store.get('chat:chat-a');saved.fixed.forEach((actor,index)=>actor.voice=['a','b','c'][index].repeat(32));saved.batchSpeech=false;h.store.set('chat:chat-a',saved);h.state.catalogues={a:{voices:[]}};await h.reload();
+   const saved=h.store.get('chat:chat-a');saved.connectionMode='several';saved.fixed.forEach((actor,index)=>{actor.voice=['a','b','c'][index].repeat(32);actor.route='native:a';});saved.batchSpeech=false;h.store.set('chat:chat-a',saved);h.state.catalogues={a:{voices:[]}};await h.reload();
    const root=h.$('npcPolicyRoot'),mode=root.querySelector('select');mode.value='preferred';mode.dispatchEvent(new h.dom.window.Event('change'));
    const paste=root.querySelector('[aria-label="Paste Fish voice ID for Preferred voices"]');assert.ok(paste,'Preferred Fish voices need a paste control in the active chat');
    for(const id of ['11111111111111111111111111111111','22222222222222222222222222222222']){
@@ -33,6 +33,9 @@ test('Fish preferred voices can be pasted into the chat, persist and constrain s
    await until(()=>h.$('saveState').textContent==='Saved automatically');await h.reload();
    const policy=h.store.get('chat:chat-a').npcPolicy;assert.equal(policy.voices.length,2);
    assert.equal(h.$('npcPolicyRoot').querySelector('[aria-label="Preferred voices"]').selectedOptions.length,2);
+   const connection=h.$('npcPolicyRoot').querySelector('[aria-label="Casting connection"]');connection.value='native:b';connection.dispatchEvent(new h.dom.window.Event('change'));await until(()=>h.$('saveState').textContent==='Saved automatically');
+   await h.reload();const restoredConnection=h.$('npcPolicyRoot').querySelector('[aria-label="Casting connection"]');restoredConnection.value='native:a';restoredConnection.dispatchEvent(new h.dom.window.Event('change'));await until(()=>h.$('saveState').textContent==='Saved automatically');
+   assert.deepEqual(h.store.get('chat:chat-a').npcPolicy.voices,policy.voices);
    h.state.planForCatalogue=true;await h.plan().catch(error=>{throw new Error(h.$('status').textContent,{cause:error});});await h.play();
    const guard=h.synthesis.find(request=>request.text.includes('Wait'));assert.ok(guard);assert.ok(policy.voices.includes(guard.voice));assert.equal(guard.connectionId,'a');
    assert.equal(h.requests.filter(request=>request.action==='searchVoices').length,0);
@@ -142,7 +145,7 @@ test('queued preference edits can revert a value while the previous save is pend
 const tick=()=>new Promise(resolve=>setTimeout(resolve,10));
 const until=async(predicate)=>{for(let i=0;i<250;i++){if(predicate())return;await tick();}throw Error('Timed out waiting for regression state');};
 let failIdbOpen=0;
-const openRecordings=()=>new Promise((resolve,reject)=>{const request=globalThis.indexedDB.open('choir-recordings',1);request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);});
+const openRecordings=()=>new Promise((resolve,reject)=>{const request=globalThis.indexedDB.open('choir-recordings',2);request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);});
 async function recordings(){
   const database=await openRecordings();
   const rows=await new Promise((resolve,reject)=>{
@@ -378,7 +381,7 @@ test('name pronunciation applies in companion narration and dialogue and updates
 test('name pronunciation updates legacy Replay without seeding stale audio under new cache keys or calling a planner',async()=>{
   const h=await harness();try{
     await elizaFixture(h);await h.plan();await h.play();assert.equal(h.synthesis.length,4);
-    const db=await new Promise((resolve,reject)=>{const request=indexedDB.open('choir-recordings',1);request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);});
+    const db=await new Promise((resolve,reject)=>{const request=indexedDB.open('choir-recordings',2);request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);});
     await new Promise((resolve,reject)=>{const transaction=db.transaction('recordings','readwrite'),cursor=transaction.objectStore('recordings').openCursor();cursor.onsuccess=()=>{const row=cursor.result;if(row){const value=row.value;delete value.speechTexts;delete value.passages;row.update(value);row.continue();}};transaction.oncomplete=resolve;transaction.onerror=()=>reject(transaction.error);});db.close();
     await editNamePronunciation(h,'Eh-Lee-Zah');
     [...h.$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay').click();await until(()=>h.$('status').textContent.includes('Name pronunciation updated'));
@@ -801,7 +804,7 @@ test('phone widget filtering invalidates an older saved plan and recording befor
   // Simulate a plan saved by a version that unwrapped the original widget.
   for(const [key,saved] of h.store)if(key.startsWith('plan:'))saved.content=h.message.content;
   await new Promise((resolve,reject)=>{
-    const open=indexedDB.open('choir-recordings',1);open.onerror=()=>reject(open.error);
+    const open=indexedDB.open('choir-recordings',2);open.onerror=()=>reject(open.error);
     open.onsuccess=()=>{
       const db=open.result,transaction=db.transaction('recordings','readwrite'),request=transaction.objectStore('recordings').openCursor();
       request.onsuccess=()=>{const cursor=request.result;if(cursor){cursor.update({...cursor.value,content:h.message.content});cursor.continue();}};
@@ -2685,7 +2688,9 @@ function holdRecordingCommits(){
   IDBObjectStore.prototype.put=function(...args){
     if(this.name==='recordings'){
       const transaction=this.transaction;
-      Object.defineProperty(transaction,'oncomplete',{configurable:true,set(handler){
+      const current=transaction.oncomplete;
+      if(current){transaction.oncomplete=null;transaction.addEventListener('complete',event=>held.push(()=>current.call(transaction,event)),{once:true});}
+      else Object.defineProperty(transaction,'oncomplete',{configurable:true,set(handler){
         transaction.addEventListener('complete',event=>held.push(()=>handler.call(transaction,event)),{once:true});
       }});
     }
@@ -2816,6 +2821,48 @@ const failRecordingPuts=()=>{
   return ()=>{IDBObjectStore.prototype.put=put;};
 };
 
+test('repairing a saved speech clip keeps the recording creation date and timed deadline',async()=>{
+ const h=await harness();try{
+  await h.plan();await h.play();h.$('retention').value='7';h.$('retention').dispatchEvent(new h.dom.window.Event('change'));await until(()=>h.$('saveState').textContent==='Saved automatically');
+  const row=(await recordings()).find(row=>row.value.content===h.message.content);row.value.createdAt=Date.now()-6*86400000;row.value.expiresAt=row.value.createdAt+7*86400000;
+  row.value.blobs[0]=undefined;for(const key of Object.keys(row.value.passages))if(key.includes('At dawn'))delete row.value.passages[key];await insertRecordings([row]);
+  await h.reload();await h.plan();await h.play();const after=await recordingFor(h.message.content);
+  assert.equal(after.createdAt,row.value.createdAt);assert.equal(after.expiresAt,row.value.expiresAt);assert.equal(after.fullMessage,true);assert.ok(after.blobs[0]);
+ }finally{await h.close();}
+});
+
+test('new recordings use changed global defaults without extending existing recordings in the chat',async()=>{
+ const h=await harness();try{
+  await h.plan();await h.play();h.$('retention').value='1';h.$('retention').dispatchEvent(new h.dom.window.Event('change'));await until(()=>h.$('saveState').textContent==='Saved automatically');
+  const previous=await recordingFor(h.message.content),oldContent=h.message.content;
+  h.store.set('settings:global',{...h.store.get('settings:global'),retention:'7'});
+  h.$('chunk').value='1700';h.$('chunk').dispatchEvent(new h.dom.window.Event('change'));await until(()=>h.$('saveState').textContent==='Saved automatically');
+  assert.equal((await recordingFor(oldContent)).expiresAt,previous.expiresAt,'inheriting a new default during an unrelated save must not change existing audio');
+  h.message.id='next-message';h.message.content='The next morning. "Welcome again."';await h.plan();await h.click('play',text=>text.includes('Playback finished'));
+  const next=await recordingFor(h.message.content);assert.equal(next.retention,'7');assert.equal(next.expiresAt,next.createdAt+7*86400000);
+  h.$('chunk').value='1600';h.$('chunk').dispatchEvent(new h.dom.window.Event('change'));await until(()=>h.$('saveState').textContent==='Saved automatically');
+  const old=await recordingFor(oldContent);assert.equal(old.expiresAt,previous.expiresAt);assert.equal(old.retention,'1');
+ }finally{await h.close();}
+});
+
+test('drawer Replay refuses an interrupted recording with missing speech without synthesizing or saving a partial mix',async()=>{
+ const h=await harness();try{
+  await h.plan();h.state.blockAudio=true;h.$('play').click();await until(()=>h.audios[0]?.paused===false);h.$('stop').click();await tick();await tick();
+  const before=await recordingFor(h.message.content),calls=h.synthesis.length;assert.ok(before.blobs.filter(Boolean).length<before.segments.length);
+  [...h.$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay').click();await until(()=>h.$('status').textContent.includes('Some speech is missing'));
+  assert.equal(h.synthesis.length,calls);assert.equal((await recordingFor(h.message.content)).playedAudio?.blob,before.playedAudio?.blob);
+ }finally{await h.close();}
+});
+
+test('audio expiring during playback is not saved again with a fresh retention clock',async()=>{
+ const h=await harness();const originalNow=Date.now;try{
+  await h.plan();await h.play();h.$('retention').value='1';h.$('retention').dispatchEvent(new h.dom.window.Event('change'));await until(()=>h.$('saveState').textContent==='Saved automatically');
+  const before=await recordingFor(h.message.content),count=h.audios.length;h.state.blockAudio=true;h.$('play').click();await until(()=>h.audios.length>count && !h.audios.at(-1).paused);
+  Date.now=()=>before.expiresAt+1;h.state.blockAudio=false;h.audios.at(-1).onended();await until(()=>h.$('status').textContent.includes('Playback finished'));
+  assert.equal(await recordingFor(h.message.content),null);
+ }finally{Date.now=originalNow;await h.close();}
+});
+
 test('timed retention updates the stored policy and Replay cannot restore indefinite storage',async()=>{
  const h=await harness();try{
   await h.plan();await h.play();const calls=h.synthesis.length;
@@ -2847,10 +2894,13 @@ test('changing persistent audio to session retention keeps it playable in memory
 
 test('Replay preserves the deadline of recordings saved by older versions with a stale indefinite label',async()=>{
  const h=await harness();try{
+  h.$('retention').value='7';h.$('retention').dispatchEvent(new h.dom.window.Event('change'));await until(()=>h.$('saveState').textContent==='Saved automatically');
   await h.plan();await h.play();const rows=await recordings(),row=rows.find(row=>row.value.content===h.message.content);
   row.value.retention='forever';row.value.expiresAt=Date.now()+86400000;await insertRecordings([row]);
   [...h.$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay').click();await until(()=>h.$('status').textContent==='Replay finished.');
   assert.equal((await recordingFor(h.message.content)).expiresAt,row.value.expiresAt);
+  h.$('retention').value='forever';h.$('retention').dispatchEvent(new h.dom.window.Event('change'));await until(()=>h.$('saveState').textContent==='Saved automatically');
+  assert.equal((await recordingFor(h.message.content)).expiresAt,null,'a deliberate policy change replaces the legacy deadline');
  }finally{await h.close();}
 });
 
@@ -3417,7 +3467,7 @@ test('Replay rebuilds legacy SFX cuts from saved attribution and retains the eff
  const h=await harness();try{
   await configureFoley(h);h.message.content=sfxSentence;h.state.soundCues={cues:[{segment:0,trigger:'set the plate',query:'plate clink'}],ambience:[],music:[]};
   await h.plan();await h.play();const generated=h.synthesis.length,planned=h.requests.filter(request=>request.action==='plan' || request.action==='sfx').length;
-  const database=await new Promise((resolve,reject)=>{const request=indexedDB.open('choir-recordings',1);request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);});
+  const database=await new Promise((resolve,reject)=>{const request=indexedDB.open('choir-recordings',2);request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);});
   await new Promise((resolve,reject)=>{
    const transaction=database.transaction('recordings','readwrite'),request=transaction.objectStore('recordings').openCursor();
    request.onsuccess=()=>{const cursor=request.result;if(!cursor)return;const saved=cursor.value,cut=sfxSentence.indexOf('set the plate');

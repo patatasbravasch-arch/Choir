@@ -33,7 +33,7 @@ try{
  assert.ok(decoded.duration>=3 && decoded.duration<4.5,JSON.stringify(decoded));assert.equal(decoded.channels,2);
  // A legacy resumed recording may have its audio only in the passage cache.
  await page.evaluate(()=>new Promise((resolve,reject)=>{
-  const request=indexedDB.open('choir-recordings',1);request.onerror=()=>reject(request.error);
+  const request=indexedDB.open('choir-recordings',2);request.onerror=()=>reject(request.error);
   request.onsuccess=()=>{
    const db=request.result,transaction=db.transaction('recordings','readwrite'),cursorRequest=transaction.objectStore('recordings').openCursor();let changed=false;
    cursorRequest.onsuccess=()=>{const cursor=cursorRequest.result;if(!cursor)return;const value=cursor.value;
@@ -91,7 +91,7 @@ try{
  // Emulate an existing installation's old speech cache, before mix capture
  // existed, with one sparse index entry. Replay must recover it without TTS.
  await page.evaluate(()=>new Promise((resolve,reject)=>{
-  const request=indexedDB.open('choir-recordings',1);request.onerror=()=>reject(request.error);request.onsuccess=()=>{
+  const request=indexedDB.open('choir-recordings',2);request.onerror=()=>reject(request.error);request.onsuccess=()=>{
    const db=request.result,transaction=db.transaction('recordings','readwrite'),cursor=transaction.objectStore('recordings').openCursor();
    cursor.onsuccess=()=>{const row=cursor.result;if(!row)return;const value=row.value;delete value.playedAudio;const index=value.segments?.findIndex(segment=>!segment.kind);if(index>=0)value.blobs[index]=undefined;for(const [index,segment] of (value.segments || []).entries())if(segment.kind==='sfx')value.blobs[index]=undefined;for(const key of Object.keys(value.passages || {}))if(key.includes('page turn'))delete value.passages[key];row.update(value);row.continue();};
    transaction.oncomplete=()=>{db.close();resolve();};transaction.onerror=()=>{db.close();reject(transaction.error);};
@@ -110,7 +110,7 @@ try{
   window.fixtureStore.set('chat:fixture',{...window.fixtureStore.get('chat:fixture'),enableMusic:true,enableAmbience:false,enableSfx:false,loopMusic:true});
   window.fixtureStore.set('settings:global',{...window.fixtureStore.get('settings:global'),enableMusic:true,enableAmbience:false,enableSfx:false,loopMusic:true});
   await new Promise((resolve,reject)=>{
-   const request=indexedDB.open('choir-recordings',1);request.onerror=()=>reject(request.error);request.onsuccess=()=>{
+   const request=indexedDB.open('choir-recordings',2);request.onerror=()=>reject(request.error);request.onsuccess=()=>{
     const db=request.result,transaction=db.transaction('recordings','readwrite');transaction.objectStore('recordings').clear();transaction.oncomplete=()=>{db.close();resolve();};transaction.onerror=()=>{db.close();reject(transaction.error);};
    };
   });

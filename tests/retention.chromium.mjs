@@ -18,7 +18,7 @@ try{
  const page=await browser.newPage({viewport:{width:1440,height:1000}});page.on('pageerror',error=>errors.push(error.message));
  await page.goto(`http://127.0.0.1:${server.address().port}`);await page.waitForFunction(()=>window.ready);
  await page.evaluate(()=>{
-  window.retentionRows=()=>new Promise((resolve,reject)=>{const request=indexedDB.open('choir-recordings',1);request.onerror=()=>reject(request.error);request.onsuccess=()=>{
+  window.retentionRows=()=>new Promise((resolve,reject)=>{const request=indexedDB.open('choir-recordings',2);request.onerror=()=>reject(request.error);request.onsuccess=()=>{
    const db=request.result,transaction=db.transaction('recordings'),rows=[],cursor=transaction.objectStore('recordings').openCursor();
    cursor.onsuccess=()=>{const row=cursor.result;if(!row)return;const value=row.value;rows.push({key:row.key,retention:value.retention,expiresAt:value.expiresAt,createdAt:value.createdAt,speechBytes:value.blobs?.filter(blob=>blob instanceof Blob).reduce((sum,blob)=>sum+blob.size,0),mixBytes:value.playedAudio?.blob?.size || 0});row.continue();};
    transaction.oncomplete=()=>{db.close();resolve(rows);};transaction.onerror=()=>{db.close();reject(transaction.error);};
@@ -41,7 +41,7 @@ try{
  await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent==='Replay finished.');
  rows=await page.evaluate(()=>window.retentionRows());assert.equal(rows[0].retention,'7');assert.equal(rows[0].expiresAt,before.createdAt+7*86400000);assert.equal(await page.evaluate(()=>window.calls.length),calls);
  await page.locator('[data-et="retention"]').selectOption('1');await until(()=>page.evaluate(async key=>(await window.retentionRows()).find(row=>row.key===key)?.retention==='1',key));
- await page.evaluate(async key=>new Promise((resolve,reject)=>{const request=indexedDB.open('choir-recordings',1);request.onsuccess=()=>{
+ await page.evaluate(async key=>new Promise((resolve,reject)=>{const request=indexedDB.open('choir-recordings',2);request.onsuccess=()=>{
   const db=request.result,transaction=db.transaction('recordings','readwrite'),store=transaction.objectStore('recordings'),get=store.get(key),identity=JSON.parse(key);
   get.onsuccess=()=>{const value=get.result;for(const [id,retention,expiresAt,namespace] of [['future','7',value.expiresAt+86400000,identity[0]],['forever','forever',null,identity[0]],['foreign','1',value.expiresAt-1,'another-installation']])store.put({...value,retention,expiresAt},JSON.stringify([namespace,identity[1],id]));};
   transaction.oncomplete=()=>{db.close();resolve();};transaction.onerror=()=>{db.close();reject(transaction.error);};
