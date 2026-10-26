@@ -159,6 +159,20 @@ export async function setup(ctx) {
     .choir-mixer .cm-speed-options{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:5px;padding:6px 10px;border-bottom:1px solid var(--cm-line)}
     .choir-mixer .cm-speed-options button{min-width:0;min-height:30px;padding:4px 2px;border:1px solid var(--cm-border-hover);border-radius:5px;background:var(--cm-fill);font-size:10px}
     .choir-mixer .cm-speed-options button[aria-pressed="true"]{background:var(--cm-accent);border-color:var(--cm-accent);color:var(--cm-accent-contrast)}
+    .choir-mixer .cm-tuning{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:8px;padding:5px 10px;border-bottom:1px solid var(--cm-line);font-size:10px}
+    .choir-mixer .cm-channel-speed{margin-top:7px;padding:0;border:0}
+    .choir-mixer .cm-channel-speed .cm-inherited{opacity:.6}
+    .choir-mixer .cm-use-global{grid-column:2;justify-self:end;width:auto;padding:3px 6px;border:1px solid var(--cm-line);border-radius:4px;color:var(--cm-muted);font-size:10px}
+    .choir-mixer .cm-customize{flex-shrink:0;border-top:1px solid var(--cm-line);font-size:11px}
+    .choir-mixer .cm-customize>summary{padding:8px 10px;cursor:pointer;color:var(--cm-muted)}
+    .choir-mixer .cm-customize-panel{max-height:240px;overflow:auto;overscroll-behavior:contain;padding:0 10px 10px}
+    .choir-mixer .cm-customize-panel p{margin:5px 0;color:var(--cm-muted);font-size:10px;line-height:1.4}
+    .choir-mixer .cm-customize-row{display:flex;align-items:center;gap:5px;min-height:30px}
+    .choir-mixer .cm-customize-row label{display:flex;align-items:center;gap:6px;flex:1;min-width:0;cursor:pointer}
+    .choir-mixer .cm-customize-row input{accent-color:var(--cm-accent)}
+    .choir-mixer .cm-customize-row button,.choir-mixer .cm-reset-layout{padding:5px 7px;border:1px solid var(--cm-line);border-radius:4px;font-size:10px}
+    .choir-mixer .cm-customize-row button{min-width:28px}
+    @media(pointer:coarse){.choir-mixer .cm-customize-row,.choir-mixer .cm-customize>summary{min-height:44px}.choir-mixer .cm-customize-row button,.choir-mixer .cm-reset-layout,.choir-mixer .cm-use-global{min-width:44px;min-height:44px}}
     .ensemble-tts .et-character-speed{grid-column:1/-1}
     .ensemble-tts .et-character-speed .cm-inherited>input,.ensemble-tts .et-character-speed .cm-inherited .cm-volume-entry{opacity:.55}
     .ensemble-tts .et-tuning-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,250px),1fr));gap:10px;margin:4px 0 6px}
@@ -278,6 +292,7 @@ export async function setup(ctx) {
     <div data-et="fixed"></div>
 
     <div data-et="npcs"></div>
+    <details data-et="otherCast" hidden><summary>Other characters (<span data-et="otherCastCount">0</span>)</summary><p style="font-size:.85em;opacity:.75">Not used in the current reply. Their voices and settings stay saved; they appear above again when used.</p><div data-et="otherCastRows"></div></details>
     <details><summary>Automatic casting</summary><p style="font-size:.85em">Voice selection for characters discovered in the story.</p><div data-et="npcPolicyRoot" class="et-npc-policy"></div></details>
     <p data-et="defaultStatus" role="status" aria-live="polite" style="font-size:.85em;opacity:.8"></p>
 
@@ -643,6 +658,10 @@ export async function setup(ctx) {
   let currentAudioSpeech=false,currentSpeedSpeaker='',voiceGapHold=null;
   // Keep the launcher unobtrusive on every load, including existing expanded preferences.
   const savedMixer=await ctx.settings.get('ui:mixer').catch(()=>null);let mixerState={master:1,sfx:1,ambience:1,music:1,levelsCollapsed:true,channelTab:'',channels:{},x:20,y:80,enabled:savedMixer?(savedMixer.enabled??true):Boolean(config?.enableMixer),abyssalTheme:false,playbackRate:PLAYBACK_RATE_LIMITS.fallback,voiceGapMs:VOICE_GAP_LIMITS.fallback,...(savedMixer||{}),collapsed:true};
+  const mixerLayoutDefaults={speedPresets:true,speedSlider:false,gapSlider:false,voiceSpeeds:false,'auto-plan':true,'auto-play':true,sfx:true,ambience:true,music:true};
+  const quickButtonKeys=['auto-plan','auto-play','sfx','ambience','music'];
+  mixerState.layout=Object.fromEntries(Object.entries(mixerLayoutDefaults).map(([key,value])=>[key,typeof mixerState.layout?.[key]==='boolean'?mixerState.layout[key]:value]));
+  mixerState.quickButtonOrder=[...new Set([...(Array.isArray(mixerState.quickButtonOrder)?mixerState.quickButtonOrder:[]),...quickButtonKeys])].filter(key=>quickButtonKeys.includes(key));
   // Global speed and gap are mixer state, saved in ui:mixer beside the channel levels, so they work with or without a chat open.
   mixerState.speedSliderMax=normalizeSpeedSliderMax(mixerState.speedSliderMax);mixerState.playbackRate=normalizePlaybackRate(mixerState.playbackRate);mixerState.voiceGapMs=normalizeVoiceGap(mixerState.voiceGapMs);
   // Solo is no longer exposed; old solo preferences must not silently mute other voices.
@@ -736,18 +755,23 @@ export async function setup(ctx) {
   const setSpeed=value=>{stretchSpeedSlider(value);mixerState.playbackRate=value;syncVoiceControls();applyPlaybackRate();refreshSpeechGrouping();};
   const setGap=value=>{mixerState.voiceGapMs=value;syncVoiceControls();refreshSpeechGrouping();};
   const saveMixerValue=()=>void persistMixer();
-  // Detailed controls stay in settings; the mixer offers three quick speed choices.
+  // Mixer controls use the same saved values as their drawer counterparts.
   const speedSettings=makeMixerTuning('Playback speed in settings',{...SPEED_CONTROL,title:SPEED_TITLE,onValue:setSpeed,onCommit:saveMixerValue});
   const gapSettings=makeMixerTuning('Gap between voices in settings',{...GAP_CONTROL,title:GAP_TITLE,onValue:setGap,onCommit:saveMixerValue});
+  const speedMixer=makeMixerTuning('Playback speed in mixer',{...SPEED_CONTROL,title:SPEED_TITLE,onValue:setSpeed,onCommit:saveMixerValue});
+  const gapMixer=makeMixerTuning('Gap between voices in mixer',{...GAP_CONTROL,title:GAP_TITLE,onValue:setGap,onCommit:saveMixerValue});
+  const mixerTuningRow=(label,control)=>{const row=document.createElement('div');row.className='cm-tuning';const name=document.createElement('span');name.textContent=label;row.append(name,control.root);return row;};
+  const speedMixerRow=mixerTuningRow('Speed',speedMixer),gapMixerRow=mixerTuningRow('Gap',gapMixer);
   // A character's own speed replaces the master speed for that character. Without one (no key, or null) it follows the master speed.
   const speakerSpeedRows=[];
   function paintSpeakerSpeeds(){
     const master=voiceRate();
     for(let index=speakerSpeedRows.length-1;index>=0;index--)if(!speakerSpeedRows[index].speed.root.isConnected)speakerSpeedRows.splice(index,1);
     for(const row of speakerSpeedRows){
-      row.speed.root.querySelector('input[type="range"]').setAttribute('aria-label',`${row.speaker} speed`);
-      row.speed.root.querySelector('input[type="number"]').setAttribute('aria-label',`${row.speaker} speed value`);
-      row.followButton.setAttribute('aria-label',`Follow playback speed for ${row.speaker}`);
+      const name=row.inMixer?`${row.speaker} speed in mixer`:`${row.speaker} speed`;
+      row.speed.root.querySelector('input[type="range"]').setAttribute('aria-label',name);
+      row.speed.root.querySelector('input[type="number"]').setAttribute('aria-label',`${name} value`);
+      row.followButton.setAttribute('aria-label',`Follow playback speed for ${row.speaker}${row.inMixer?' in mixer':''}`);
       const custom=speakerPlaybackRate(mixerState.channels,row.speaker);
       const shown=custom ?? master;
       row.speed.set(shown);
@@ -771,7 +795,7 @@ export async function setup(ctx) {
   // Moves the top end of the global settings slider and each character's slider.
   function setSpeedSliderMax(value){
     mixerState.speedSliderMax=normalizeSpeedSliderMax(value);
-    for(const control of [speedSettings,...speakerSpeedRows.map(row=>row.speed)])control.setSliderMax(mixerState.speedSliderMax);
+    for(const control of [speedSettings,speedMixer,...speakerSpeedRows.map(row=>row.speed)])control.setSliderMax(mixerState.speedSliderMax);
     const field=$('speedSliderMax');if(field && document.activeElement!==field)field.value=String(mixerState.speedSliderMax);
   }
   const sliderMaxField=$('speedSliderMax');
@@ -784,7 +808,7 @@ export async function setup(ctx) {
     const button=document.createElement('button');button.type='button';button.dataset.playbackRate=String(rate);button.setAttribute('aria-label',label);button.textContent=label;
     button.onclick=()=>{setSpeed(rate);saveMixerValue();};speedOptions.append(button);return button;
   });
-  const playbackTuning=document.createElement('div');playbackTuning.className='cm-playback-tuning';playbackTuning.append(speedOptions);
+  const playbackTuning=document.createElement('div');playbackTuning.className='cm-playback-tuning';playbackTuning.append(speedOptions,speedMixerRow,gapMixerRow);
   const mixerPlay=document.createElement('button');mixerPlay.type='button';mixerPlay.dataset.choirAction='playback';
   mixerPlay.onclick=()=>{if(voiceGapHold){voiceGapHold.paused?voiceGapHold.resume():voiceGapHold.pause();pauseBeds(voiceGapHold.paused);updateTransport();return;}if(currentAudio){if(currentAudio.paused){currentAudio.play().then(updateTransport).catch(e=>status(e.message,true));pauseBeds(false);}else{currentAudio.pause();pauseBeds(true);updateTransport();}}else if(!busy && !controller){mixerPlay.disabled=true;status('Loading playback…');run(async()=>{const latest=latestReply();if(!latest)throw new Error('No assistant reply in the active chat.');if(plan && planSource?.chatId===chatId && planSource.messageId===latest.id && sameSpeech(planSource.content,ctx.messages.getContent(latest.id)))await play({resume:true});else await playMessage(latest.id);});}};
   const mixerPlanLatest=document.createElement('button');mixerPlanLatest.type='button';mixerPlanLatest.dataset.choirAction='plan-latest';mixerPlanLatest.innerHTML=ICON_PLAN;mixerPlanLatest.title='Plan latest reply without starting audio';mixerPlanLatest.setAttribute('aria-label','Plan latest reply');mixerPlanLatest.onclick=()=>run(planLatest);
@@ -809,8 +833,35 @@ export async function setup(ctx) {
   const mixerAmbience=document.createElement('button');mixerAmbience.type='button';mixerAmbience.dataset.choirAction='ambience';mixerAmbience.setAttribute('aria-label','Ambient sound');mixerAmbience.onclick=()=>run(()=>{if(!chatId)throw new Error('Open a chat first.');$('enableAmbience').checked=!$('enableAmbience').checked;scheduleSettingsSave();syncAmbiencePlayback();});
   const mixerMusic=document.createElement('button');mixerMusic.type='button';mixerMusic.dataset.choirAction='music';mixerMusic.setAttribute('aria-label','Background music');mixerMusic.onclick=()=>run(()=>{if(!chatId)throw new Error('Open a chat first.');$('enableMusic').checked=!$('enableMusic').checked;scheduleSettingsSave();syncMusicPlayback();});
   autoPlanRow.append(mixerAutoPlan,mixerAutoPlay,mixerSfx,mixerAmbience,mixerMusic);
+  const mixerQuickButtons=new Map(quickButtonKeys.map((key,index)=>[key,[mixerAutoPlan,mixerAutoPlay,mixerSfx,mixerAmbience,mixerMusic][index]]));
+  const customizeMixer=document.createElement('details'),customizeSummary=document.createElement('summary'),customizePanel=document.createElement('div');
+  customizeMixer.className='cm-customize';customizeMixer.dataset.choirCustomize='';customizeSummary.textContent='Customize mixer';customizePanel.className='cm-customize-panel';
+  const layoutChecks=new Map(),quickLayoutRows=new Map();
+  const layoutHint=document.createElement('p');layoutHint.textContent='Choose what appears. Hiding a control keeps its setting. Playback and Master stay available.';customizePanel.append(layoutHint);
+  const layoutCheck=(key,label,parent)=>{
+    const row=document.createElement('div');row.className='cm-customize-row';const field=document.createElement('label'),check=document.createElement('input');check.type='checkbox';check.checked=mixerState.layout[key];check.setAttribute('aria-label',`Show ${label}`);check.dataset.choirLayout=key;
+    check.onchange=()=>{mixerState.layout[key]=check.checked;applyMixerLayout();void persistMixer();};field.append(check,document.createTextNode(label));row.append(field);parent.append(row);layoutChecks.set(key,check);return row;
+  };
+  for(const [key,label] of [['speedPresets','speed presets'],['speedSlider','global speed slider'],['gapSlider','gap between voices'],['voiceSpeeds','individual voice speeds']])layoutCheck(key,label,customizePanel);
+  const quickHeading=document.createElement('p');quickHeading.textContent='Quick buttons · use the arrows to change their order.';const quickLayoutList=document.createElement('div');customizePanel.append(quickHeading,quickLayoutList);
+  const quickLabels={'auto-plan':'Auto-plan','auto-play':'Auto-play',sfx:'SFX',ambience:'Ambience',music:'Music'};
+  for(const key of quickButtonKeys){
+    const row=layoutCheck(key,quickLabels[key],quickLayoutList),up=document.createElement('button'),down=document.createElement('button');up.type=down.type='button';up.textContent='↑';down.textContent='↓';up.setAttribute('aria-label',`Move ${quickLabels[key]} earlier`);down.setAttribute('aria-label',`Move ${quickLabels[key]} later`);
+    const move=offset=>{const order=mixerState.quickButtonOrder,index=order.indexOf(key),next=index+offset;if(next<0 || next>=order.length)return;[order[index],order[next]]=[order[next],order[index]];refreshMixerLayoutEditor();applyMixerLayout();void persistMixer();(offset<0?up:down).disabled?layoutChecks.get(key).focus():(offset<0?up:down).focus();};up.onclick=()=>move(-1);down.onclick=()=>move(1);row.append(up,down);quickLayoutRows.set(key,{row,up,down});
+  }
+  const resetMixerLayout=document.createElement('button');resetMixerLayout.type='button';resetMixerLayout.className='cm-reset-layout';resetMixerLayout.textContent='Reset mixer layout';resetMixerLayout.onclick=()=>{mixerState.layout={...mixerLayoutDefaults};mixerState.quickButtonOrder=[...quickButtonKeys];refreshMixerLayoutEditor();applyMixerLayout();void persistMixer();};customizePanel.append(resetMixerLayout);
+  function refreshMixerLayoutEditor(){for(const [key,check] of layoutChecks)check.checked=mixerState.layout[key];mixerState.quickButtonOrder.forEach((key,index)=>{const item=quickLayoutRows.get(key);item.up.disabled=index===0;item.down.disabled=index===quickButtonKeys.length-1;quickLayoutList.append(item.row);});}
+  function applyMixerLayout(){
+    speedOptions.hidden=!mixerState.layout.speedPresets;speedMixerRow.hidden=!mixerState.layout.speedSlider;gapMixerRow.hidden=!mixerState.layout.gapSlider;
+    for(const key of mixerState.quickButtonOrder){const button=mixerQuickButtons.get(key);button.hidden=!mixerState.layout[key];autoPlanRow.append(button);}
+    const visible=quickButtonKeys.filter(key=>mixerState.layout[key]).length;autoPlanRow.hidden=!visible;autoPlanRow.style.gridTemplateColumns=`repeat(${Math.max(1,visible)},minmax(0,1fr))`;
+    renderMixer();
+  }
+  customizeMixer.append(customizeSummary,customizePanel);refreshMixerLayoutEditor();
+  customizeMixer.addEventListener('toggle',()=>positionMixer());
+  speedOptions.hidden=!mixerState.layout.speedPresets;speedMixerRow.hidden=!mixerState.layout.speedSlider;gapMixerRow.hidden=!mixerState.layout.gapSlider;
   levelsBody.append(channelTabs,channelsRoot,legend);levels.append(channelsTitle,levelsBody);
-  player.append(nowPlaying,transport,mixerSeek.root);mixerBody.append(player,masterLabel,playbackTuning,autoPlanRow,levels);mixer.append(mixerHeader,mixerBody);document.body.append(mixer);
+  player.append(nowPlaying,transport,mixerSeek.root);mixerBody.append(player,masterLabel,playbackTuning,autoPlanRow,levels,customizeMixer);mixer.append(mixerHeader,mixerBody);document.body.append(mixer);
   unsubs.push(()=>{autoPlanAction?.destroy();autoPlanAction=null;toolbarAutoPlan.remove();});
   function refreshAutoPlanControls(){
     mixerAutoPlan.textContent='Auto-plan';
@@ -983,7 +1034,7 @@ export async function setup(ctx) {
   // Keep the quick speed buttons and drawer controls in step with saved playback settings.
   function syncVoiceControls(){
     const rate=voiceRate(),gap=voiceGapSetting();
-    speedSettings.set(rate);gapSettings.set(gap);
+    speedSettings.set(rate);gapSettings.set(gap);speedMixer.set(rate);gapMixer.set(gap);
     for(const button of speedButtons)button.setAttribute('aria-pressed',String(Number(button.dataset.playbackRate)===rate));
     paintSpeakerSpeeds();
   }
@@ -1037,6 +1088,10 @@ export async function setup(ctx) {
       controls.append(volume);head.append(silent);
       const noVoice=doc.createElement('button');noVoice.type='button';noVoice.className='cm-toggle';noVoice.dataset.kind='no-voice';noVoice.innerHTML=speakerExcluded(speaker)?ICON_MIC_OFF:ICON_MIC;noVoice.setAttribute('aria-label',`${speaker} no voice`);noVoice.setAttribute('aria-pressed',String(speakerExcluded(speaker)));noVoice.title='No voice: skip this character, including cached playback. No new audio is generated; text and saved audio stay available.';noVoice.onclick=()=>run(()=>setSpeakerExcluded(speaker,!speakerExcluded(speaker)));head.append(noVoice);
       row.append(head,controls);
+      if(mixerState.layout.voiceSpeeds){
+        const speed=makeMixerTuning(`${speaker} speed in mixer`,{...SPEED_CONTROL,max:mixerState.speedSliderMax,title:SPEED_TITLE,onValue:value=>{stretchSpeedSlider(value);channel.speed=value;paintSpeakerSpeeds();applyPlaybackRate();refreshSpeechGrouping();},onCommit:saveMixerValue,onReset:()=>followMasterSpeed(speaker)});
+        const tuning=mixerTuningRow('Speed',speed),followButton=document.createElement('button');tuning.classList.add('cm-channel-speed');followButton.type='button';followButton.className='cm-use-global';followButton.textContent='Use global';followButton.onclick=()=>followMasterSpeed(speaker);tuning.append(followButton);speakerSpeedRows.push({speaker,speed,followButton,inMixer:true});row.append(tuning);
+      }
       channelsRoot.append(row);
     }
     for(const [kind,name,enabled] of [['sfx','SFX',config?.enableSfx!==false],['ambience','Ambience',config?.enableAmbience!==false],['music','Music',config?.enableMusic===true]]){
@@ -1063,7 +1118,7 @@ export async function setup(ctx) {
     const visibleRows=rows.filter(row=>!row.hidden);
     if(!visibleRows.length){const empty=doc.createElement('p');empty.className='cm-empty';empty.textContent='Plan the latest reply to see its voices.';channelsRoot.append(empty);}
     channelCount.textContent=String(visibleRows.length);legend.hidden=selected==='scene' || !visibleRows.length;
-    positionMixer();
+    paintSpeakerSpeeds();positionMixer();
     if(focusTabKey)[...channelTabs.children].find(tab=>tab.dataset.channelKey===focusTabKey)?.focus({preventScroll:true});
     channelsRoot.scrollTop=scrollTop;if(focusLabel)[...channelsRoot.querySelectorAll('[aria-label]')].find(node=>node.getAttribute('aria-label')===focusLabel)?.focus({preventScroll:true});
   }
@@ -1567,6 +1622,7 @@ export async function setup(ctx) {
     if(JSON.stringify(namePronunciations(pronunciationActors(candidate)))!==JSON.stringify(namePronunciations(pronunciationActors(config))))stop(false);
     $('readingPreview').hidden=true;
     config=candidate;pendingSettings={chatId,value:structuredClone(config),edit:++settingsEdit};
+    updateCastVisibility();
     if(!config.autoPlan && !config.auto)cancelAutoReplies();
     if(autoReplyActive?.token===revision){
       if(autoReplyActive.phase==='planning' && !config.autoPlan){stop(false,false,Boolean(config.auto));status('Automatic planning stopped.');}
@@ -1888,7 +1944,7 @@ export async function setup(ctx) {
       delBtn.onclick=(e)=>{e.preventDefault();e.stopPropagation();row.remove();scheduleSettingsSave();renderMixer();};
       header.append(delBtn);
     }
-    name.addEventListener('input',refreshHeading);edit.onclick=()=>{editor.hidden=!editor.hidden;refreshHeading();};refreshHeading();
+    name.addEventListener('input',refreshHeading);edit.onclick=()=>{editor.hidden=!editor.hidden;refreshHeading();if(editor.hidden)updateCastVisibility(true);};refreshHeading();
     edit.style.marginLeft='auto';
     if(!reserved){
       heading.title='Click to change name';
@@ -2153,10 +2209,34 @@ export async function setup(ctx) {
     updateCardProviderControls();
     return {row,voiceChoice:()=>[name.value.trim(),voice.value],setExcluded:value=>{excluded.checked=value;},read:()=>({speaker:name.value.trim(),voice:single?actor.voice || '':voice.value,route:single?actor.route || '':route.value,gender:gender.value,style:style.value.trim(),aliases:aliases.value.split(',').map(a=>a.trim()).filter((a,i,list)=>a && normalizeName(a)!==normalizeName(name.value) && list.findIndex(b=>normalizeName(b)===normalizeName(a))===i),pronunciation:pronunciation.value.trim(),sayAs:sayAs.value.trim(),sayAsName:sayAsName.value,accent:accent.value.trim(),excluded:excluded.checked})};
   }
-  let closePolicyLibrary;
+  let closePolicyLibrary,castVisibilitySnapshot;
   unsubs.push(()=>closePolicyLibrary?.());
+  function updateCastVisibility(force=false){
+    const latest=latestReply(),content=latest?ctx.messages.getContent(latest.id):'',entries=[...castRows.map(entry=>({entry,home:$('fixed')})),...npcRows.map(entry=>({entry,home:$('npcs')}))].filter(({entry})=>root.contains(entry.row));
+    const actors=entries.map(({entry})=>entry.read()),identity=JSON.stringify(actors.map(actor=>[actor.speaker,actor.aliases]));
+    if(!force && castVisibilitySnapshot?.chatId===chatId && castVisibilitySnapshot.id===latest?.id && castVisibilitySnapshot.content===content && castVisibilitySnapshot.plan===plan && castVisibilitySnapshot.identity===identity)return;
+    const other=$('otherCast'),otherRows=$('otherCastRows'),previous=castVisibilitySnapshot;
+    castVisibilitySnapshot={chatId,id:latest?.id,content,plan,identity};
+    // Before the first plan, leave every voice available for initial setup.
+    const canGroup=Boolean(plan && planSource?.chatId===chatId && latest && content);
+    const transcript=canGroup?normalizeName(transcriptFromMessage(content,config?.ignoredTags)):'';
+    const speakers=new Set(canGroup && planSource.messageId===latest.id && sameSpeech(planSource.content,content)?plan.segments.flatMap(speechMembers).filter(segment=>!segment.kind).map(segment=>normalizeName(segment.speaker)):[]);
+    const buckets=new Map([[$('fixed'),[]],[$('npcs'),[]],[otherRows,[]]]);
+    actors.forEach((actor,index)=>{
+      const {entry,home}=entries[index],names=[actor.speaker,...(actor.aliases || [])].map(normalizeName).filter(Boolean);
+      const pinned=home===$('fixed') && castRows.indexOf(entry)<2;
+      const present=pinned || !canGroup || names.some(name=>speakers.has(name) || new RegExp(`(?:^|[^\\p{L}\\p{N}_])${name.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}(?=$|[^\\p{L}\\p{N}_])`,'u').test(transcript));
+      const editing=!entry.row.querySelector('[data-choir-cast-editor]').hidden;
+      const target=editing?entry.row.parentElement:present?home:otherRows;buckets.get(target)?.push(entry.row);
+    });
+    const focused=document.activeElement;let restoreFocus=false;
+    for(const [target,rows] of buckets)rows.forEach((row,index)=>{if(target.children[index]!==row){if(row.contains(focused))restoreFocus=true;target.insertBefore(row,target.children[index] || null);}});
+    const count=buckets.get(otherRows).length;other.hidden=!count;$('otherCastCount').textContent=String(count);
+    if(!count || previous && previous.id!==latest?.id && !other.contains(focused))other.open=false;
+    if(restoreFocus)(otherRows.contains(focused) && !other.open?other.querySelector('summary'):focused)?.focus({preventScroll:true});
+  }
   function renderCast() {
-    $('fixed').replaceChildren();$('npcs').replaceChildren();
+    $('fixed').replaceChildren();$('npcs').replaceChildren();$('otherCastRows').replaceChildren();
     closePolicyLibrary?.();
     const policyRoot=$('npcPolicyRoot');policyRoot.replaceChildren();
     const picker=fishVoicePicker({active:()=>policyRoot.isConnected && !disposed,
@@ -2167,6 +2247,7 @@ export async function setup(ctx) {
     castRows=config.fixed.map(actor=>makeRow(actor,$('fixed'),normalizeName(actor.speaker)==='narrator'));
     const npcs=config.casts[scope(config)] || [];
     npcRows=npcs.map(actor=>makeRow(actor,$('npcs')));
+    updateCastVisibility(true);
     updateProviderVisibility();
     renderMixer();
     refreshDefaultControls();
@@ -2176,9 +2257,9 @@ export async function setup(ctx) {
     // record their own route before capture, including non-default Fish voices.
     scopeLegacyExtraVoices();
     for(const voice of additionalVoices($('extraVoices').value))if(!Object.hasOwn(config.extraVoiceRoutes || {},voice.id))rememberExtraVoiceRoute(voice.id,scope(config));
-    return reconcileCardCast({...config,showAutoPlanAction:$('showAutoPlanAction').checked,fixed:castRows.filter(v=>$('fixed').contains(v.row)).map(v=>v.read()),
+    return reconcileCardCast({...config,showAutoPlanAction:$('showAutoPlanAction').checked,fixed:castRows.filter(v=>root.contains(v.row)).map(v=>v.read()),
       singleVoices:config.connectionMode==='one'?{...config.singleVoices,[scope(config)]:Object.fromEntries([...castRows,...npcRows].filter(v=>v.row.isConnected || v.row.parentElement).map(v=>v.voiceChoice()))}:config.singleVoices,
-      casts:{...config.casts,[scope(config)]:npcRows.filter(v=>$('npcs').contains(v.row)).map(v=>v.read())},
+      casts:{...config.casts,[scope(config)]:npcRows.filter(v=>root.contains(v.row)).map(v=>v.read())},
       planner:$('planner').value,connection:$('connection').value,decisionConnection:$('decisionConnection')?$('decisionConnection').value:(config.decisionConnection||''),
       styleParam:$('styleParam').value,apiBase:$('apiBase').value.trim(),chunk:Number($('chunk').value),
       plannerTokens:Number($('plannerTokens').value),retention:$('retention').value,batchSpeech:$('batchSpeech').checked,concurrency:Number($('concurrency').value),
@@ -2332,7 +2413,7 @@ export async function setup(ctx) {
     const narrator=castRows[0]?.row.querySelector('input');if(narrator && config.fixed[0]?.speaker==='Narrator')narrator.disabled=true;
     refreshDefaultControls();
   }
-  function clearPlan() {plan=null;planSource=null;planAttribution=null;mixerPlaybackSegments=null;$('preview').replaceChildren();$('planJson').value='';$('planSummary').textContent='Speech plan';$('latestNotice').hidden=true;renderMixer();refreshSectionControls();}
+  function clearPlan() {plan=null;planSource=null;planAttribution=null;mixerPlaybackSegments=null;$('preview').replaceChildren();$('planJson').value='';$('planSummary').textContent='Speech plan';$('latestNotice').hidden=true;updateCastVisibility();renderMixer();refreshSectionControls();}
   // Cue keeps the current ambience bed running into its next paragraph.
   function stop(show=true,keepBed=false,keepMusic=false) {
     if(show)cancelAutoReplies();
@@ -2501,6 +2582,7 @@ export async function setup(ctx) {
     })().catch(()=>{});
   }
   function renderPreview() {
+    updateCastVisibility();
     refreshLatestNotice();
     $('preview').replaceChildren();
     $('planSummary').textContent=`Speech plan · ${plan.segments.length} spoken blocks`;
@@ -3807,6 +3889,7 @@ export async function setup(ctx) {
     unsubs.push(()=>handle.destroy());
   }
   function renderMessages() {
+    updateCastVisibility();
     refreshLatestNotice();
     refreshSectionControls();
     $('messages').replaceChildren();
@@ -4434,6 +4517,7 @@ const paragraphAudioCache = new Map();
   mixer.addEventListener('choir:replace',cleanup,{once:true});unsubs.push(()=>mixer.removeEventListener('choir:replace',cleanup));
   await run(switchChat);
   if(disposed)return cleanup;
+  applyMixerLayout();
   if(!setupAutoStarted){setupAutoStarted=true;void setupWizard.start();}
   // Branch metadata is optional UI information; it must not delay startup.
   const branchLookup=new AbortController();unsubs.push(()=>branchLookup.abort());

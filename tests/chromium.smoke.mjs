@@ -147,7 +147,7 @@ try{
   await speedPage.locator('[data-et="playbackRate"]').evaluate(node=>{node.value='11';node.dispatchEvent(new Event('input'));node.dispatchEvent(new Event('change'));});
   assert.equal(await speedNumber.inputValue(),'11.00');await speedNumber.blur();
   await speedPage.getByRole('button',{name:'Fast',exact:true}).click();assert.equal(await speedNumber.inputValue(),'1.50');
-  assert.equal(await speedPage.locator('[data-choir-mixer] input[aria-label*="speed"]').count(),0);
+  assert.equal(await speedPage.locator('[data-choir-mixer] input[aria-label*="speed"]:visible').count(),0,'Optional speed controls stay hidden in the default layout.');
   await speedPage.locator('[data-et="enableSfx"]').uncheck();await speedPage.locator('[data-et="enableAmbience"]').uncheck();
   await speedPage.locator('[data-et="latest"]').click();await speedPage.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Ready:'));
   await speedPage.getByRole('button',{name:'Edit Mira',exact:true}).click();
@@ -404,8 +404,10 @@ try{
   await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.includes('Auto-play skipped'));
   assert.equal(await page.evaluate(()=>window.plans),autoPlayOnly.plans);assert.equal(await page.evaluate(()=>window.calls.length),autoPlayOnly.calls);assert.equal(await page.evaluate(()=>window.audios.length),autoPlayOnly.audios+1);
   await autoPlaySwitch.click();
-  await cast.getByRole('button',{name:'Edit Mira',exact:true}).click();
-  const fishCard=cast.locator('.et-card').nth(2);await fishCard.locator('[data-choir-route]').selectOption('native:c');
+  await page.locator('[data-et="otherCast"]>summary').click();
+  const fishCard=page.locator('.et-cast-row').filter({has:page.locator('.et-cast-header strong').filter({hasText:/^Mira$/})});
+  await fishCard.getByRole('button',{name:'Edit Mira',exact:true}).click();
+  await fishCard.locator('[data-choir-route]').selectOption('native:c');
   await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Speaker TTS connection selected'));
   await fishCard.getByRole('button',{name:'Paste Fish Audio voice ID for Mira',exact:true}).click();
   const voiceId='0123456789abcdef0123456789abcdef';await fishCard.getByRole('textbox',{name:'Fish Audio voice ID for Mira',exact:true}).fill(voiceId);
@@ -413,7 +415,7 @@ try{
   const synthesisBeforeId=await page.evaluate(()=>window.calls.length);await fishCard.getByRole('button',{name:'Use this voice',exact:true}).click();
   await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Voice ID saved'));
   assert.equal(await page.evaluate(()=>window.calls.length),synthesisBeforeId);assert.equal(await fishCard.locator('[data-choir-voice]').inputValue(),voiceId);
-  await cast.getByRole('button',{name:'Edit Mira',exact:true}).click();await fishCard.locator('[data-choir-preview]').click();
+  await fishCard.getByRole('button',{name:'Edit Mira',exact:true}).click();await fishCard.locator('[data-choir-preview]').click();
   await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent==='Audition finished.');
   assert.deepEqual(await page.evaluate(()=>({voice:window.calls.at(-1).voice,connection:window.calls.at(-1).connectionId})),{voice:voiceId,connection:'c'});
   await fishCard.getByRole('button',{name:'Paste Fish Audio voice ID for Mira',exact:true}).click();

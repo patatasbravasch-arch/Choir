@@ -20,6 +20,47 @@ function mockMixRecorder(){
  return ()=>globalThis.MediaRecorder=original;
 }
 
+test('inactive cast collapses without losing fixed or discovered voice settings and returns on an alias in the next reply',async()=>{
+ for(const mode of ['one','several']){
+  const h=await harness();try{
+   const saved=h.store.get('chat:chat-a');saved.connectionMode=mode;saved.fixed.push({speaker:'Kova',voice:'new',route:'native:a',aliases:['Armand'],sayAs:'KO-vah',accent:'Irish'});saved.casts['native:a'].push({speaker:'Viktor',voice:'g',aliases:['The visitor']});h.store.set('chat:chat-a',saved);await h.reload();
+   h.message.content='At dawn, Kovacs arrived. "Hello." "Wait." The gate closed.';await h.plan();
+   const inOther=name=>[...h.$('otherCastRows').querySelectorAll('.et-cast-row')].some(row=>row.querySelector('strong').textContent===name);
+   assert.equal(h.$('otherCast').hidden,false);assert.equal(h.$('otherCast').open,false);assert.ok(inOther('Kova'),'a partial name match must not keep Kova active');assert.ok(inOther('Viktor'));
+   h.$('chunk').value='1700';h.$('chunk').dispatchEvent(new h.dom.window.Event('change'));await until(()=>h.$('saveState').textContent==='Saved automatically');
+   const kept=h.store.get('chat:chat-a');assert.equal(kept.fixed.find(actor=>actor.speaker==='Kova').voice,'new');assert.equal(kept.fixed.find(actor=>actor.speaker==='Kova').sayAs,'KO-vah');assert.ok(kept.casts['native:a'].some(actor=>actor.speaker==='Viktor' && actor.voice==='g'));
+   await h.reload();assert.ok(inOther('Kova'));const calls=h.requests.length;
+   h.message.id='next-reply';h.message.content='At dawn, ARMAND arrived. "Hello." "Wait." The gate closed.';h.subscriptions.get('chat.messageCount')();assert.equal(inOther('Kova'),false);assert.ok([...h.$('fixed').querySelectorAll('strong')].some(node=>node.textContent==='Kova'));assert.ok(inOther('Viktor'));assert.equal(h.requests.length,calls,'grouping must not ask the planner or speech provider');
+   const edit=h.$('fixed').querySelector('[aria-label="Edit Kova"]');edit.focus();edit.click();
+   h.message.id='later-reply';h.message.content='At dawn. "Hello." "Wait." The gate closed.';h.subscriptions.get('chat.messageCount')();assert.equal(inOther('Kova'),false,'an open editor stays available across replies');
+   edit.focus();edit.click();assert.ok(inOther('Kova'),'closing the focused editor must still fold an absent character away');assert.equal(document.activeElement,h.$('otherCast').querySelector('summary'),'keyboard focus moves to the collapsed group');
+  }finally{await h.close();}
+ }
+});
+
+test('mixer layout hides and reorders controls across reload without changing sound settings and reset preserves levels',async()=>{
+ const h=await harness({master:0.7,playbackRate:1.75,voiceGapMs:250,layout:{speedPresets:'invalid'},quickButtonOrder:['music','music','unknown','sfx']});try{
+  const check=key=>document.querySelector(`[data-choir-layout="${key}"]`),change=(key,value)=>{const input=check(key);input.checked=value;input.dispatchEvent(new h.dom.window.Event('change'));};
+  const mixer=()=>document.querySelector('[data-choir-mixer]');assert.equal(mixer().querySelector('.cm-speed-options').hidden,false);assert.deepEqual([...mixer().querySelectorAll('.cm-auto-plan button')].map(button=>button.dataset.choirAction),['music','sfx','auto-plan','auto-play','ambience']);
+  h.$('enableMusic').checked=true;h.$('enableMusic').dispatchEvent(new h.dom.window.Event('change'));await until(()=>h.$('saveState').textContent==='Saved automatically');
+  change('speedPresets',false);change('speedSlider',true);change('gapSlider',true);change('music',false);document.querySelector('[aria-label="Move SFX earlier"]').click();await until(()=>h.store.get('ui:mixer')?.quickButtonOrder[0]==='sfx');
+  assert.equal(h.$('enableMusic').checked,true);assert.equal(h.store.get('chat:chat-a').enableMusic,true);assert.equal(h.synthesis.length,0);assert.equal(h.requests.filter(request=>request.action==='plan').length,0);
+  await h.reload();assert.equal(mixer().querySelector('.cm-speed-options').hidden,true);assert.equal(mixer().querySelector('[data-choir-action="music"]').hidden,true);assert.equal(mixer().querySelector('[aria-label="Playback speed in mixer value"]').value,'1.75');assert.equal(mixer().querySelector('[aria-label="Gap between voices in mixer value"]').value,'250');
+  for(const key of ['auto-plan','auto-play','sfx','ambience','music'])change(key,false);assert.equal(mixer().querySelector('.cm-auto-plan').hidden,true);mixer().querySelector('.cm-reset-layout').click();await until(()=>h.store.get('ui:mixer')?.layout.speedPresets===true);
+  assert.equal(mixer().querySelector('.cm-speed-options').hidden,false);assert.deepEqual([...mixer().querySelectorAll('.cm-auto-plan button')].map(button=>button.dataset.choirAction),['auto-plan','auto-play','sfx','ambience','music']);assert.equal(h.store.get('ui:mixer').master,0.7);assert.equal(h.store.get('ui:mixer').playbackRate,1.75);assert.equal(h.store.get('ui:mixer').voiceGapMs,250);
+ }finally{await h.close();}
+});
+
+test('optional mixer character speeds synchronize with drawer controls and change live speech without extra synthesis',async()=>{
+ const h=await harness({playbackRate:2,layout:{voiceSpeeds:true,speedSlider:true}});try{
+  await h.plan();const entry=()=>document.querySelector('[aria-label="Narrator speed in mixer value"]');assert.ok(entry());assert.equal(entry().value,'2.00');
+  h.state.blockAudio=true;h.$('play').click();await until(()=>h.audios.some(audio=>!audio.paused));const audio=h.audios.find(audio=>!audio.paused),requests=h.synthesis.length;
+  entry().value='0.75';entry().dispatchEvent(new h.dom.window.Event('input'));assert.equal(audio.playbackRate,0.75);assert.equal(document.querySelector('[aria-label="Narrator speed value"]').value,'0.75');await until(()=>h.store.get('ui:mixer')?.channels.Narrator?.speed===0.75);
+  document.querySelector('[aria-label="Follow playback speed for Narrator in mixer"]').click();assert.equal(audio.playbackRate,2);assert.equal(entry().value,'2.00');assert.equal(h.synthesis.length,requests);
+  const flag=document.querySelector('[data-choir-layout="voiceSpeeds"]');flag.checked=false;flag.dispatchEvent(new h.dom.window.Event('change'));assert.equal(entry(),null);assert.equal(audio.paused,false);h.$('stop').click();
+ }finally{await h.close();}
+});
+
 test('Fish preferred voices can be pasted into the chat, persist and constrain synthesis with an empty catalogue',async()=>{
  for(const relay of [false,true]){
   const h=await fishGroupingHarness();try{
@@ -864,7 +905,7 @@ test('decorated card titles migrate duplicate NPCs and restore old title attribu
   await h.play();assert.equal(h.requests.filter(request=>request.action==='plan').length,0);assert.equal(h.synthesis.find(input=>input.text.includes('Hello')).voice,'m');assert.equal(h.synthesis.find(input=>input.text.includes('Hello')).connectionId,'b');
   const paragraph=globalThis.__CHOIR_API__.planParagraph('"Hello again."',kellinCard);assert.equal(paragraph.segments[0].speaker,'Kellin Beckett');assert.equal(paragraph.segments[0].voice,'m');
   await h.reload();assert.deepEqual(h.store.get('chat:chat-a').casts['native:a'].map(actor=>actor.speaker),['Mikey Ross']);
-  const editName=async speaker=>{const input=h.$('fixed').children[2].querySelector('input');input.value=speaker;input.dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));await until(()=>h.store.get('chat:chat-a').fixed[2].speaker===speaker);};
+  const editName=async speaker=>{h.$('otherCast').open=true;const row=[...h.$('fixed').children,...h.$('otherCastRows').children].find(row=>row.querySelector('input').value===h.store.get('chat:chat-a').fixed[2].speaker);assert.ok(row);const input=row.querySelector('input');input.value=speaker;input.dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));await until(()=>h.store.get('chat:chat-a').fixed[2].speaker===speaker);};
   await editName(kellinCard);assert.deepEqual(h.store.get('chat:chat-a').fixed[2].aliases,['Kellin Beckett']);
   await editName('Kellin Beckett');assert.deepEqual(h.store.get('chat:chat-a').fixed[2].aliases,[kellinCard]);
   await h.play();assert.equal(h.requests.filter(request=>request.action==='plan').length,0);
@@ -1052,7 +1093,7 @@ test('narrative guideline headings are never added as leads and removing an old 
   h.state.cardRoles=[{name:'Mira',description:'A warm lead.'},{name:'NARRATIVE GUIDELINES',description:'Keep the main character consistent.'}];await h.reload();await h.plan();
   const names=()=>[...h.$('fixed').querySelectorAll('.et-cast-header strong')].map(node=>node.textContent);assert.deepEqual(names(),['Narrator','You','Mira']);
   const saved=h.store.get('chat:chat-a');saved.cardCastAnalysis.roles.push({name:'NARRATIVE GUIDELINES',aliases:[],description:'Old cached mistake.'});saved.fixed.push({speaker:'NARRATIVE GUIDELINES',voice:'new',style:''});h.store.set('chat:chat-a',saved);await h.reload();
-  const row=[...h.$('fixed').children].find(row=>row.querySelector('.et-cast-header strong')?.textContent==='NARRATIVE GUIDELINES');assert.ok(row);row.querySelector('[aria-label="Remove character"]').click();
+  h.$('otherCast').open=true;const row=[...h.$('fixed').children,...h.$('otherCastRows').children].find(row=>row.querySelector('.et-cast-header strong')?.textContent==='NARRATIVE GUIDELINES');assert.ok(row);assert.equal(row.parentElement,h.$('otherCastRows'),'the unused legacy character is folded away');row.querySelector('[aria-label="Remove character"]').click();
   await until(()=>h.$('saveState').textContent==='Saved automatically');await h.reload();await h.plan();assert.deepEqual(names(),['Narrator','You','Mira']);assert.equal(h.requests.filter(request=>request.action==='cardCast').length,1);
  }finally{await h.close();}
 });
@@ -3683,11 +3724,11 @@ test('Abyssal mixer checkbox applies immediately and saves its choice independen
  }finally{await h.close();}
 });
 
-test('mixer offers Normal, Fast and Very fast buttons while gap stays in settings and choices survive reload',async()=>{
+test('default mixer offers Normal, Fast and Very fast buttons while detailed controls stay hidden and choices survive reload',async()=>{
  const h=await harness();try{
   const master=document.querySelector('[data-choir-mixer] .cm-master');
-  assert.deepEqual([...master.nextElementSibling.querySelectorAll('button')].map(button=>button.textContent),['Normal','Fast','Very fast']);
-  assert.equal(master.nextElementSibling.querySelector('input'),null);assert.equal(document.querySelector('[data-choir-mixer] [aria-label*="Gap"]'),null);
+  assert.deepEqual([...master.nextElementSibling.querySelectorAll('.cm-speed-options button')].map(button=>button.textContent),['Normal','Fast','Very fast']);
+  assert.equal(master.nextElementSibling.querySelector('.cm-speed-options input'),null);assert.ok(document.querySelector('[aria-label="Playback speed in mixer"]').closest('[hidden]'));assert.ok(document.querySelector('[aria-label="Gap between voices in mixer"]').closest('[hidden]'));
   assert.equal(speedPreset(1).getAttribute('aria-pressed'),'true');
   assert.equal(speedInput().value,'1');assert.equal(gapInput().value,'0');assert.equal(h.$('playbackRate').value,'1');assert.equal(h.$('voiceGapMs').value,'0');
   speedPreset(2).click();assert.equal(speedEntry().value,'2.00');assert.equal(speedPreset(2).getAttribute('aria-pressed'),'true');
