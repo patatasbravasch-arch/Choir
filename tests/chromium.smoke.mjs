@@ -23,14 +23,16 @@ try{
   const readPage=await browser.newPage({viewport:{width:1440,height:700}});readPage.on('pageerror',error=>errors.push(error.message));
   await readPage.goto(`http://127.0.0.1:${server.address().port}`);await readPage.waitForFunction(()=>window.ready);
   assert.equal(await readPage.locator('[data-et="readAlong"]').inputValue(),'off');assert.equal(await readPage.locator('[data-et="followNarration"]').isChecked(),false);
-  await readPage.locator('[data-et="readAlong"]').selectOption('word');await readPage.locator('[data-et="followNarration"]').check();
-  await readPage.waitForFunction(()=>window.fixtureStore.get('settings:global')?.readAlong==='word' && window.fixtureStore.get('settings:global')?.followNarration===true);
+  await readPage.locator('[data-et="readAlong"]').selectOption('word');
+  await readPage.getByRole('button',{name:'Customize mixer',exact:true}).click();await readPage.getByRole('checkbox',{name:'Show Follow narration',exact:true}).check();await readPage.locator('[data-et="closeMixerLayout"]').click();
   const rendered=await readPage.evaluate(()=>{
     const article=document.querySelector('article');article.style.cssText='height:360px;overflow:auto';article.querySelector('h1').style.marginBottom='900px';
     window.readLog=[];const watch=()=>{const ranges=[...(CSS.highlights.get('choir-speaking') || [])].map(String).join('|');if(ranges!==window.readLog.at(-1))window.readLog.push(ranges);requestAnimationFrame(watch);};watch();
     return document.querySelector('[data-message-id="reply"]').innerHTML;
   });
   await readPage.getByRole('button',{name:'Open Choir voice mixer',exact:true}).click();
+  const followButton=readPage.getByRole('button',{name:'Follow narration',exact:true});await followButton.click();
+  await readPage.waitForFunction(()=>window.fixtureStore.get('settings:global')?.readAlong==='word' && window.fixtureStore.get('settings:global')?.followNarration===true);
   await readPage.locator('[data-et="latest"]').click();await readPage.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Ready:'));
   await readPage.locator('[data-choir-action="playback"]').click();
   await readPage.waitForFunction(()=>window.readLog.includes('The hall fell silent.'));
@@ -54,6 +56,15 @@ try{
   await readPage.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.includes('Playback finished'));
   assert.deepEqual(await readPage.evaluate(()=>window.readLog.filter(Boolean)),['The hall fell silent.','“Welcome.”','A new story begins.']);
   assert.equal(await readPage.locator('.choir-follow-resume').isVisible(),false);
+  await followButton.click();assert.equal(await readPage.locator('[data-et="followNarration"]').isChecked(),false);
+  const beforeFollowToggle=await readPage.evaluate(()=>({speech:window.calls.length,plans:window.plans}));
+  await readPage.evaluate(()=>{document.querySelector('article').scrollTop=0;window.readLog=[''];});
+  await readPage.locator('[data-choir-action="playback"]').click();await readPage.waitForFunction(()=>window.readLog.includes('The hall fell silent.'));
+  assert.equal(await readPage.evaluate(()=>document.querySelector('article').scrollTop),0);
+  await followButton.click();await readPage.waitForFunction(()=>document.querySelector('article').scrollTop>0);
+  assert.equal(await readPage.locator('[data-et="followNarration"]').isChecked(),true);
+  await readPage.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.includes('Playback finished'));
+  assert.deepEqual(await readPage.evaluate(()=>({speech:window.calls.length,plans:window.plans})),beforeFollowToggle,'Turning Follow on mid-passage reuses the playing audio and plan.');
   await readPage.evaluate(()=>window.cleanup());await readPage.close();console.log('PASS: Chrome highlights the spoken passage and words in a Lumiverse-shaped message without changing it, follows narration in the chat scroller, stops following after reader scrolling, and resumes it from Back to narration without stopping playback.');
   const filterPage=await browser.newPage({viewport:{width:1440,height:1000}});filterPage.on('pageerror',error=>errors.push(error.message));
   await filterPage.goto(`http://127.0.0.1:${server.address().port}`);await filterPage.waitForFunction(()=>window.ready);
@@ -222,7 +233,7 @@ try{
   await sfxSwitch.press('Space');assert.equal(await sfxSwitch.getAttribute('aria-pressed'),'false');assert.equal(await page.locator('[data-et="enableSfx"]').isChecked(),false);await sfxSwitch.press('Space');assert.equal(await sfxSwitch.getAttribute('aria-pressed'),'true');
   const autoPlanSwitch=page.getByRole('button',{name:'Auto-plan new replies',exact:true});
   assert.ok((await page.locator('[data-choir-mixer]').boundingBox()).width<=300,'The desktop mixer should stay compact.');
-  assert.equal(await page.locator('.cm-auto-plan button').evaluateAll(nodes=>new Set(nodes.map(node=>Math.round(node.getBoundingClientRect().top))).size),1,'All five desktop switches should fit one row.');
+  assert.equal(await page.locator('.cm-auto-plan button:visible').evaluateAll(nodes=>new Set(nodes.map(node=>Math.round(node.getBoundingClientRect().top))).size),1,'All five default desktop switches should fit one row.');
   assert.equal(await autoPlanSwitch.getAttribute('aria-pressed'),'false');await autoPlanSwitch.click();assert.equal(await autoPlanSwitch.getAttribute('aria-pressed'),'true');
   await page.waitForFunction(()=>window.fixtureStore.get('chat:fixture').autoPlan===true);await autoPlanSwitch.click();assert.equal(await autoPlanSwitch.getAttribute('aria-pressed'),'false');
   const autoPlaySwitch=page.getByRole('button',{name:'Auto-play new replies',exact:true}),autoPlaySetting=page.getByRole('checkbox',{name:'Auto-play new replies',exact:true});
@@ -315,7 +326,7 @@ try{
   assert.equal(await mixer.evaluate(node=>node.scrollWidth<=node.clientWidth+1 && node.scrollHeight<=node.clientHeight+1),true,JSON.stringify(await mixer.evaluate(node=>({width:node.clientWidth,height:node.clientHeight,scrollWidth:node.scrollWidth,scrollHeight:node.scrollHeight,parts:[...node.querySelectorAll('.cm-body,.cm-levels,.cm-levels-body,.cm-channel-tabs,.cm-channels,.cm-legend')].map(part=>({class:part.className,height:part.clientHeight,scrollHeight:part.scrollHeight}))}))));
   const channels=mixer.locator('.cm-channels');assert.equal(await channels.evaluate(node=>node.scrollWidth<=node.clientWidth+1),true);assert.equal(await mixer.locator('.cm-channel-tabs').evaluate(node=>node.scrollWidth<=node.clientWidth+1),true);assert.equal(await mixer.locator('.cm-channel:visible').count(),20);
   assert.equal(await mixer.locator('[data-speaker="SFX"]').count(),1);assert.equal(await sfxSwitch.isVisible(),true);
-  const switches=await mixer.locator('.cm-auto-plan button').evaluateAll(nodes=>nodes.map(node=>{const rect=node.getBoundingClientRect();return {left:rect.left,right:rect.right,top:rect.top};}));assert.ok(switches.every((rect,index)=>!index || rect.left>=switches[index-1].right || rect.top>switches[index-1].top));
+  const switches=await mixer.locator('.cm-auto-plan button:visible').evaluateAll(nodes=>nodes.map(node=>{const rect=node.getBoundingClientRect();return {left:rect.left,right:rect.right,top:rect.top};}));assert.ok(switches.every((rect,index)=>!index || rect.left>=switches[index-1].right || rect.top>switches[index-1].top));
   await mixer.getByRole('tab',{name:'Cast',exact:true}).click();const longRow=mixer.locator('[data-speaker="A character with a very long name that must fit without hiding controls"]');await longRow.scrollIntoViewIfNeeded();
   assert.equal(await longRow.locator('.cm-channel-name').evaluate(node=>node.scrollWidth>node.clientWidth),true);
   const toggle=longRow.getByRole('button',{name:'A character with a very long name that must fit without hiding controls silent',exact:true});await toggle.press('Space');

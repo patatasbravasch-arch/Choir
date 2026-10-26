@@ -41,13 +41,29 @@ test('inactive cast collapses without losing fixed or discovered voice settings 
 test('mixer layout hides and reorders controls across reload without changing sound settings and reset preserves levels',async()=>{
  const h=await harness({master:0.7,playbackRate:1.75,voiceGapMs:250,layout:{speedPresets:'invalid'},quickButtonOrder:['music','music','unknown','sfx']});try{
   const check=key=>document.querySelector(`[data-choir-layout="${key}"]`),change=(key,value)=>{const input=check(key);input.checked=value;input.dispatchEvent(new h.dom.window.Event('change'));};
-  const mixer=()=>document.querySelector('[data-choir-mixer]');assert.equal(mixer().querySelector('.cm-speed-options').hidden,false);assert.deepEqual([...mixer().querySelectorAll('.cm-auto-plan button')].map(button=>button.dataset.choirAction),['music','sfx','auto-plan','auto-play','ambience']);
+  const mixer=()=>document.querySelector('[data-choir-mixer]');assert.equal(mixer().querySelector('.cm-speed-options').hidden,false);assert.deepEqual([...mixer().querySelectorAll('.cm-auto-plan button')].map(button=>button.dataset.choirAction),['music','sfx','auto-plan','auto-play','ambience','follow']);
+  assert.equal(mixer().querySelector('[data-choir-customize]'),null);assert.equal(h.$('mixerLayout').hidden,true);h.$('customizeMixer').click();assert.equal(h.$('mixerLayout').hidden,false);assert.equal(h.$('customizeMixer').getAttribute('aria-expanded'),'true');assert.equal(mixer().dataset.collapsed,'true','customization works while the mixer is closed');
   h.$('enableMusic').checked=true;h.$('enableMusic').dispatchEvent(new h.dom.window.Event('change'));await until(()=>h.$('saveState').textContent==='Saved automatically');
   change('speedPresets',false);change('speedSlider',true);change('gapSlider',true);change('music',false);document.querySelector('[aria-label="Move SFX earlier"]').click();await until(()=>h.store.get('ui:mixer')?.quickButtonOrder[0]==='sfx');
   assert.equal(h.$('enableMusic').checked,true);assert.equal(h.store.get('chat:chat-a').enableMusic,true);assert.equal(h.synthesis.length,0);assert.equal(h.requests.filter(request=>request.action==='plan').length,0);
   await h.reload();assert.equal(mixer().querySelector('.cm-speed-options').hidden,true);assert.equal(mixer().querySelector('[data-choir-action="music"]').hidden,true);assert.equal(mixer().querySelector('[aria-label="Playback speed in mixer value"]').value,'1.75');assert.equal(mixer().querySelector('[aria-label="Gap between voices in mixer value"]').value,'250');
-  for(const key of ['auto-plan','auto-play','sfx','ambience','music'])change(key,false);assert.equal(mixer().querySelector('.cm-auto-plan').hidden,true);mixer().querySelector('.cm-reset-layout').click();await until(()=>h.store.get('ui:mixer')?.layout.speedPresets===true);
-  assert.equal(mixer().querySelector('.cm-speed-options').hidden,false);assert.deepEqual([...mixer().querySelectorAll('.cm-auto-plan button')].map(button=>button.dataset.choirAction),['auto-plan','auto-play','sfx','ambience','music']);assert.equal(h.store.get('ui:mixer').master,0.7);assert.equal(h.store.get('ui:mixer').playbackRate,1.75);assert.equal(h.store.get('ui:mixer').voiceGapMs,250);
+  for(const key of ['auto-plan','auto-play','sfx','ambience','music','follow'])change(key,false);assert.equal(mixer().querySelector('.cm-auto-plan').hidden,true);document.querySelector('.cm-reset-layout').click();await until(()=>h.store.get('ui:mixer')?.layout.speedPresets===true);
+  assert.equal(mixer().querySelector('.cm-speed-options').hidden,false);assert.deepEqual([...mixer().querySelectorAll('.cm-auto-plan button')].map(button=>button.dataset.choirAction),['auto-plan','auto-play','sfx','ambience','music','follow']);assert.equal(h.store.get('ui:mixer').master,0.7);assert.equal(h.store.get('ui:mixer').playbackRate,1.75);assert.equal(h.store.get('ui:mixer').voiceGapMs,250);
+ }finally{await h.close();}
+});
+
+test('drawer mixer customization preserves channel levels and optional Follow narration stays synchronized across reloads',async()=>{
+ const h=await harness({levelsCollapsed:false,master:.7,channels:{Narrator:{volume:1.8,mute:false}}});try{
+  const mixer=()=>document.querySelector('[data-choir-mixer]'),follow=()=>mixer().querySelector('[data-choir-action="follow"]');
+  const show=(key,value)=>{const check=document.querySelector(`[data-choir-layout="${key}"]`);check.checked=value;check.dispatchEvent(new h.dom.window.Event('change'));};
+  h.$('customizeMixer').click();show('channelLevels',false);show('follow',true);assert.equal(mixer().querySelector('.cm-levels').hidden,true);assert.equal(follow().hidden,false);assert.equal(follow().getAttribute('aria-pressed'),'false');
+  follow().click();await until(()=>h.store.get('chat:chat-a')?.followNarration===true);assert.equal(h.$('followNarration').checked,true);assert.equal(follow().getAttribute('aria-pressed'),'true');assert.equal(h.$('readAlong').value,'off');
+  h.$('followNarration').checked=false;h.$('followNarration').dispatchEvent(new h.dom.window.Event('change'));assert.equal(follow().getAttribute('aria-pressed'),'false');await until(()=>h.store.get('chat:chat-a')?.followNarration===false);
+  follow().click();await until(()=>h.store.get('chat:chat-a')?.followNarration===true);show('follow',false);assert.equal(h.$('followNarration').checked,true,'hiding Follow must not stop following');show('follow',true);
+  await until(()=>h.store.get('ui:mixer')?.layout?.follow===true);await h.reload();assert.equal(follow().hidden,false);assert.equal(follow().getAttribute('aria-pressed'),'true');assert.equal(mixer().querySelector('.cm-levels').hidden,true);
+  h.$('customizeMixer').click();show('channelLevels',true);assert.equal(mixer().querySelector('.cm-levels').hidden,false);assert.equal(mixer().querySelector('.cm-levels-body').hidden,false);assert.equal(h.store.get('ui:mixer').channels.Narrator.volume,1.8);assert.equal(h.store.get('ui:mixer').master,.7);
+  h.$('mixerLayout').dispatchEvent(new h.dom.window.KeyboardEvent('keydown',{key:'Escape',bubbles:true}));assert.equal(h.$('mixerLayout').hidden,true);assert.equal(document.activeElement,h.$('customizeMixer'));
+  assert.equal(h.synthesis.length,0);assert.equal(h.requests.filter(request=>request.action==='plan').length,0);
  }finally{await h.close();}
 });
 
