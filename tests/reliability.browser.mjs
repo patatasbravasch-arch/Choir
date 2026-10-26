@@ -2816,6 +2816,68 @@ const failRecordingPuts=()=>{
   return ()=>{IDBObjectStore.prototype.put=put;};
 };
 
+test('timed retention updates the stored policy and Replay cannot restore indefinite storage',async()=>{
+ const h=await harness();try{
+  await h.plan();await h.play();const calls=h.synthesis.length;
+  for(const policy of ['7','30','1']){
+   h.$('retention').value=policy;h.$('retention').dispatchEvent(new h.dom.window.Event('change'));
+   await until(()=>h.$('saveState').textContent==='Saved automatically');
+   const record=await recordingFor(h.message.content);assert.equal(record.retention,policy);assert.equal(record.expiresAt,record.createdAt+Number(policy)*86400000);
+  }
+  const before=await recordingFor(h.message.content);assert.equal(before.retention,'1');assert.equal(before.expiresAt,before.createdAt+86400000);
+  [...h.$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay').click();await until(()=>h.$('status').textContent==='Replay finished.');
+  const after=await recordingFor(h.message.content);assert.equal(after.retention,'1');assert.equal(after.expiresAt,before.expiresAt);assert.equal(h.synthesis.length,calls);
+  const realNow=Date.now;try{Date.now=()=>after.expiresAt+1;
+   [...h.$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay').click();await until(()=>h.$('status').textContent.includes('No saved audio'));
+   assert.equal(await recordingFor(h.message.content),null);
+  }finally{Date.now=realNow;}
+ }finally{await h.close();}
+});
+
+test('changing persistent audio to session retention keeps it playable in memory and removes its disk copy',async()=>{
+ const h=await harness();try{
+  await h.plan();await h.play();const calls=h.synthesis.length;
+  h.$('retention').value='session';h.$('retention').dispatchEvent(new h.dom.window.Event('change'));await until(()=>h.$('saveState').textContent==='Saved automatically');
+  assert.equal(await recordingFor(h.message.content),null);
+  [...h.$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay').click();await until(()=>h.$('status').textContent==='Replay finished.' || h.$('status').textContent.includes('No saved audio'));
+  assert.equal(h.$('status').textContent,'Replay finished.');assert.equal(h.synthesis.length,calls);assert.equal(await recordingFor(h.message.content),null);
+  await h.reload();[...h.$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay').click();await until(()=>h.$('status').textContent.includes('No saved audio'));
+ }finally{await h.close();}
+});
+
+test('Replay preserves the deadline of recordings saved by older versions with a stale indefinite label',async()=>{
+ const h=await harness();try{
+  await h.plan();await h.play();const rows=await recordings(),row=rows.find(row=>row.value.content===h.message.content);
+  row.value.retention='forever';row.value.expiresAt=Date.now()+86400000;await insertRecordings([row]);
+  [...h.$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay').click();await until(()=>h.$('status').textContent==='Replay finished.');
+  assert.equal((await recordingFor(h.message.content)).expiresAt,row.value.expiresAt);
+ }finally{await h.close();}
+});
+
+test('the minute cleanup removes expired disk records without requiring a replay or chat change',async()=>{
+ const originalInterval=globalThis.setInterval;let sweep,h;
+ globalThis.setInterval=(callback,delay,...args)=>{if(delay===60000)sweep=callback;return originalInterval(callback,delay,...args);};
+ try{
+  h=await harness();assert.equal(typeof sweep,'function');
+  const namespace=h.store.get('audio:namespace'),key=JSON.stringify([namespace,'chat-old','expired-idle']);
+  await insertRecordings([{key,value:{createdAt:1,retention:'1',expiresAt:Date.now()-1,blobs:[new Blob(['speech'])],passages:{music:new Blob(['music'])},playedAudio:{blob:new Blob(['mix'])}}}]);
+  sweep();await tick();await tick();assert.equal((await recordings()).some(row=>row.key===key),false);
+ }finally{globalThis.setInterval=originalInterval;await h?.close();}
+});
+
+test('expired recordings are physically pruned on visibility return and cannot be revived by a longer policy',async()=>{
+ const h=await harness();try{
+  const namespace=h.store.get('audio:namespace'),now=Date.now(),key=id=>JSON.stringify([namespace,'chat-a',id]);
+  const row=(id,retention,expiresAt)=>({key:key(id),value:{content:id,createdAt:now-2*86400000,retention,expiresAt,segments:[],blobs:[new Blob(['speech'])],passages:{sound:new Blob(['music'])},playedAudio:{blob:new Blob(['mix'])}}});
+  await insertRecordings([row('expired','1',now-1),row('future','7',now+86400000),row('forever','forever',null),{...row('foreign','1',now-1),key:JSON.stringify(['another-extension','chat-a','foreign'])}]);
+  Object.defineProperty(document,'visibilityState',{configurable:true,value:'visible'});document.dispatchEvent(new h.dom.window.Event('visibilitychange'));await tick();await tick();
+  let rows=await recordings();assert.equal(rows.some(row=>row.key===key('expired')),false);assert.ok(rows.some(row=>row.key===key('future')));assert.ok(rows.some(row=>row.key===key('forever')));assert.ok(rows.some(row=>JSON.parse(row.key)[0]==='another-extension'));
+  await insertRecordings([row('expired-again','1',now-1)]);
+  h.$('retention').value='7';h.$('retention').dispatchEvent(new h.dom.window.Event('change'));await until(()=>h.$('saveState').textContent==='Saved automatically');
+  rows=await recordings();assert.equal(rows.some(row=>row.key===key('expired-again')),false);
+ }finally{await h.close();}
+});
+
 test('a quota failure never deletes audio saved with indefinite retention and reports the limit',async()=>{
   const h=await harness();try{
     const namespace=h.store.get('audio:namespace'),key=JSON.stringify([namespace,'chat-old','message-old']);

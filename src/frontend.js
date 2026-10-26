@@ -404,6 +404,11 @@ export async function setup(ctx) {
   }
   let audioDatabase,audioDatabaseHandle;
   const sessionAudio=new Map();
+  const audioExpired=record=>record?.expiresAt!=null && record.expiresAt<=Date.now();
+  function recordingWithRetention(record,retention){
+    const createdAt=record.createdAt ?? Date.now();
+    return {...record,createdAt,retention,expiresAt:retention==='forever' || retention==='session'?null:createdAt+Number(retention)*86400000};
+  }
   function openRecordingDatabase(){
     if(!audioDatabase){
       const opening=new Promise((resolve,reject)=>{
@@ -435,10 +440,10 @@ export async function setup(ctx) {
     return new Promise((resolve,reject)=>{
       const transaction=db.transaction('recordings','readwrite');
       const store=transaction.objectStore('recordings');
-      let result;
+      let result;const sessionChanges=new Map();
       if(!['policy','prune','deleteChat'].includes(operation)){
-        const request=operation==='put'?store.put(value,key):operation==='delete'?store.delete(key):store.get(key);
-        request.onsuccess=()=>{result=request.result;if(operation==='get' && result?.expiresAt!=null && result.expiresAt<=Date.now()){store.delete(key);result=undefined;}};
+        const request=operation==='put' && !audioExpired(value)?store.put(value,key):operation==='delete' || operation==='put'?store.delete(key):store.get(key);
+        request.onsuccess=()=>{result=request.result;if(operation==='get' && audioExpired(result)){store.delete(key);result=undefined;}};
         transaction.oncomplete=()=>{if(operation==='put')sessionAudio.delete(key);resolve(result);};
         transaction.onerror=event=>reject(recordingFailure(event,new Error('Recording storage failed.')));
         transaction.onabort=event=>reject(recordingFailure(event,new Error('Recording storage failed.')));
@@ -453,11 +458,16 @@ export async function setup(ctx) {
             const record=cursor.value;
             if(operation==='deleteChat' && identity[1]===JSON.parse(key)[1])cursor.delete();
             else if(operation==='policy' && identity[1]===JSON.parse(key)[1]) {
-              record.createdAt ??= Date.now();
-              record.expiresAt=value.retention==='forever'?null:record.createdAt+Number(value.retention)*86400000;
-              if(value.retention==='session' || (record.expiresAt!==null && record.expiresAt<=Date.now()))cursor.delete();
-              else cursor.update(record);
-            } else if(record.expiresAt!=null && record.expiresAt<=Date.now())cursor.delete();
+              sessionChanges.set(cursor.key,null);
+              // An already expired record must not be revived by extending its policy.
+              if(audioExpired(record))cursor.delete();
+              else{
+                const updated=recordingWithRetention(record,value.retention);
+                if(audioExpired(updated))cursor.delete();
+                else if(value.retention==='session'){sessionChanges.set(cursor.key,updated);cursor.delete();}
+                else cursor.update(updated);
+              }
+            } else if(audioExpired(record)){cursor.delete();sessionChanges.set(cursor.key,null);}
           }
           cursor.continue();return;
         }
@@ -465,7 +475,7 @@ export async function setup(ctx) {
         const request=operation==='put'?store.put(value,key):operation==='delete'?store.delete(key):store.get(key);
         request.onsuccess=()=>{result=request.result;};
       };
-      transaction.oncomplete=()=>resolve(result);
+      transaction.oncomplete=()=>{for(const [sessionKey,record] of sessionChanges)if(record)sessionAudio.set(sessionKey,record);else sessionAudio.delete(sessionKey);resolve(result);};
       transaction.onerror=event=>reject(recordingFailure(event,new Error('Recording storage failed.')));
       transaction.onabort=event=>reject(recordingFailure(event,new Error('Recording storage failed.')));
     });
@@ -506,9 +516,14 @@ export async function setup(ctx) {
     return Promise.race([accessRecordingStore(operation,key,value),deadline]).finally(()=>clearTimeout(timer));
   }
   async function accessRecordingStore(operation,key,value) {
-    if(operation==='policy' && value.retention!=='session') {
+    if(operation==='prune')for(const [sessionKey,record] of sessionAudio)if(audioExpired(record))sessionAudio.delete(sessionKey);
+    if(operation==='policy') {
       for(const [sessionKey,record] of [...sessionAudio]) {
-        if(JSON.parse(sessionKey)[1]===JSON.parse(key)[1])await recordingStore('put',sessionKey,{...record,retention:value.retention});
+        if(JSON.parse(sessionKey)[1]!==JSON.parse(key)[1])continue;
+        const updated=recordingWithRetention(record,value.retention);
+        if(audioExpired(record) || audioExpired(updated))sessionAudio.delete(sessionKey);
+        else if(value.retention==='session')sessionAudio.set(sessionKey,updated);
+        else await recordingStore('put',sessionKey,updated);
       }
     }
     if(operation==='delete')sessionAudio.delete(key);
@@ -517,15 +532,20 @@ export async function setup(ctx) {
     }
     if(operation==='get' && sessionAudio.has(key)){
       const record=sessionAudio.get(key);
-      if(record.expiresAt==null || record.expiresAt>Date.now())return record;
+      if(!audioExpired(record))return record;
       sessionAudio.delete(key);
     }
     if(operation==='put') {
-      const createdAt=value.createdAt ?? Date.now(),retention=value.retention || 'forever';
-      value={...value,createdAt,expiresAt:retention==='forever' || retention==='session'?null:createdAt+Number(retention)*86400000};
-      if(retention==='session'){sessionAudio.set(key,value);return;}
+      if(audioExpired(value))return accessRecordingStore('delete',key);
+      const targetChat=JSON.parse(key)[1];
+      const retention=(targetChat===chatId?config?.retention:retentionPolicies.get(targetChat)) || value.retention || 'forever';
+      // Replay saves an existing record. Preserve its expiry, including records
+      // made by older versions whose stored policy label was stale. An ongoing
+      // playback must also respect a retention change made since it started.
+      value={...recordingWithRetention(value,retention),...(retention===value.retention && (value.expiresAt===null || Number.isFinite(value.expiresAt))?{expiresAt:value.expiresAt}:{})};
+      if(retention==='session'){if(audioExpired(value))sessionAudio.delete(key);else sessionAudio.set(key,value);return;}
       // Keep a session copy if IndexedDB is unavailable or full.
-      sessionAudio.set(key,value);
+      if(audioExpired(value))sessionAudio.delete(key);else sessionAudio.set(key,value);
     }
     if(audioNamespaceError)throw new Error(`Audio storage settings could not be loaded: ${audioNamespaceError.message}`);
     if(!globalThis.indexedDB)throw new Error('Device audio storage is unavailable in this browser.');
@@ -4335,6 +4355,16 @@ const paragraphAudioCache = new Map();
 
 
 
+  let retentionCleanup;
+  const cleanExpiredAudio=()=>{
+    if(disposed)return Promise.resolve();
+    if(!retentionCleanup)retentionCleanup=recordingStore('prune').catch(error=>{if(!disposed && !busy)status(`Expired audio could not be cleared: ${error.message}`,true);}).finally(()=>{retentionCleanup=null;});
+    return retentionCleanup;
+  };
+  const retentionTimer=setInterval(()=>void cleanExpiredAudio(),60000);retentionTimer.unref?.();
+  const returnToChoir=()=>{if(document.visibilityState!=='hidden')void cleanExpiredAudio();};
+  document.addEventListener('visibilitychange',returnToChoir);
+  unsubs.push(()=>{clearInterval(retentionTimer);document.removeEventListener('visibilitychange',returnToChoir);});
   const cleanup=()=>{
     if(disposed)return;disposed=true;loadVersion++;cancelAutoReplies();saveOnLeave();stop(false);
     for(const done of [...pending.values()])done(abortError());
