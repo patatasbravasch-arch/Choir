@@ -804,7 +804,7 @@ export async function setup(ctx) {
   }
   // Ambience and music each loop one bed under speech; a replaced bed fades out while the next fades in.
   const BED_LEVEL={ambience:0.25,music:0.2},BED_NAME={ambience:'Ambience',music:'Music'},AMBIENCE_FADE_MS=1500,AMBIENCE_FILTER='duration:[10 TO 120]',fadingBeds=new Set(),beds={ambience:null,music:null};
-  const bedVolume=layer=>{if(layer.audio){const volume=effectVolume(layer.kind)*BED_LEVEL[layer.kind]*layer.level;if(layer.gain)layer.gain.gain.value=volume;else layer.audio.volume=volume;}};
+  const bedVolume=layer=>{if(layer.audio){const volume=effectVolume(layer.kind)*BED_LEVEL[layer.kind]*layer.level;if(layer.gain)layer.gain.gain.value=volume;else layer.audio.volume=volume;syncPlayedAudio();}};
   const bedEnabled=kind=>kind==='music'?config?.enableMusic===true:config?.enableAmbience!==false;
   const continuousMusic=()=>config?.enableMusic===true && config?.loopMusic===true;
   const musicLabel=entry=>[...entry.feels,...entry.genres].join(', ') || entry.keywords.join(', ');
@@ -821,7 +821,7 @@ export async function setup(ctx) {
     clearInterval(layer.timer);const from=layer.level,start=Date.now();
     layer.timer=setInterval(()=>{const progress=Math.min(1,(Date.now()-start)/AMBIENCE_FADE_MS);layer.level=progress<1?from+(to-from)*progress:to;bedVolume(layer);if(progress===1){clearInterval(layer.timer);done?.();}},50);
   }
-  function dropBed(layer){clearInterval(layer.timer);layer.loading.abort();if(layer.audio){layer.audio.onerror=null;layer.audio.pause();if(layer.kind==='music'){layer.audio.removeAttribute('src');layer.audio.load();}}layer.mediaSource?.disconnect();layer.gain?.disconnect();if(layer.url)URL.revokeObjectURL(layer.url);fadingBeds.delete(layer);if(layer.kind==='music')showMusicCredit();}
+  function dropBed(layer){clearInterval(layer.timer);layer.loading.abort();if(layer.audio){layer.audio.onerror=layer.audio.onplay=layer.audio.onpause=null;layer.audio.pause();if(layer.kind==='music'){layer.audio.removeAttribute('src');layer.audio.load();}}layer.mediaSource?.disconnect();layer.gain?.disconnect();if(layer.url)URL.revokeObjectURL(layer.url);fadingBeds.delete(layer);syncPlayedAudio();if(layer.kind==='music')showMusicCredit();}
   function failBed(layer,error,badFile=false){
     if(beds[layer.kind]!==layer || layer.loading.signal.aborted)return;
     const retained=layer.kind==='music' && continuousMusic() && !layer.audio?[...fadingBeds].findLast(bed=>bed.kind==='music' && bed.audio):null;
@@ -834,9 +834,9 @@ export async function setup(ctx) {
     showFoleyStatus(previous && !previous.includes(warning)?`${previous}\n${warning}`:warning);
   }
   function playBed(layer){
-    try{playedCapture?.start();layer.audio.play().catch(error=>failBed(layer,error));}catch(error){failBed(layer,error);}
+    try{layer.audio.play().then(syncPlayedAudio).catch(error=>failBed(layer,error));syncPlayedAudio();}catch(error){failBed(layer,error);}
   }
-  // Music uses the host's audio proxy so the same sound can feed the speakers
+  // Music uses the host's file API so the same sound can feed the speakers
   // and the saved mix. Cross-origin media would otherwise be silent in Web Audio.
   function followBed(entry,load,kind='ambience',purge){
     if(!bedEnabled(kind)){stopBeds(kind);updateTransport();return;}
@@ -848,12 +848,15 @@ export async function setup(ctx) {
     if(kind==='music' && !key)for(const old of fadingBeds)if(old.kind==='music')fadeBed(old,0,()=>dropBed(old));
     if(waitForMusic)for(const old of [...fadingBeds])if(old.kind==='music' && !old.audio)dropBed(old);
     // A carried bed keeps loading after the paragraph that started it is cancelled.
-    const layer=beds[kind]=key?{kind,key,query:entry.query || musicLabel(entry),feels:entry.feels,purge,level:0,loading:new AbortController()}:null;showMusicCredit();updateTransport();
+    const layer=beds[kind]=key?{kind,key,entry,query:entry.query || musicLabel(entry),feels:entry.feels,purge,level:0,loading:new AbortController()}:null;showMusicCredit();updateTransport();
     if(layer)load(layer.loading.signal).then(async source=>{
       if(beds[kind]!==layer)return;
-      const audioBlob=kind==='music' && source.url && !source.url.startsWith('blob:')?await musicAudioBlob(source,layer.loading.signal):source.blob || source;
+      const audioBlob=kind==='music'?await musicAudioBlob(source,layer.loading.signal):source.blob || source;
       if(beds[kind]!==layer || layer.loading.signal.aborted)return;
-      layer.title=source.title;layer.audio=new Audio(source.url?.startsWith('blob:')?source.url:(layer.url=URL.createObjectURL(audioBlob)));layer.audio.loop=true;
+      layer.title=source.title;layer.source=kind==='music'?{title:source.title,url:source.url?.startsWith('blob:')?undefined:source.url,blob:audioBlob}:audioBlob;
+      layer.audio=new Audio(layer.url=URL.createObjectURL(audioBlob));layer.audio.loop=true;
+      if(source.offset>0)layer.audio.onloadedmetadata=()=>{if(layer.audio.duration>0 && Number.isFinite(layer.audio.duration))layer.audio.currentTime=source.offset%layer.audio.duration;};
+      layer.audio.onplay=layer.audio.onpause=syncPlayedAudio;
       try{
         const output=playbackOutput();
         if(output){layer.mediaSource=audioContext.createMediaElementSource(layer.audio);layer.gain=audioContext.createGain();layer.mediaSource.connect(layer.gain);layer.gain.connect(output);layer.audio.volume=1;}
@@ -868,10 +871,25 @@ export async function setup(ctx) {
   const fadeOutBeds=()=>{for(const kind in beds)if(kind!=='music' || !continuousMusic())followBed(null,null,kind);};
   // The bed in effect at a batch comes from the closest marker of its kind before it.
   const bedIndex=(batches,index,kind)=>{while(index>=0 && batches[index].kind!==kind)index--;return index;};
+  // A message can inherit continuous music without having a new music cue.
+  // Save that bed as an opening marker so Replay can restore it on its own.
+  function retainCarriedMusic(segments,cached,snapshot){
+    const firstSpeech=segments.findIndex(segment=>!segment.kind);
+    if(firstSpeech<0 || segments.slice(0,firstSpeech).some(segment=>segment.kind==='music'))return cached;
+    const playing=(beds.music?.audio?beds.music:[...fadingBeds].findLast(layer=>layer.kind==='music' && layer.audio));
+    const savedIndex=cached?.segments?.findIndex(segment=>segment.kind==='music' && segment.carried===true) ?? -1;
+    const live=continuousMusic() && playing?.entry && playing.source;
+    const segment=live?{kind:'music',speaker:'Music',music:structuredClone(playing.entry),carried:true,passageIndex:segments[firstSpeech].passageIndex ?? firstSpeech}:savedIndex>=0?cached.segments[savedIndex]:null;
+    if(!segment)return cached;
+    const track=live?{...playing.source,offset:playing.audio.currentTime || 0}:cached.blobs?.[savedIndex] || cached.passages?.[cacheKey(segment,snapshot)];
+    if(!track)return cached;
+    segments.unshift(segment);
+    return {...cached,passages:{...cached?.passages,[cacheKey(segment,snapshot)]:track}};
+  }
   // Cue bed loads outlive the paragraph hand-off and end only with a real stop.
   let bedPrefetch=new AbortController();
   function stopBeds(kind){if(!kind){bedPrefetch.abort();bedPrefetch=new AbortController();}for(const layer of [...Object.values(beds),...fadingBeds])if(layer && (!kind || layer.kind===kind))dropBed(layer);for(const name in beds)if(!kind || name===kind)beds[name]=null;if(!kind)bedsPaused=false;showMusicCredit();}
-  function pauseBeds(paused){bedsPaused=paused;for(const layer of [...Object.values(beds),...fadingBeds])if(layer?.audio){if(paused)layer.audio.pause();else playBed(layer);}}
+  function pauseBeds(paused){bedsPaused=paused;for(const layer of [...Object.values(beds),...fadingBeds])if(layer?.audio){if(paused)layer.audio.pause();else playBed(layer);}syncPlayedAudio();}
   function positionMixer(){
     const collapsed=Boolean(mixerState.collapsed);
     const isEnabled=Boolean(config?.enableMixer),expanded=isEnabled && !collapsed;
@@ -2866,6 +2884,15 @@ export async function setup(ctx) {
   // measured gain, not the decoded PCM, and observe background failures here.
   const loudnessMeasurements=new WeakMap();
   let outputBus=null,playedCapture=null;
+  // Exclude pauses and silent synthesis waits. Keep deliberately configured
+  // voice gaps and any music or ambience still heard while speech is loading.
+  function syncPlayedAudio(){
+    if(!playedCapture)return;
+    const foreground=currentAudio && !currentAudio.paused && !currentAudio.ended && !currentAudio.error;
+    const gap=voiceGapHold && !voiceGapHold.paused;
+    const background=!bedsPaused && [...Object.values(beds),...fadingBeds].some(layer=>layer?.audio && !layer.audio.paused && !layer.audio.ended && !layer.audio.error && effectVolume(layer.kind)*layer.level>0);
+    if(foreground || gap || background)playedCapture.start();else playedCapture.pause();
+  }
   function playbackOutput(){
     const Context=globalThis.AudioContext || globalThis.webkitAudioContext;
     if(!Context)return null;
@@ -2874,8 +2901,8 @@ export async function setup(ctx) {
     return outputBus;
   }
   function beginPlayedAudio(){
-    try{const output=playbackOutput();if(output)return playedCapture=createPlayedAudioCapture(audioContext,output);}catch{}
-    return playedCapture={start(){},fail(){},discard(){},finish:async()=>({error:'This browser cannot save the played audio mix.'})};
+    try{const output=playbackOutput();if(output){playedCapture=createPlayedAudioCapture(audioContext,output);syncPlayedAudio();return playedCapture;}}catch{}
+    return playedCapture={start(){},pause(){},fail(){},discard(){},finish:async()=>({error:'This browser cannot save the played audio mix.'})};
   }
   function prepareLoudness(blob){
     if(!loudnessMeasurements.has(blob))loudnessMeasurements.set(blob,(async()=>{
@@ -2936,21 +2963,21 @@ export async function setup(ctx) {
       if(signal.aborted)throw abortError();
       await new Promise((resolve,reject)=>{
         let settled=false;
-        const done=error=>{if(settled)return;settled=true;signal.removeEventListener('abort',cancel);audio.onended=null;audio.onerror=null;endGap();if(currentAudio===audio){finishAudio=null;skipAudio=null;updateNextControls();}error?reject(error):resolve();};
+        const done=error=>{if(settled)return;settled=true;signal.removeEventListener('abort',cancel);audio.onended=null;audio.onerror=null;endGap();syncPlayedAudio();if(currentAudio===audio){finishAudio=null;skipAudio=null;updateNextControls();}error?reject(error):resolve();};
         const cancel=()=>{audio.pause();done(abortError());};finishAudio=cancel;
         skipAudio=()=>{audio.pause();done();};updateNextControls();
         audio.onended=()=>done();audio.onerror=()=>done(new Error('Browser could not decode this provider’s audio. Use WAV or MP3.'));
         signal.addEventListener('abort',cancel,{once:true});
         if(speakerExcluded(speaker) || speaker==='SFX' && config?.enableSfx===false){done();return;}
         if(track)stopFollowing=followSpeech(audio,track);
-        const startAudio=()=>audio.play().then(()=>{if(!settled && currentAudio===audio){audioReady=true;updateTransport();}}).catch(error=>done(new Error(error.name==='NotAllowedError'?'Browser blocked audio. Click Play in the mixer to enable playback.':error.message)));
-        playedCapture?.start();
+        audio.onplay=audio.onpause=syncPlayedAudio;
+        const startAudio=()=>{const playing=audio.play();syncPlayedAudio();return playing.then(()=>{if(!settled && currentAudio===audio){audioReady=true;updateTransport();}}).catch(error=>done(new Error(error.name==='NotAllowedError'?'Browser blocked audio. Click Play in the mixer to enable playback.':error.message)));};
         const gapMs=track?.gapMs || 0;
         if(gapMs>0){
           // The silence runs before the audio starts. Mixer Play pauses or resumes it, and a block started paused waits for Play.
           audioReady=true;
           gapHold=startVoiceGap(gapMs,paused,()=>{if(settled)return;gapHold=null;voiceGapHold=null;startAudio();});
-          voiceGapHold=gapHold;updateTransport();
+          voiceGapHold=gapHold;syncPlayedAudio();updateTransport();
         }
         else if(paused){audioReady=true;updateTransport();}
         else startAudio();
@@ -2958,7 +2985,7 @@ export async function setup(ctx) {
     } finally {
       if(activePlayback===position && position)savePosition(audio.currentTime || 0);
       endGap();stopFollowing?.();audio.onloadedmetadata=null;audio.ontimeupdate=null;audio.ondurationchange=null;mediaSource?.disconnect();gain?.disconnect();
-      audio.pause();if(currentAudio===audio){currentAudio=null;currentAudioSpeech=false;currentSpeedSpeaker='';skipAudio=null;currentGain=null;currentNormalize=1;audioReady=false;currentSpeaker='';currentGroupLevel=null;currentGroupNames=[];renderMixer();}
+      audio.onplay=audio.onpause=null;audio.pause();if(currentAudio===audio){currentAudio=null;currentAudioSpeech=false;currentSpeedSpeaker='';skipAudio=null;currentGain=null;currentNormalize=1;audioReady=false;currentSpeaker='';currentGroupLevel=null;currentGroupNames=[];renderMixer();}syncPlayedAudio();
       URL.revokeObjectURL(url);if(objectUrl===url)objectUrl=null;
     }
   }
@@ -3240,7 +3267,11 @@ export async function setup(ctx) {
       if(!bedLoads.has(index))bedLoads.set(index,(async()=>{
         const seg=segments[index],key=cacheKey(seg,snapshot);
         const signal=seg.kind==='music' && continuousMusic()?bedPrefetch.signal:ctrl.signal;
-        blobs[index]=passages[key] ||= await fetchFoleyAudio(seg,snapshot,signal);
+        const source=passages[key] ||= await fetchFoleyAudio(seg,snapshot,signal);
+        // Persist the bytes, not just the selected URL. Cached replay should
+        // not have to download a whole music track again before it can play.
+        if(seg.kind==='music')await musicAudioBlob(source,signal);
+        blobs[index]=source;
         void persist();return blobs[index];
       })().catch(error=>{if(!ctrl.signal.aborted && token===revision)warnFoley(error);throw error;}));
       return bedLoads.get(index);
@@ -3445,12 +3476,13 @@ export async function setup(ctx) {
     if(!segments.some(segment=>!speakerExcluded(segment.speaker))){controller=null;status('All characters have No voice enabled. Text and saved audio remain available.');updateTransport();return;}
     validateSettings(snapshot);
     const source={...planSource,resume:validResume}, key=recordingKey(source.chatId,source.messageId);
-    const signature=JSON.stringify([snapshot.connection,snapshot.styleParam,segments,
-      segments.map(segment=>nativeConnections.find(c=>`native:${c.id}`===(segment.route || scope(snapshot)))?.model)]);
     let cached,storageError='';
     status('Checking saved audio…');
     try{cached=await recordingStore('get',key);}catch(error){storageError=error.message;}
     if(token!==revision || ctrl.signal.aborted)throw abortError();
+    if(fullPlayback)cached=retainCarriedMusic(segments,cached,snapshot);
+    const signature=JSON.stringify([snapshot.connection,snapshot.styleParam,segments,
+      segments.map(segment=>nativeConnections.find(c=>`native:${c.id}`===(segment.route || scope(snapshot)))?.model)]);
     if(source.resume && cached?.signature!==signature && (snapshot.batchSpeech || cached?.segments?.some(segment=>segment.turns?.length>1) || outdatedSfxRecording(cached || {})))source.resume=null;
     setBusy(true);
     try {
@@ -4008,13 +4040,19 @@ export async function setup(ctx) {
     return blob;
   }
 
+  const musicAudioLoads=new WeakMap();
   async function musicAudioBlob(track,signal){
+    if(track instanceof Blob)return track;
     if(track.blob)return track.blob;
-    const result=await rpc('musicAudio',{url:track.url},signal,60000);
-    signal.throwIfAborted();const audio=audioBytes(result.base64,result.mimeType);
-    const blob=new Blob([audio.data],{type:audio.mimeType});
-    if(!blob.size)throw new Error('The music track was empty.');
-    return track.blob=blob;
+    const pending=musicAudioLoads.get(track);if(pending && !pending.signal.aborted)return pending.promise;
+    const entry={signal};entry.promise=(async()=>{
+      let blob;
+      if(track.url?.startsWith('blob:'))blob=await fetch(track.url,{signal}).then(response=>response.blob());
+      else{const result=await rpc('musicAudio',{url:track.url},signal,60000);signal.throwIfAborted();const audio=audioBytes(result.base64,result.mimeType);blob=new Blob([audio.data],{type:audio.mimeType});}
+      signal.throwIfAborted();if(!blob.size)throw new Error('The music track was empty.');
+      return track.blob=blob;
+    })();musicAudioLoads.set(track,entry);
+    try{return await entry.promise;}finally{if(musicAudioLoads.get(track)===entry)musicAudioLoads.delete(track);}
   }
   // Select once; the host proxies music audio so Web Audio can include it in
   // the same mix heard through the speakers. Existing URL caches also work.

@@ -10,6 +10,8 @@ function fixture(){
   static isTypeSupported=type=>type==='audio/webm;codecs=opus';
   constructor(stream,options){this.stream=stream;this.options=options;this.mimeType=options.mimeType;this.state='inactive';instance=this;}
   start(){this.state='recording';}
+  pause(){this.state='paused';}
+  resume(){this.state='recording';}
   stop(){this.state='inactive';queueMicrotask(()=>{this.ondataavailable?.({data:new Blob(['final'],{type:this.mimeType})});this.onstop?.();});}
  }
  return {context,output,Recorder,connections,get recorder(){return instance;},get stopped(){return stopped;}};
@@ -27,6 +29,15 @@ test('played mix records the supplied output only, keeps final recorder data and
 test('Stop discards a played mix and delayed recorder events cannot turn it into a saved download',async()=>{
  const h=fixture(),capture=createPlayedAudioCapture(h.context,h.output,{Recorder:h.Recorder});capture.start();capture.discard();
  await new Promise(resolve=>setTimeout(resolve,0));assert.equal(h.connections.size,0);assert.equal(await capture.finish(),null);
+});
+
+test('pausing a played mix excludes inactive time, resumes the same recording and can finish while paused',async()=>{
+ const h=fixture(),capture=createPlayedAudioCapture(h.context,h.output,{Recorder:h.Recorder});
+ capture.pause();capture.start();const recorder=h.recorder;h.context.currentTime=6;capture.pause();capture.pause();
+ assert.equal(recorder.state,'paused');h.context.currentTime=179;capture.start();capture.start();assert.equal(h.recorder,recorder);assert.equal(recorder.state,'recording');
+ h.context.currentTime=182;capture.pause();h.context.currentTime=200;
+ const result=await capture.finish();assert.equal(result.duration,9);assert.equal(await result.blob.text(),'final');assert.equal(h.connections.size,0);
+ capture.start();assert.equal(recorder.state,'inactive');
 });
 
 test('unsupported recording and recording errors are reported without throwing into playback',async()=>{

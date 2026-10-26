@@ -13,6 +13,8 @@ function mockMixRecorder(){
  globalThis.MediaRecorder=class{
   static isTypeSupported=()=>true;state='inactive';mimeType='audio/webm';
   start(){this.state='recording';}
+  pause(){this.state='paused';}
+  resume(){this.state='recording';}
   stop(){this.state='inactive';queueMicrotask(()=>{this.ondataavailable?.({data:new Blob(['mix'],{type:this.mimeType})});this.onstop?.();});}
  };
  return ()=>globalThis.MediaRecorder=original;
@@ -1567,7 +1569,10 @@ test('continuous music is opt-in, global, survives reply completion and cue-free
   assert.deepEqual(h.requests.filter(request=>request.action==='sfx').at(-1).input.currentMusic,{title:'Crypto',feels:['Dark']});
   assert.equal(music.paused,false);await h.play();assert.equal(music.paused,false);assert.equal(beds(h).length,1);
   assert.equal(h.$('stop').disabled,false);h.$('stop').click();assert.equal(music.paused,true);assert.equal(music.src,undefined);
-  await h.play();assert.equal(beds(h).length,1);
+  const requests=h.synthesis.length,musicRequests=h.requests.filter(request=>request.action==='music' || request.action==='musicAudio').length;
+  await h.play();assert.equal(beds(h).length,2);assert.equal(beds(h)[1].paused,false,'playing the saved cue-free message restores its original music after Stop');
+  assert.equal(h.synthesis.length,requests);assert.equal(h.requests.filter(request=>request.action==='music' || request.action==='musicAudio').length,musicRequests);
+  const record=await recordingFor(h.message.content);assert.equal(record.segments[0].carried,true);assert.ok(record.blobs[0].blob.size>0);
   h.store.set('chat:chat-b',{loopMusic:false,enableMusic:false});h.state.active='chat-b';h.subscriptions.get('chat.active')();
   await until(()=>h.$('loopMusic').checked && h.$('enableMusic').checked);await h.reload();assert.equal(h.$('loopMusic').checked,true);
  }finally{await h.close();}

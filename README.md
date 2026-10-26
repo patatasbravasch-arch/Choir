@@ -4,14 +4,16 @@
 
 # Choir
 
-[![Version](https://img.shields.io/badge/version-1.1.6--staging.33-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/staging)
+[![Version](https://img.shields.io/badge/version-1.1.6--staging.34-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/staging)
 [![Platform](https://img.shields.io/badge/platform-Lumiverse%20Spindle-purple.svg)](https://docs.lumiverse.chat/)
-[![Tests](https://img.shields.io/badge/tests-530%20tests-blue.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-531%20tests-blue.svg)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 An installable Lumiverse Spindle extension for multi-voice narration, dialogue attribution, sound effects, ambience and background music.
 
 </div>
+
+Version **1.1.6-staging.34** removes manual pauses and silent synthesis waits from the downloaded WAV. Configured voice gaps and music or ambience actually heard during a speech wait stay in the file. Music downloads are prepared and saved beside speech, and music carried from an earlier reply is saved with the new message so cached Replay can restore it after reopening Choir. Existing WAVs keep their original mix until you replay the message. This changes recording and replay; the live TTS provider can still take time to generate missing speech.
 
 Version **1.1.6-staging.33** fixes Incompetech music being skipped when its MP3 response is labelled `application/octet-stream`. Choir uses Lumiverse's file-download API, checks the MP3 header, and removes the temporary file after reading it. Music still plays through the recorded mixer, so enabled and audible music is included in **Download audio**. No additional extension permission is needed. Older Lumiverse versions keep the checked audio-proxy fallback; if that host rejects the generic content type, Choir asks you to update Lumiverse for file-download support.
 

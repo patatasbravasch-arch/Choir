@@ -1,8 +1,10 @@
 // Record only Choir's output graph. No microphone, tab capture or user-media
 // permission is involved. Keep compressed audio until the user requests WAV.
 export function createPlayedAudioCapture(context,output,{Recorder=globalThis.MediaRecorder}={}) {
-  let recorder,destination,chunks=[],bytes=0,started=0,failure='',closed=false,settled=false,finishPromise,resolveFinish,timer,result;
+  let recorder,destination,chunks=[],bytes=0,activeSince=null,duration=0,failure='',closed=false,settled=false,finishPromise,resolveFinish,timer,result;
   const maxDuration=(128*1024*1024-44)/(context.sampleRate*4);
+  const endInterval=()=>{if(activeSince!==null){duration+=Math.max(0,context.currentTime-activeSince);activeSince=null;}};
+  const limitDuration=()=>{clearTimeout(timer);timer=setTimeout(()=>{failure='This message is too long for a WAV download (128 MB limit).';stop();},Math.max(0,maxDuration-duration)*1000);};
   const cleanup=()=>{
     clearTimeout(timer);
     if(destination){try{output.disconnect(destination);}catch{}for(const track of destination.stream.getTracks())track.stop();}
@@ -10,14 +12,15 @@ export function createPlayedAudioCapture(context,output,{Recorder=globalThis.Med
   };
   const settle=()=>{
     if(settled)return;settled=true;cleanup();
-    result=failure?{error:failure}:chunks.length?{version:1,blob:new Blob(chunks,{type:recorder.mimeType || chunks[0].type}),duration:Math.max(0,context.currentTime-started)}:null;
+    endInterval();result=failure?{error:failure}:chunks.length?{version:1,blob:new Blob(chunks,{type:recorder.mimeType || chunks[0].type}),duration}:null;
     chunks=[];resolveFinish?.(result);
   };
-  const stop=()=>{if(recorder?.state && recorder.state!=='inactive'){try{recorder.stop();}catch{settle();}}else settle();};
+  const stop=()=>{endInterval();if(recorder?.state && recorder.state!=='inactive'){try{recorder.stop();}catch{settle();}}else settle();};
   return {
     start(){
-      if(closed || recorder || failure)return;
+      if(closed || failure)return;
       try{
+        if(recorder){if(recorder.state==='paused'){recorder.resume();activeSince=context.currentTime;limitDuration();}return;}
         if(!Recorder || !context.createMediaStreamDestination)throw new Error('This browser cannot save the played audio mix.');
         destination=context.createMediaStreamDestination();
         const mimeType=['audio/webm;codecs=opus','audio/ogg;codecs=opus','audio/mp4'].find(type=>Recorder.isTypeSupported?.(type));
@@ -28,9 +31,12 @@ export function createPlayedAudioCapture(context,output,{Recorder=globalThis.Med
         };
         recorder.onerror=event=>{failure=event.error?.message || 'The browser could not save the played audio mix.';stop();};
         recorder.onstop=()=>settle();
-        output.connect(destination);started=context.currentTime;recorder.start(1000);
-        timer=setTimeout(()=>{failure='This message is too long for a WAV download (128 MB limit).';stop();},maxDuration*1000);
+        output.connect(destination);activeSince=context.currentTime;recorder.start(1000);limitDuration();
       }catch(error){failure=error.message;cleanup();}
+    },
+    pause(){
+      if(closed || recorder?.state!=='recording')return;
+      try{recorder.pause();endInterval();clearTimeout(timer);}catch(error){failure=error.message;stop();}
     },
     fail(message){failure=message;},
     finish(){
