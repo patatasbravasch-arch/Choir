@@ -731,6 +731,14 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
       }
       send({result:{base64:response.body,mimeType:'audio/mpeg'}}); return;
     }
+    if (message.action === 'musicAudio') {
+      const url = new URL(String(input.url || ''));
+      if (url.protocol !== 'https:' || url.hostname !== 'incompetech.com' || url.username || url.password || url.port || !/^\/music\/royalty-free\/mp3-royaltyfree\/[^/]+\.mp3$/.test(url.pathname) || url.search || url.hash) throw new Error('Music audio URL is not an incompetech track.');
+      const response = await spindle.cors(url.href, { responseType: 'arraybuffer', mediaType: 'audio' });
+      if (controller.signal.aborted) return;
+      if (response.status < 200 || response.status >= 300) throw new Error(`Music audio HTTP ${response.status}`);
+      send({result:{base64:response.body,mimeType:(response.headers?.['content-type'] || 'audio/mpeg').split(';')[0]}}); return;
+    }
     if (message.action === 'freesoundPreview') {
       const url = new URL(String(input.url || ''));
       if (url.protocol !== 'https:' || !/(^|\.)freesound\.org$/.test(url.hostname)) throw new Error('Freesound preview URL is not from freesound.org.');

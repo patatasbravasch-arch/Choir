@@ -799,6 +799,22 @@ export function mixUnisonAudio(tracks,sampleRate,{normalize=true}={}) {
   return data;
 }
 
+// Look ahead by speech requests, without spending that budget on effects or
+// speech already available before this playback began.
+export function speechLookaheadEnd(segments,start,prefetch,{excluded=()=>false,cached=()=>false}={}) {
+  if(!(prefetch>0))return start;
+  let remaining=prefetch,end=start;
+  for(let index=start+1;index<segments.length;index++){
+    const segment=segments[index];
+    if(!segment.kind && !excluded(segment) && !cached(segment,index)){
+      if(remaining===0)break;
+      remaining--;
+    }
+    end=index;
+  }
+  return end;
+}
+
 // Encode decoded speech in order. All tracks use the decoder's sample rate;
 // mono is duplicated when another track is stereo. Encoded MP3/WAV bytes must
 // never be concatenated directly, since each clip has its own container.

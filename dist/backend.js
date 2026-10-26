@@ -800,6 +800,22 @@ function mixUnisonAudio(tracks,sampleRate,{normalize=true}={}) {
   return data;
 }
 
+// Look ahead by speech requests, without spending that budget on effects or
+// speech already available before this playback began.
+function speechLookaheadEnd(segments,start,prefetch,{excluded=()=>false,cached=()=>false}={}) {
+  if(!(prefetch>0))return start;
+  let remaining=prefetch,end=start;
+  for(let index=start+1;index<segments.length;index++){
+    const segment=segments[index];
+    if(!segment.kind && !excluded(segment) && !cached(segment,index)){
+      if(remaining===0)break;
+      remaining--;
+    }
+    end=index;
+  }
+  return end;
+}
+
 // Encode decoded speech in order. All tracks use the decoder's sample rate;
 // mono is duplicated when another track is stereo. Encoded MP3/WAV bytes must
 // never be concatenated directly, since each clip has its own container.
@@ -2118,7 +2134,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
   (async () => {
     const input = message.input || {};
     if (message.action === 'ping') {
-      send({result:{version:"1.1.6-staging.31",ready:true,decisionsAvailable:typeof spindle.decisions?.evaluate==='function'}});return;
+      send({result:{version:"1.1.6-staging.32",ready:true,decisionsAvailable:typeof spindle.decisions?.evaluate==='function'}});return;
     }
     if(message.action==='cardCast'){
       const card=input.card;
@@ -2347,6 +2363,14 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
         throw new Error(`Fish Audio HTTP ${response.status}${detail ? `: ${detail}` : ''}. Check API key and quota.`);
       }
       send({result:{base64:response.body,mimeType:'audio/mpeg'}}); return;
+    }
+    if (message.action === 'musicAudio') {
+      const url = new URL(String(input.url || ''));
+      if (url.protocol !== 'https:' || url.hostname !== 'incompetech.com' || url.username || url.password || url.port || !/^\/music\/royalty-free\/mp3-royaltyfree\/[^/]+\.mp3$/.test(url.pathname) || url.search || url.hash) throw new Error('Music audio URL is not an incompetech track.');
+      const response = await spindle.cors(url.href, { responseType: 'arraybuffer', mediaType: 'audio' });
+      if (controller.signal.aborted) return;
+      if (response.status < 200 || response.status >= 300) throw new Error(`Music audio HTTP ${response.status}`);
+      send({result:{base64:response.body,mimeType:(response.headers?.['content-type'] || 'audio/mpeg').split(';')[0]}}); return;
     }
     if (message.action === 'freesoundPreview') {
       const url = new URL(String(input.url || ''));

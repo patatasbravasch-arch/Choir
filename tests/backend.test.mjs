@@ -66,6 +66,18 @@ test('Freesound uses the current search endpoint, authenticates in a header and 
  h.send('freesound',{apiKey:'test-freesound-key',query:'page turn'});assert.equal((await h.result()).message.result.results[0].previewUrl,'https://freesound.test/high.mp3');
  const denied=await harness(null,async()=>({status:401,body:'Unauthorized'}));denied.send('freesound',{apiKey:'invalid-key',query:'page turn'});assert.match((await denied.result()).message.error,/Freesound HTTP 401/);
 });
+test('music audio is proxied as checked audio only from the incompetech track directory',async()=>{
+ const calls=[],proxy=async(url,options)=>{calls.push({url,options});return {status:200,headers:{'content-type':'audio/mpeg'},body:'QUJD'};};
+ const h=await harness(null,proxy);h.send('musicAudio',{url:'https://incompetech.com/music/royalty-free/mp3-royaltyfree/Track.mp3'});
+ assert.deepEqual({...(await h.result()).message.result},{base64:'QUJD',mimeType:'audio/mpeg'});
+ assert.deepEqual({...calls[0].options},{responseType:'arraybuffer',mediaType:'audio'});
+ for(const url of ['http://incompetech.com/music/royalty-free/mp3-royaltyfree/Track.mp3','https://example.com/Track.mp3','https://incompetech.com/secret.mp3','https://incompetech.com/music/royalty-free/mp3-royaltyfree/Track.mp3?redirect=evil','https://name:password@incompetech.com/music/royalty-free/mp3-royaltyfree/Track.mp3']){
+  const denied=await harness(null,proxy);denied.send('musicAudio',{url});assert.match((await denied.result()).message.error,/not an incompetech track/);
+ }
+ assert.equal(calls.length,1);
+ const failed=await harness(null,async()=>({status:404}));failed.send('musicAudio',{url:'https://incompetech.com/music/royalty-free/mp3-royaltyfree/Missing.mp3'});assert.match((await failed.result()).message.error,/Music audio HTTP 404/);
+});
+
 test('Freesound previews download through the CORS proxy as checked audio, only from freesound.org',async()=>{
  const requests=[];
  const h=await harness(null,async(url,options)=>{requests.push({url,options});return url.includes('missing')?{status:404,body:''}:{status:200,headers:{'content-type':'audio/mpeg; charset=binary'},body:'QUJD',encoding:'base64'};});

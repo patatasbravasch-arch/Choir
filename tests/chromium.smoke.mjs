@@ -369,7 +369,7 @@ try{
   await page.locator('[data-choir-action="playback"]').click();
   await page.getByRole('tab',{name:'Scene audio',exact:true}).click();const ambienceVolume=page.getByRole('slider',{name:'Ambience volume',exact:true});assert.equal(await ambienceVolume.getAttribute('max'),'3');
   await ambienceVolume.focus();await ambienceVolume.press('End');assert.equal(await ambienceVolume.getAttribute('aria-valuetext'),'300 percent');
-  await page.waitForFunction(()=>window.audios.filter(audio=>audio.loop).at(-1).volume===0.75 && window.fixtureStore.get('ui:mixer').ambience===3);
+  await page.waitForFunction(()=>window.audios.filter(audio=>audio.loop).at(-1).fixtureGain.gain.value===0.75 && window.fixtureStore.get('ui:mixer').ambience===3);
   assert.equal(await ambienceVolume.evaluate(node=>node.style.getPropertyValue('--choir-level')),'100%');
   await page.locator('[data-choir-action="playback"]').click();
   await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.includes('Playback finished'));

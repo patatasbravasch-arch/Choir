@@ -8,6 +8,16 @@ import {validatePlan,speechSourceUnits,transcriptFromMessage} from '../src/core.
 import {speechPanel} from './fixtures/speech-panel.mjs';
 import {phoneWidget} from './fixtures/phone-widget.mjs';
 
+function mockMixRecorder(){
+ const original=globalThis.MediaRecorder;
+ globalThis.MediaRecorder=class{
+  static isTypeSupported=()=>true;state='inactive';mimeType='audio/webm';
+  start(){this.state='recording';}
+  stop(){this.state='inactive';queueMicrotask(()=>{this.ondataavailable?.({data:new Blob(['mix'],{type:this.mimeType})});this.onstop?.();});}
+ };
+ return ()=>globalThis.MediaRecorder=original;
+}
+
 test('Fish preferred voices can be pasted into the chat, persist and constrain synthesis with an empty catalogue',async()=>{
  for(const relay of [false,true]){
   const h=await fishGroupingHarness();try{
@@ -28,10 +38,11 @@ test('Fish preferred voices can be pasted into the chat, persist and constrain s
  }
 });
 
-test('speech download refuses missing, partial and edited messages and reuses complete cached speech without TTS',async()=>{
- const originalContext=globalThis.AudioContext;let decoded=0;
+test('audio download refuses unplayed and edited messages and reuses the completed played mix without TTS',async()=>{
+ const originalContext=globalThis.AudioContext,restoreRecorder=mockMixRecorder();let decoded=0;
  globalThis.AudioContext=class{
-  sampleRate=24000;async resume(){}async close(){}
+  sampleRate=24000;currentTime=0;async resume(){}async close(){}
+  createMediaStreamDestination(){return {stream:{getTracks:()=>[{stop(){}}]}};}
   createMediaElementSource(){return {connect(){},disconnect(){}};}createGain(){return {gain:{value:1},connect(){},disconnect(){}};}
   async decodeAudioData(){decoded++;return {numberOfChannels:1,length:2,getChannelData:()=>Float32Array.of(0.25,-0.25)};}
  };
@@ -40,13 +51,52 @@ test('speech download refuses missing, partial and edited messages and reuses co
   const download=()=>h.footer.querySelector('[data-choir-download]').click();
   download();await until(()=>h.$('status').textContent.includes('Play this whole message first'));assert.equal(decoded,0);assert.equal(downloads.length,0);
   await h.plan();await h.play();const requests=h.synthesis.length;decoded=0;await h.reload();const backendRequests=h.requests.length;
-  download();await until(()=>h.$('status').textContent.startsWith('Speech downloaded'));assert.equal(h.synthesis.length,requests);assert.equal(h.requests.length,backendRequests);assert.equal(downloads.length,1);assert.match(downloads[0],/\.wav$/);assert.equal(decoded,4);
-  const wav=h.audioBlobs.at(-1);assert.equal(wav.type,'audio/wav');assert.equal(new DataView(await wav.arrayBuffer()).getUint32(40,true),16);
+  download();await until(()=>h.$('status').textContent.startsWith('Audio downloaded'));assert.equal(h.synthesis.length,requests);assert.equal(h.requests.length,backendRequests);assert.equal(downloads.length,1);assert.match(downloads[0],/\.wav$/);assert.equal(decoded,1);
+  const wav=h.audioBlobs.at(-1);assert.equal(wav.type,'audio/wav');assert.equal(new DataView(await wav.arrayBuffer()).getUint32(40,true),4);
   h.message.content='An edited reply.';download();await until(()=>h.$('status').textContent.includes('Play this whole message first'));assert.equal(downloads.length,1);
-  h.message.content='At dawn. "Hello." "Wait." The gate closed.';h.$('sectionButtons').checked=true;h.$('sectionButtons').dispatchEvent(new h.dom.window.Event('change'));await h.plan();await until(()=>h.footer.querySelector('[data-choir-section]'));
+  h.message.content='Another dawn. "Hello." "Wait." The gate closed.';h.$('sectionButtons').checked=true;h.$('sectionButtons').dispatchEvent(new h.dom.window.Event('change'));await h.plan();await until(()=>h.footer.querySelector('[data-choir-section]'));
   const partial=h.footer.querySelector('[data-choir-section]');assert.ok(partial);partial.click();await until(()=>h.$('status').textContent.includes('Playback finished'));
   download();await until(()=>h.$('status').textContent.includes('Play this whole message first'));assert.equal(downloads.length,1);
- }finally{await h.close();globalThis.AudioContext=originalContext;}
+ }finally{await h.close();globalThis.AudioContext=originalContext;restoreRecorder();}
+});
+
+test('completed audio mix survives resumed playback and sparse speech indexes without new requests',async()=>{
+ const originalContext=globalThis.AudioContext,restoreRecorder=mockMixRecorder();
+ globalThis.AudioContext=class{
+  sampleRate=24000;currentTime=0;async resume(){}async close(){}
+  createMediaStreamDestination(){return {stream:{getTracks:()=>[{stop(){}}]}};}
+  createMediaElementSource(){return {connect(){},disconnect(){}};}createGain(){return {gain:{value:1},connect(){},disconnect(){}};}
+  async decodeAudioData(){return {numberOfChannels:1,length:2,getChannelData:()=>Float32Array.of(0.25,-0.25)};}
+ };
+ try{for(const resume of [false,true]){
+  const h=await harness(),downloads=[];h.dom.window.HTMLAnchorElement.prototype.click=function(){downloads.push(this.download);};
+  try{
+   await h.plan();await h.play();assert.equal(h.synthesis.length,4);
+   if(resume){
+    h.store.set('position:chat-a',{messageId:h.message.id,content:h.message.content,passage:2,chunk:0,seconds:0,complete:false});
+    h.$('play').click();await tick();await until(()=>h.$('status').textContent.includes('Playback finished'));
+    assert.equal(h.audios.length,6,'resume plays the final two sections, while retaining the earlier saved speech');
+   }else{
+    const row=(await recordings()).find(row=>row.value.content===h.message.content);row.value.blobs[0]=undefined;
+    const db=await openRecordings();await new Promise((resolve,reject)=>{
+     const transaction=db.transaction('recordings','readwrite');transaction.objectStore('recordings').put(row.value,row.key);
+     transaction.oncomplete=resolve;transaction.onerror=()=>reject(transaction.error);
+    });db.close();await h.reload();
+   }
+   const requests=h.requests.length;h.footer.querySelector('[data-choir-download]').click();
+   await until(()=>h.$('status').textContent.startsWith('Audio downloaded'));
+   assert.equal(downloads.length,1);assert.equal(h.synthesis.length,4);assert.equal(h.requests.length,requests);
+   const wav=h.audioBlobs.at(-1);assert.equal(new DataView(await wav.arrayBuffer()).getUint32(40,true),4,'the saved played mix is decoded once, independently of speech clip indexes');
+   const missing=(await recordings()).find(row=>row.value.content===h.message.content);missing.value.blobs[2]=undefined;
+   for(const key of Object.keys(missing.value.passages))if(key.includes('Wait.'))delete missing.value.passages[key];
+   const db=await openRecordings();await new Promise((resolve,reject)=>{
+    const transaction=db.transaction('recordings','readwrite');transaction.objectStore('recordings').put(missing.value,missing.key);
+    transaction.oncomplete=resolve;transaction.onerror=()=>reject(transaction.error);
+   });db.close();await h.reload();h.footer.querySelector('[data-choir-download]').click();
+   await until(()=>h.$('status').textContent.startsWith('Audio downloaded'));
+   assert.equal(downloads.length,2,'the already recorded mix remains intact even if a separate speech cache clip is removed');assert.equal(h.synthesis.length,4);
+  }finally{await h.close();}
+ }}finally{globalThis.AudioContext=originalContext;restoreRecorder();}
 });
 
 test('Freesound key saved by another tab survives unrelated preference edits',async()=>{
@@ -121,7 +171,7 @@ async function harness(mixerPreferences,mobile=false){
   const state={active:'chat-a',blockAudio:false,failVoice:null,delay:0,held:false,aborted:0,previewFetches:[],bedFetches:[],previewAborted:0},store=new Map(),requests=[],synthesis=[],audios=[],audioBlobs=[],events=new Map(),subscriptions=new Map(),heldPlans=[],toolbarActions=new Map();
   const createObjectURL=URL.createObjectURL;URL.createObjectURL=blob=>{audioBlobs.push(blob);return createObjectURL(blob);};
   if(mixerPreferences)store.set('ui:mixer',mixerPreferences);
-  const message={id:'message-a',content:'At dawn. "Hello." "Wait." The gate closed.',name:'Mira',is_user:false};
+  const message={id:'message-a',index_in_chat:0,content:'At dawn. "Hello." "Wait." The gate closed.',name:'Mira',is_user:false};
   store.set('chat:chat-a',{connection:'a',styleParam:'instructions',chunk:500,concurrency:1,prefetch:0,
     fixed:[{speaker:'Narrator',voice:'n',style:'Calm'},{speaker:'You',voice:'y',style:''},{speaker:'Mira',voice:'m',route:'native:b',style:'',aliases:['Captain'],pronunciation:'Mira: mee-rah',accent:'Irish'}],
     casts:{'native:a':[{speaker:'Guard',voice:'g',style:''}]}});
@@ -218,6 +268,7 @@ async function harness(mixerPreferences,mobile=false){
           result=state.soundCues || {cues:anchored({'page snapped':'page turn','glass shattered':'glass shatter'}),ambience:anchored({'Rain drummed':'rain','The tavern':'tavern crowd','Silence fell':''}),
             music:request.input.music?anchored({'Night fell':'Dark','The storm broke':'Intense','Dawn broke':'Bright','Music stopped':''}).map(({query,...entry})=>query?({...entry,feels:[query],genres:['Soundtrack'],keywords:['organ']}):entry):[]};
         }
+        else if(request.action==='musicAudio')result={base64:'QUJD',mimeType:'audio/mpeg'};
         else if(request.action==='music'){
           if(state.musicError){backend({namespace:'choir',id:request.id,error:state.musicError});return;}
           const title=state.musicTitles?.[request.input.feels?.[0]] || state.musicTitle || 'Crypto',reply=()=>backend?.({namespace:'choir',id:request.id,result:{title,url:`https://incompetech.com/music/royalty-free/mp3-royaltyfree/${title}.mp3`}});
@@ -838,7 +889,8 @@ test('old recordings with a duplicate card-title voice are corrected instead of 
 test('Levi and Cole profile headings migrate the cast and unison creates one overlapping cached clip',async()=>{
  const originalContext=globalThis.AudioContext;let decoded=0;
  globalThis.AudioContext=class{
-   sampleRate=24000;async resume(){}async close(){}
+   sampleRate=24000;currentTime=0;async resume(){}async close(){}
+  createMediaStreamDestination(){return {stream:{getTracks:()=>[{stop(){}}]}};}
    async decodeAudioData(){const channel=decoded++%2?Float32Array.of(0,0.2,0.3,0.4):Float32Array.of(0,0,0.4,0.2);return {numberOfChannels:1,getChannelData:()=>channel};}
    createMediaElementSource(){return {connect(){},disconnect(){}};}
    createGain(){return {gain:{value:1},connect(){},disconnect(){}};}
@@ -924,7 +976,8 @@ test('cached group-title placeholders cannot replace local people while cached a
 test('Cue mixes both unison voices and reuses cached members after failures, levels and exclusions change',async()=>{
  const original=globalThis.AudioContext;let decoded=0;
  globalThis.AudioContext=class{
-  sampleRate=24000;async resume(){}async close(){}
+  sampleRate=24000;currentTime=0;async resume(){}async close(){}
+  createMediaStreamDestination(){return {stream:{getTracks:()=>[{stop(){}}]}};}
   async decodeAudioData(){const channel=decoded++%2?Float32Array.of(0.2,0.3):Float32Array.of(0.4,0.2);return {numberOfChannels:1,getChannelData:()=>channel};}
   createMediaElementSource(){return {connect(){},disconnect(){}};}createGain(){return {gain:{value:1},connect(){},disconnect(){}};}
  };
@@ -1169,10 +1222,10 @@ test('mixer plans silently, plays the latest reply, filters voices by plan and r
  }finally{await h.close();}
 });
 
-test('SFX can be reenabled before its cue after prefetch skipped it, and disabling cached effects preserves pause',async()=>{
+test('SFX can be reenabled before its cue, and disabling cached effects preserves pause',async()=>{
  const h=await harness();try{
   await configureFoley(h);h.message.content='She listened; the page snapped under her thumb.';h.$('prefetch').value='1';await h.plan();h.state.delay=50;h.state.blockAudio=true;h.$('play').click();
-  await until(()=>h.synthesis.length===1);h.$('sfx').click();await until(()=>h.audios[0]?.paused===false);assert.equal(h.requests.filter(request=>request.action==='freesound').length,0);h.$('sfx').click();
+  await until(()=>h.synthesis.length===1);h.$('sfx').click();await until(()=>h.audios[0]?.paused===false);assert.equal(await playedFoley(h),0);h.$('sfx').click();
   h.state.blockAudio=false;h.audios[0].onended();await until(()=>h.$('status').textContent.includes('Playback finished'));assert.equal(await playedFoley(h),1);
   const start=h.audios.length;h.state.blockAudio=true;const replay=[...h.$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay');replay.click();await until(()=>h.audios.length===start+1 && !h.audios.at(-1).paused);h.audios.at(-1).onended();
   await until(()=>h.audios.length===start+2 && !h.audios.at(-1).paused);h.$('pause').click();assert.equal(h.audios.at(-1).paused,true);h.$('sfx').click();
@@ -1471,22 +1524,22 @@ test('music changes from scary to romantic at a later cue within one narrated me
   await toggle(h,'enableMusic',true);h.message.content='A shadow crept along the wall; then she held his hand with a tender smile.';
   h.state.soundCues={cues:[],ambience:[],music:[{segment:0,trigger:'A shadow crept',feels:['Eerie'],genres:['Horror'],keywords:['dark','strings']},{segment:0,trigger:'then she held',feels:['Calming'],genres:['Classical'],keywords:['romantic','piano']}]};
   h.state.musicTitles={Eerie:'Crypto',Calming:'Tender'};await h.plan();h.state.blockAudio=true;h.$('play').click();
-  await until(()=>voices(h).length===1 && beds(h).length===1 && !beds(h)[0].paused);assert.match(beds(h)[0].src,/Crypto/);assert.equal(h.synthesis[0].text,'A shadow crept along the wall;');
+  await until(()=>voices(h).length===1 && beds(h).length===1 && !beds(h)[0].paused);assert.match(beds(h)[0].src,/^blob:/);assert.equal(h.synthesis[0].text,'A shadow crept along the wall;');
   voices(h)[0].onended();await until(()=>voices(h).length===2 && beds(h).length===2 && !beds(h)[1].paused);
-  assert.match(beds(h)[1].src,/Tender/);assert.match(h.synthesis[1].text,/^then she held/);assert.equal(globalThis.__CHOIR_API__.getMusic().title,'Tender');
+  assert.match(beds(h)[1].src,/^blob:/);assert.match(h.synthesis[1].text,/^then she held/);assert.equal(globalThis.__CHOIR_API__.getMusic().title,'Tender');
   const selection=h.requests.filter(request=>request.action==='music');assert.equal(selection.length,2);assert.deepEqual(selection[1].input.keywords,['romantic','piano']);assert.match(selection[1].input.moment,/tender smile/);
   h.state.blockAudio=false;voices(h)[1].onended();await until(()=>h.$('status').textContent.includes('Playback finished'));
  }finally{await h.close();}
 });
 
-test('a music marker streams the chosen incompetech track under speech with its credit and follows the Music slider and pause',async()=>{
+test('a music marker proxies the chosen incompetech track under speech with its credit and follows the Music slider and pause',async()=>{
  const h=await harness();try{
   h.$('showMixer').click();assert.equal(document.querySelector('[aria-label="Music volume"]').value,'1');assert.equal(h.$('music').getAttribute('aria-pressed'),'false');
   h.$('music').click();assert.equal(h.$('enableMusic').checked,true);assert.equal(h.$('music').getAttribute('aria-pressed'),'true');await until(()=>h.$('saveState').textContent==='Saved automatically');h.message.content=scene;await h.plan();
   assert.equal(h.requests.find(request=>request.action==='sfx').input.music,true);
   h.state.blockAudio=true;h.$('play').click();
   await until(()=>beds(h).length===1 && beds(h)[0].volume===0.2);const music=beds(h)[0];
-  assert.equal(music.src,'https://incompetech.com/music/royalty-free/mp3-royaltyfree/Crypto.mp3');assert.equal(music.paused,false);
+  assert.match(music.src,/^blob:/);assert.equal(h.requests.find(request=>request.action==='musicAudio').input.url,'https://incompetech.com/music/royalty-free/mp3-royaltyfree/Crypto.mp3');assert.equal(music.paused,false);
   assert.deepEqual(h.requests.filter(request=>request.action==='music').map(({input})=>[input.feels,input.genres,input.keywords]),[[['Dark'],['Soundtrack'],['organ']]]);
   assert.equal(h.$('musicCredit').hidden,false);assert.equal(h.$('musicCredit').textContent,'"Crypto" Kevin MacLeod (incompetech.com) · CC BY 4.0');
   const volume=document.querySelector('[aria-label="Music volume"]');assert.equal(volume.max,'3');
@@ -1498,7 +1551,7 @@ test('a music marker streams the chosen incompetech track under speech with its 
   const musicRequests=()=>h.requests.filter(request=>request.action==='music').length;
   h.state.blockAudio=false;h.state.bedPlayError=true;await h.play();assert.match(h.$('sfxStatus').textContent,/Music skipped \(Dark, Soundtrack\): Browser blocked background audio/);
   h.state.bedPlayError=false;h.state.bedDecodeError=true;await h.play();assert.equal(musicRequests(),1);await until(()=>/Music skipped \(Dark, Soundtrack\): Browser could not play the incompetech track/.test(h.$('sfxStatus').textContent));
-  h.state.bedDecodeError=false;await h.play();assert.equal(musicRequests(),2);assert.equal(beds(h).at(-1).src,'https://incompetech.com/music/royalty-free/mp3-royaltyfree/Crypto.mp3');
+  h.state.bedDecodeError=false;await h.play();assert.equal(musicRequests(),2);assert.match(beds(h).at(-1).src,/^blob:/);
  }finally{await h.close();}
 });
 
@@ -3309,6 +3362,52 @@ test('Replay rebuilds legacy SFX cuts from saved attribution and retains the eff
   assert.equal(h.requests.filter(request=>request.action==='plan' || request.action==='sfx').length,planned);assert.equal(h.state.previewFetches.length,1);
   const rebuilt=h.synthesis.length;await h.reload();await h.play();assert.equal(h.synthesis.length,rebuilt);
  }finally{await h.close();}
+});
+
+test('speech lookahead prepares the next voice while an effect is stalled and keeps a quick start',async()=>{
+ const h=await harness();try{
+  await configureFoley(h);h.message.content='She listened; the page snapped under her thumb. "Hello." The light faded.';
+  h.$('concurrency').value='1';h.$('prefetch').value='1';await h.plan();
+  h.state.blockAudio=true;h.state.holdPreview=true;h.state.holdSynthesisAt=2;h.$('play').click();
+  await until(()=>h.audios.some(audio=>!audio.paused));
+  await until(()=>h.state.previewFetches.length===1 && h.synthesis.length===2);
+  assert.ok(h.state.releaseSynthesis,'the next speech is already in flight while the first voice plays');
+  await tick();assert.equal(h.synthesis.length,2,'one prefetched speech stays bounded and does not generate the whole message');
+  h.$('stop').click();await until(()=>h.state.previewAborted===1 && h.state.aborted===1);
+ }finally{await h.close();}
+});
+
+test('speech lookahead skips previously cached voices to prepare the next missing clip',async()=>{
+ for(const prefetch of [0,1]){
+  const h=await harness();try{
+   await h.plan();await h.play();assert.equal(h.synthesis.length,4);
+   const row=(await recordings()).find(row=>row.value.content===h.message.content);
+   row.value.blobs[2]=undefined;
+   for(const key of Object.keys(row.value.passages))if(key.includes('Wait.'))delete row.value.passages[key];
+   const db=await openRecordings();await new Promise((resolve,reject)=>{
+    const transaction=db.transaction('recordings','readwrite');transaction.objectStore('recordings').put(row.value,row.key);
+    transaction.oncomplete=resolve;transaction.onerror=()=>reject(transaction.error);
+   });db.close();
+   await h.reload();h.$('prefetch').value=String(prefetch);h.state.blockAudio=true;h.$('play').click();
+   await until(()=>h.audios.at(-1)?.paused===false);
+   if(prefetch)await until(()=>h.synthesis.length===5);else{await tick();assert.equal(h.synthesis.length,4,'prefetch zero does not generate future speech');}
+   if(prefetch)assert.match(h.synthesis.at(-1).text,/Wait/);
+  }finally{await h.close();}
+ }
+});
+
+test('Cue speech lookahead has its own request slots while an effect is stalled',async()=>{
+ const h=await harness();let pending;
+ try{
+  await configureFoley(h);h.message.content='She listened; the page snapped under her thumb. "Hello." The light faded.';
+  h.$('concurrency').value='1';h.$('prefetch').value='1';await h.plan();
+  h.state.blockAudio=true;h.state.holdPreview=true;h.state.holdSynthesisAt=2;
+  pending=globalThis.__CHOIR_API__.playParagraph({text:h.message.content});pending.catch(()=>{});
+  await until(()=>h.audios.some(audio=>!audio.paused));
+  await until(()=>h.state.previewFetches.length===1 && h.synthesis.length===2);
+  assert.ok(h.state.releaseSynthesis);h.$('stop').click();await assert.rejects(pending,{name:'AbortError'});
+  assert.equal(h.state.previewAborted,1);assert.equal(h.state.aborted,1);
+ }finally{await h.close();await pending?.catch(()=>{});}
 });
 
 test('a cached or fresh SFX cannot hide the speech request waiting after it under parallel prefetch',async()=>{

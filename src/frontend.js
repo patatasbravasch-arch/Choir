@@ -3,6 +3,8 @@ import { createSetupWizard, saveSetupSettings } from './setup.js';
 import { ABYSSAL_THEME_CSS } from './abyssal-theme.js';
 import { randomUuid, sha256Hex, GEMINI_VOICES, OPENAI_VOICES, additionalVoices, apiErrorMessage, MAX_SPEECH_CHARS, MAX_CHANNEL_VOLUME, speechProviderFamily, speechRequestLimits, normalizeName, normalizeVoiceCatalogue, characterCardRoles, validateCardRoles, reconcileCardCast, unisonSpeakers, speechSourceUnits, mixUnisonAudio, speechDownloadWav, transcriptFromMessage, readableText, readAlongIndex, locatePassages, spokenLength, validateCastConfig, validatePlan, npcCastActor, parsePlanJson, speechBatches, groupedSpeechBatches, audioBytes, fastClassifyPlan, resolvePlannerMode, attributionPlan, restoreAttribution, passageKey, mixerVolume, loudnessGain, castExport, castImport, applySoundCues, cueOffset, sfxCueOffset, transcriptLines, withoutLines } from './core.js';
 import { normalizeSpeedSliderMax, normalizePlaybackRate, normalizeVoiceGap, speakerPlaybackRate, effectivePlaybackRate, browserPlaybackRate, PLAYBACK_RATE_LIMITS, VOICE_GAP_LIMITS } from './core.js';
+import { speechLookaheadEnd } from './core.js';
+import { createPlayedAudioCapture, playedAudioFilename } from './played-audio.js';
 
 const CHOIR_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 12a4.16 4.16 0 0 1-5.62 3.89 3.78 3.78 0 0 1-2.38-3.39 3.42 3.42 0 0 1 2.34-3.38l3.79-1.42a2.89 2.89 0 0 0 1.87-2.7 2 2 0 1 0-4 0v14a2 2 0 1 1-4 0"/><path d="M20 2v4"/><path d="M22 4h-4"/></svg>`;
 const ICON_PLAY = `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="currentColor" stroke="none" style="vertical-align:-2px"><polygon points="6 3 20 12 6 21 6 3"/></svg>`;
@@ -352,14 +354,14 @@ export async function setup(ctx) {
         <label>Concurrent TTS requests<select data-et="concurrency"><option value="1">1 (sequential)</option><option value="2">2</option><option value="3">3</option><option value="4">4</option></select></label>
         <label>Max characters per request<input data-et="chunk" type="number" min="80" max="10000" value="1800" aria-describedby="choir-chunk-hint"></label>
         <label>Planner output tokens<input data-et="plannerTokens" type="number" min="1024" max="32768" step="1024" value="8192"></label>
-        <label>Prefetch passages<input data-et="prefetch" type="number" min="0" max="4" value="1"></label>
+        <label>Prefetch speech clips<input data-et="prefetch" type="number" min="0" max="4" value="1"></label>
         <label class="et-check"><input data-et="allowLlmFallback" type="checkbox"> Allow LLM fallback after Jev fails (extra cost)</label>
         <label class="et-check"><input data-et="normalizeLoudness" type="checkbox" checked> Match passage loudness</label>
         <label hidden>Lumiverse API base<input data-et="apiBase" value="/api/v1"></label>
         <label>Freesound API key (Foley)<input data-et="freesoundApiKey" type="password" placeholder="Freesound token"></label>
       </div>
       <p id="choir-chunk-hint" style="font-size:.85em;opacity:.75">Shorter chunks can reduce the first wait, but many short requests can cause gaps at faster speeds.</p>
-      <p style="font-size:.85em;opacity:.75">For faster playback, try 2 prefetched passages and 2 concurrent TTS requests if your provider allows it. Prefetch 0 disables lookahead. More lookahead may generate speech you do not finish; changing playback speed does not speed up synthesis.</p>
+      <p style="font-size:.85em;opacity:.75">For smoother playback, try 2 prefetched speech clips and 2 concurrent TTS requests if your provider allows it. Effects and speech already saved before playback do not use speech lookahead slots. Prefetch 0 disables lookahead. More lookahead may generate speech you do not finish; changing playback speed does not speed up synthesis.</p>
       <div class="et-row">
         <label class="et-check"><input data-et="sectionButtons" type="checkbox"> Show message play controls</label>
         <label class="et-check"><input data-et="enableMixer" type="checkbox"> Floating audio mixer</label>
@@ -802,7 +804,7 @@ export async function setup(ctx) {
   }
   // Ambience and music each loop one bed under speech; a replaced bed fades out while the next fades in.
   const BED_LEVEL={ambience:0.25,music:0.2},BED_NAME={ambience:'Ambience',music:'Music'},AMBIENCE_FADE_MS=1500,AMBIENCE_FILTER='duration:[10 TO 120]',fadingBeds=new Set(),beds={ambience:null,music:null};
-  const bedVolume=layer=>{if(layer.audio)layer.audio.volume=effectVolume(layer.kind)*BED_LEVEL[layer.kind]*layer.level;};
+  const bedVolume=layer=>{if(layer.audio){const volume=effectVolume(layer.kind)*BED_LEVEL[layer.kind]*layer.level;if(layer.gain)layer.gain.gain.value=volume;else layer.audio.volume=volume;}};
   const bedEnabled=kind=>kind==='music'?config?.enableMusic===true:config?.enableAmbience!==false;
   const continuousMusic=()=>config?.enableMusic===true && config?.loopMusic===true;
   const musicLabel=entry=>[...entry.feels,...entry.genres].join(', ') || entry.keywords.join(', ');
@@ -819,7 +821,7 @@ export async function setup(ctx) {
     clearInterval(layer.timer);const from=layer.level,start=Date.now();
     layer.timer=setInterval(()=>{const progress=Math.min(1,(Date.now()-start)/AMBIENCE_FADE_MS);layer.level=progress<1?from+(to-from)*progress:to;bedVolume(layer);if(progress===1){clearInterval(layer.timer);done?.();}},50);
   }
-  function dropBed(layer){clearInterval(layer.timer);layer.loading.abort();if(layer.audio){layer.audio.onerror=null;layer.audio.pause();if(layer.kind==='music'){layer.audio.removeAttribute('src');layer.audio.load();}}if(layer.url)URL.revokeObjectURL(layer.url);fadingBeds.delete(layer);if(layer.kind==='music')showMusicCredit();}
+  function dropBed(layer){clearInterval(layer.timer);layer.loading.abort();if(layer.audio){layer.audio.onerror=null;layer.audio.pause();if(layer.kind==='music'){layer.audio.removeAttribute('src');layer.audio.load();}}layer.mediaSource?.disconnect();layer.gain?.disconnect();if(layer.url)URL.revokeObjectURL(layer.url);fadingBeds.delete(layer);if(layer.kind==='music')showMusicCredit();}
   function failBed(layer,error,badFile=false){
     if(beds[layer.kind]!==layer || layer.loading.signal.aborted)return;
     const retained=layer.kind==='music' && continuousMusic() && !layer.audio?[...fadingBeds].findLast(bed=>bed.kind==='music' && bed.audio):null;
@@ -832,9 +834,10 @@ export async function setup(ctx) {
     showFoleyStatus(previous && !previous.includes(warning)?`${previous}\n${warning}`:warning);
   }
   function playBed(layer){
-    try{layer.audio.play().catch(error=>failBed(layer,error));}catch(error){failBed(layer,error);}
+    try{playedCapture?.start();layer.audio.play().catch(error=>failBed(layer,error));}catch(error){failBed(layer,error);}
   }
-  // load resolves to a Freesound blob or, for music, an incompetech track {title,url} streamed directly.
+  // Music uses the host's audio proxy so the same sound can feed the speakers
+  // and the saved mix. Cross-origin media would otherwise be silent in Web Audio.
   function followBed(entry,load,kind='ambience',purge){
     if(!bedEnabled(kind)){stopBeds(kind);updateTransport();return;}
     if(kind==='music' && !entry && continuousMusic())return;
@@ -846,9 +849,16 @@ export async function setup(ctx) {
     if(waitForMusic)for(const old of [...fadingBeds])if(old.kind==='music' && !old.audio)dropBed(old);
     // A carried bed keeps loading after the paragraph that started it is cancelled.
     const layer=beds[kind]=key?{kind,key,query:entry.query || musicLabel(entry),feels:entry.feels,purge,level:0,loading:new AbortController()}:null;showMusicCredit();updateTransport();
-    if(layer)load(layer.loading.signal).then(source=>{
+    if(layer)load(layer.loading.signal).then(async source=>{
       if(beds[kind]!==layer)return;
-      layer.title=source.title;layer.audio=new Audio(source.url || (layer.url=URL.createObjectURL(source)));layer.audio.loop=true;bedVolume(layer);
+      const audioBlob=kind==='music' && source.url && !source.url.startsWith('blob:')?await musicAudioBlob(source,layer.loading.signal):source.blob || source;
+      if(beds[kind]!==layer || layer.loading.signal.aborted)return;
+      layer.title=source.title;layer.audio=new Audio(source.url?.startsWith('blob:')?source.url:(layer.url=URL.createObjectURL(audioBlob)));layer.audio.loop=true;
+      try{
+        const output=playbackOutput();
+        if(output){layer.mediaSource=audioContext.createMediaElementSource(layer.audio);layer.gain=audioContext.createGain();layer.mediaSource.connect(layer.gain);layer.gain.connect(output);layer.audio.volume=1;}
+      }catch(error){playedCapture?.fail(`Background audio could not be included: ${error.message}`);}
+      bedVolume(layer);
       if(waitForMusic)for(const old of fadingBeds)if(old.kind==='music')fadeBed(old,0,()=>dropBed(old));
       layer.audio.onerror=()=>failBed(layer,new Error(kind==='music'?'Browser could not play the incompetech track.':'Browser could not decode the Freesound ambience preview.'),true);
       if(!bedsPaused)playBed(layer);
@@ -2247,7 +2257,7 @@ export async function setup(ctx) {
   function stop(show=true,keepBed=false,keepMusic=false) {
     if(show)cancelAutoReplies();
     if(activePlayback && currentAudio)savePosition(currentAudio.currentTime || 0);
-    revision++;controller?.abort();controller=null;
+    revision++;controller?.abort();controller=null;playedCapture?.discard();playedCapture=null;
     for(const pending of paragraphPrefetchControllers)pending.abort();paragraphPrefetchControllers.clear();
     planningSource=null;advancePlayback=null;skipAudio=null;generationPolicyChanged=null;activePlayback=null;currentSpeaker='';currentGroupLevel=null;currentGroupNames=[];mixerPlaybackSegments=null;
     currentAudio?.pause();finishAudio?.();currentAudio=null;finishAudio=null;
@@ -2855,6 +2865,18 @@ export async function setup(ctx) {
   // Decode once when audio arrives, while earlier speech plays. Keep only the
   // measured gain, not the decoded PCM, and observe background failures here.
   const loudnessMeasurements=new WeakMap();
+  let outputBus=null,playedCapture=null;
+  function playbackOutput(){
+    const Context=globalThis.AudioContext || globalThis.webkitAudioContext;
+    if(!Context)return null;
+    audioContext ||= new Context();
+    if(!outputBus){outputBus=audioContext.createGain();outputBus.connect(audioContext.destination);}
+    return outputBus;
+  }
+  function beginPlayedAudio(){
+    try{const output=playbackOutput();if(output)return playedCapture=createPlayedAudioCapture(audioContext,output);}catch{}
+    return playedCapture={start(){},fail(){},discard(){},finish:async()=>({error:'This browser cannot save the played audio mix.'})};
+  }
   function prepareLoudness(blob){
     if(!loudnessMeasurements.has(blob))loudnessMeasurements.set(blob,(async()=>{
       const AudioContextClass=globalThis.AudioContext || globalThis.webkitAudioContext;
@@ -2903,8 +2925,8 @@ export async function setup(ctx) {
           if(measured.error)throw measured.error;
         }
         mediaSource=audioContext.createMediaElementSource(audio);gain=audioContext.createGain();currentGain=gain;
-        mediaSource.connect(gain);gain.connect(audioContext.destination);audio.volume=1;applyVolume();
-      }catch(error){if(signal.aborted)throw error;status(`${normalize?'Loudness matching':'Volume boost'} unavailable: ${error.message}. Playing at browser volume.`);}
+        mediaSource.connect(gain);gain.connect(playbackOutput());audio.volume=1;applyVolume();
+      }catch(error){if(signal.aborted)throw error;playedCapture?.fail(`Speech could not be included: ${error.message}`);status(`${normalize?'Loudness matching':'Volume boost'} unavailable: ${error.message}. Playing at browser volume.`);}
     }
     const seek=()=>{if(offset>0 && Number.isFinite(audio.duration))audio.currentTime=Math.min(offset,Math.max(0,audio.duration-0.05));updateSeekControls();};
     audio.onloadedmetadata=seek;seek();
@@ -2922,6 +2944,7 @@ export async function setup(ctx) {
         if(speakerExcluded(speaker) || speaker==='SFX' && config?.enableSfx===false){done();return;}
         if(track)stopFollowing=followSpeech(audio,track);
         const startAudio=()=>audio.play().then(()=>{if(!settled && currentAudio===audio){audioReady=true;updateTransport();}}).catch(error=>done(new Error(error.name==='NotAllowedError'?'Browser blocked audio. Click Play in the mixer to enable playback.':error.message)));
+        playedCapture?.start();
         const gapMs=track?.gapMs || 0;
         if(gapMs>0){
           // The silence runs before the audio starts. Mixer Play pauses or resumes it, and a block started paused waits for Play.
@@ -3142,7 +3165,7 @@ export async function setup(ctx) {
     }
     return new Blob([mixUnisonAudio(tracks,audioContext.sampleRate,{normalize:snapshot.normalizeLoudness})],{type:'audio/wav'});
   }
-  function createStreamingPlayer(snapshot,source,cached,ctrl,token,{pruneStale=false,retain=[]}={}) {
+  function createStreamingPlayer(snapshot,source,cached,ctrl,token,{pruneStale=false,retain=[],mix=null}={}) {
     const segments=[];
     const warnings=new Set();
     const warnFoley=error=>{warnings.add(error.message);if(token===revision)showFoleyStatus(`SFX skipped: ${[...warnings].join('; ')}. Speech continues.`);};
@@ -3151,11 +3174,11 @@ export async function setup(ctx) {
     const synthesisStages=new Map();
     const synthesisStatus=(index,format)=>{synthesisStages.set(index,format);if(token===revision && index===playIdx && !currentAudio)status(format());};
     let nextToSynthesize=0;
-    let activeWorkers=0;
+    const synthesisQueues=[{pending:[],active:0,limit:Math.max(1,Number(snapshot.concurrency)||1)},{pending:[],active:0,limit:1}];
     let isDoneAdding=false;
     let wakePlayback=null;
     const blobs=[];
-    let playIdx=0,failed=false,saveError='',saveQueue=Promise.resolve();
+    let playIdx=0,failed=false,saveError='',saveQueue=Promise.resolve(),savedPlayedAudio=cached?.playedAudio;
     const waitForSaves=()=>new Promise((resolve,reject)=>{
       const cancel=()=>reject(abortError());
       if(ctrl.signal.aborted){cancel();return;}
@@ -3177,6 +3200,9 @@ export async function setup(ctx) {
     const inflight=new Map();
     // Upgrade old complete recordings without discarding their audio.
     if(!cached?.passages)for(const [index,segment] of (cached?.segments || []).entries())if(cached.blobs?.[index] && (!segment.turns || segment.turns.length===1) && recordedSpeechMatches(cached,index,snapshot))passages[cacheKey(segment,snapshot)]=cached.blobs[index];
+    // Only audio present before this playback is free to skip in the lookahead
+    // budget. Newly prepared clips still count, keeping generation bounded.
+    const cachedSpeechKeys=new Set(Object.keys(passages));
     let currentKeys=null,savedKeys=null;
     const currentPassageKeys=()=>currentKeys ||= (()=>{
       const keys=new Set();
@@ -3201,7 +3227,7 @@ export async function setup(ctx) {
       for(const key of Object.keys(passages))if(!keep.has(key))delete passages[key];
     };
     const persist=()=>{
-      const value={content:source.content,transcript:source.transcript,segments:[...segments],blobs:[...blobs],speechTexts:segments.map(segment=>recordingSpeechText(segment,snapshot)),passages:{...passages},passageKeys:isDoneAdding?savedPassageKeys():(cached?.passageKeys || []),sfxPlacement:SFX_PLACEMENT_VERSION,retention:snapshot.retention};
+      const value={content:source.content,transcript:source.transcript,segments:[...segments],blobs:[...blobs],speechTexts:segments.map(segment=>recordingSpeechText(segment,snapshot)),passages:{...passages},passageKeys:isDoneAdding?savedPassageKeys():(cached?.passageKeys || []),playedAudio:savedPlayedAudio,sfxPlacement:SFX_PLACEMENT_VERSION,retention:snapshot.retention};
       // Submit in order, but do not make synthesis or audible playback wait for
       // disk commits. IndexedDB orders these read/write transactions itself.
       const saving=recordingStore('put',recordingKey(source.chatId,source.messageId),value).catch(error=>{saveError=error.message;});
@@ -3232,28 +3258,36 @@ export async function setup(ctx) {
     }
 
     function pump() {
-      const concurrency=Math.max(1,Number(snapshot.concurrency)||1);
-      // Background markers never occupy playback time. Count audible passages
-      // for lookahead, so a music/ambience marker cannot postpone the next TTS
-      // request until the playing clip ends, especially at faster speeds.
-      let prefetchEnd=playIdx, audibleAhead=0;
-      for(;prefetchEnd<segments.length;prefetchEnd++){
-        if(isBed(segments[prefetchEnd]) || playbackExcluded(segments[prefetchEnd]))continue;
-        if(audibleAhead++>=Number(snapshot.prefetch ?? 1))break;
-      }
-      while(!failed && !ctrl.signal.aborted && activeWorkers<concurrency && nextToSynthesize<segments.length && nextToSynthesize<=prefetchEnd) {
+      const prefetchEnd=speechLookaheadEnd(segments,playIdx,Number(snapshot.prefetch ?? 1),{
+        excluded:playbackExcluded,cached:segment=>{try{return cachedSpeechKeys.has(cacheKey(segment,snapshot));}catch{return false;}}
+      });
+      while(!failed && !ctrl.signal.aborted && nextToSynthesize<segments.length && nextToSynthesize<=prefetchEnd) {
         const idx=nextToSynthesize++;
         if(playbackExcluded(segments[idx]))continue;
         if(isBed(segments[idx])){if(!segments[idx][segments[idx].kind].stop)loadBed(idx).catch(()=>{});continue;}
         if(scheduled.has(idx))continue;scheduled.add(idx);
         ensureSlot(idx);
-        activeWorkers++;
+        if(blobs[idx]){
+          synthesisStatus(idx,()=>`Loading cached audio ${audioProgress(segments,idx)}: ${segments[idx].speaker}`);
+          resolvers.get(idx)({blob:blobs[idx]});continue;
+        }
+        synthesisQueues[segments[idx].kind==='sfx'?1:0].pending.push(idx);
+      }
+      // Cached clips need neither a synthesis worker nor another disk write.
+      // Decode only nearby audio, even when a missing request lies farther on.
+      const prepareEnd=speechLookaheadEnd(segments,playIdx,Number(snapshot.prefetch ?? 1),{excluded:playbackExcluded});
+      for(let index=playIdx;index<=prepareEnd && index<segments.length;index++)if(blobs[index] && !isBed(segments[index]) && !playbackExcluded(segments[index]))preparePlayback(blobs[index],segments[index],snapshot);
+      // Effects download separately and cannot occupy a paid TTS request slot.
+      for(const queue of synthesisQueues)while(!ctrl.signal.aborted && (!failed || queue===synthesisQueues[1]) && queue.active<queue.limit && queue.pending.length){
+        const idx=queue.pending.shift();
+        if(playbackExcluded(segments[idx])){resolvers.get(idx)({skip:true});scheduled.delete(idx);ready.delete(idx);resolvers.delete(idx);continue;}
+        queue.active++;
         (async()=>{
           let resolveFlight,rejectFlight,flightKey;
           try {
             const seg=segments[idx];
             if(ctrl.signal.aborted)throw abortError();
-            synthesisStatus(idx,()=>`Synthesizing ${audioProgress(segments,idx)}: ${seg.speaker} · ${seg.voice}`);
+            synthesisStatus(idx,()=>seg.kind==='sfx'?`Loading sound effect ${audioProgress(segments,idx)}`:`Synthesizing ${audioProgress(segments,idx)}: ${seg.speaker} · ${seg.voice}`);
             const request=synthesisSettings(seg,snapshot),key=cacheKey(seg,snapshot);
             let blob=passages[key];
             if(!blob && inflight.has(key))blob=await inflight.get(key);
@@ -3285,7 +3319,7 @@ export async function setup(ctx) {
             else{failures.add(idx);if(!skipped.has(idx) && !speakerExcluded(segments[idx].speaker))failed=true;resolvers.get(idx)({error});}
           } finally {
             if(flightKey)inflight.delete(flightKey);
-            activeWorkers--;
+            queue.active--;
             pump();
           }
         })();
@@ -3294,7 +3328,13 @@ export async function setup(ctx) {
 
     function push(newSegments) {
       // Beds load as soon as they are known, so a new bed is ready when its marker plays.
-      for(const s of newSegments){segments.push(s);if(isBed(s) && !s[s.kind].stop && !playbackExcluded(s))loadBed(segments.length-1).catch(()=>{});}
+      for(const s of newSegments){
+        const index=segments.push(s)-1;
+        // Resuming starts playback later, but a complete recording must still
+        // retain earlier audio that already exists in the passage cache.
+        try{const saved=passages[cacheKey(s,snapshot)];if(saved)blobs[index]=saved;}catch{}
+        if(isBed(s) && !s[s.kind].stop && !playbackExcluded(s))loadBed(index).catch(()=>{});
+      }
       currentKeys=null;savedKeys=null;
       mixerPlaybackSegments=segments;
       if(!initialized && segments.length){initialized=true;if(source.resume){const start=segments.findIndex(segment=>segment.passageIndex>source.resume.passage || (segment.passageIndex===source.resume.passage && segment.chunkIndex>=(source.resume.chunk || 0)));playIdx=start<0?segments.length:start;nextToSynthesize=playIdx;}}
@@ -3340,9 +3380,16 @@ export async function setup(ctx) {
         activePlayback={...activePlayback,passage:segments[playIdx]?.passageIndex ?? (activePlayback.passage+1),chunk:segments[playIdx]?.chunkIndex ?? 0,complete:isDoneAdding && playIdx===segments.length};
         savePosition(0);activePlayback=null;pump();
       }
+      // End at the last played clip, before waiting for device storage. Looped
+      // music may keep playing between messages but belongs to this file only
+      // for the duration of this message.
+      const playedAudio=await mix?.finish();if(playedCapture===mix)playedCapture=null;
+      // A carried music load can save its cache after foreground playback
+      // finishes. That late write must retain the newly completed mix.
+      if(playedAudio)savedPlayedAudio={...playedAudio,content:source.content};
       await waitForSaves();
       if(saveError)status(`Audio could not be saved: ${saveError}`,true);
-      return {blobs,segments,warnings:[...warnings],passages,passageKeys:savedPassageKeys()};
+      return {blobs,segments,warnings:[...warnings],passages,passageKeys:savedPassageKeys(),playedAudio};
     })().finally(()=>{if(token===revision)fadeOutBeds();});
 
     // Observe failures immediately while the next planning section is pending.
@@ -3407,17 +3454,18 @@ export async function setup(ctx) {
     if(source.resume && cached?.signature!==signature && (snapshot.batchSpeech || cached?.segments?.some(segment=>segment.turns?.length>1) || outdatedSfxRecording(cached || {})))source.resume=null;
     setBusy(true);
     try {
-      const player=createStreamingPlayer(snapshot,source,cached,ctrl,token,{pruneStale:fullPlayback,retain});
+      const mix=fullPlayback && !source.resume?beginPlayedAudio():null;
+      const player=createStreamingPlayer(snapshot,source,cached,ctrl,token,{pruneStale:fullPlayback,retain,mix});
       player.push(segments);
       player.finish();
-      const {blobs,warnings,passages,passageKeys}=await player.playbackPromise;
+      const {blobs,warnings,passages,passageKeys,playedAudio}=await player.playbackPromise;
       {
         if(token!==revision || ctrl.signal.aborted)throw abortError();
-        try{const partial=await recordingStore('get',key);await recordingStore('put',key,{...partial,content:source.content,transcript:source.transcript,signature,fullMessage:fullPlayback,segments,blobs,passages,passageKeys,speechTexts:segments.map(segment=>recordingSpeechText(segment,snapshot)),sfxPlacement:SFX_PLACEMENT_VERSION,retention:snapshot.retention});storageError='';}
+        try{const partial=await recordingStore('get',key);await recordingStore('put',key,{...partial,content:source.content,transcript:source.transcript,signature,fullMessage:fullPlayback,segments,blobs,passages,passageKeys,playedAudio:playedAudio?{...playedAudio,content:source.content}:partial?.playedAudio,speechTexts:segments.map(segment=>recordingSpeechText(segment,snapshot)),sfxPlacement:SFX_PLACEMENT_VERSION,retention:snapshot.retention});storageError='';}
         catch(error){storageError=error.message;}
       }
       if(token===revision){renderMessages();status((storageError?`Playback finished. Audio could not be saved: ${storageError}`:snapshot.retention==='session'?'Playback finished. Audio kept for this session; Replay is available beside the message.':'Playback finished. Audio saved on this device; Replay is available beside the message.')+foleyWarning(warnings));}
-    } finally {ctrl.abort();void refreshCacheStatus();if(token===revision){activePlayback=null;advancePlayback=null;generationPolicyChanged=null;updateNextControls();controller=null;setBusy(false);}}
+    } finally {ctrl.abort();if(token===revision){playedCapture?.discard();playedCapture=null;}void refreshCacheStatus();if(token===revision){activePlayback=null;advancePlayback=null;generationPolicyChanged=null;updateNextControls();controller=null;setBusy(false);}}
   }
   async function replayRecording(messageId) {
     stop(false,false,true);const token=revision,targetChat=chatId;
@@ -3431,6 +3479,9 @@ export async function setup(ctx) {
       if(mergedCardRecording(recording))throw new Error('This recording combines several card characters into one voice. Plan and play the message again to separate them.');
       if(aliasedLeadRecording(recording))throw new Error('This recording treats a lead character alias as a separate speaker. Plan and play the message again to use the lead voice.');
       if(!await recordingMatchesTranscript(recording,recording.content))throw new Error('This recording uses older speech text. Plan and play the message again to apply the current filters or persona name.');
+      const recordedText=recording.segments.flatMap(segment=>segment.turns || [segment]).filter(segment=>!segment.kind).map(segment=>segment.text).join(' ');
+      const canonical=text=>String(text || '').replace(/\s+/g,' ').trim();
+      const wholeMessage=recording.fullMessage===true || recording.fullMessage===undefined && Boolean(recordedText) && canonical(recordedText)===canonical(recording.transcript);
       if(outdatedSfxRecording(recording)){
         if(await restoreSavedPlan(messageId)){await play();return;}
         throw new Error('Saved sound-effect timing needs updating. Plan and play this reply to place effects between phrases.');
@@ -3443,12 +3494,20 @@ export async function setup(ctx) {
       if(recording.segments.some((_,index)=>!recordedSpeechMatches(recording,index,snapshot))){
         status('Updating pronunciation in saved speech…');
         const source={chatId:targetChat,messageId,content:recording.content,transcript:recording.transcript};
-        const player=createStreamingPlayer(snapshot,source,recording,ctrl,token);
+        const mix=wholeMessage?beginPlayedAudio():null,player=createStreamingPlayer(snapshot,source,recording,ctrl,token,{mix});
         player.push(recording.segments);player.finish();
-        const {warnings}=await player.playbackPromise;
+        const {warnings,playedAudio}=await player.playbackPromise;
+        if(token!==revision || ctrl.signal.aborted)throw abortError();
+        if(playedAudio){const saved=await recordingStore('get',recordingKey(targetChat,messageId));await recordingStore('put',recordingKey(targetChat,messageId),{...saved,playedAudio:{...playedAudio,content:recording.content}});}
         if(token===revision)status('Playback finished. Name pronunciation updated.'+foleyWarning(warnings));
         return;
       }
+      // Recover old sparse indexes from the exact saved passage cache before
+      // replay, so saving a complete mix never requires another TTS request.
+      for(const [index,segment] of recording.segments.entries())if(!recording.blobs[index]){
+        try{recording.blobs[index]=recording.passages?.[cacheKey(segment,snapshot)];}catch{}
+      }
+      const mix=wholeMessage?beginPlayedAudio():null;
       mixerPlaybackSegments=recording.segments;renderMixer();
       let pauseNext=false;
       generationPolicyChanged=()=>{if(currentSpeaker==='SFX' && config?.enableSfx===false){pauseNext=heldPaused();skipAudio?.();}};
@@ -3472,8 +3531,11 @@ export async function setup(ctx) {
         const paused=pauseNext;pauseNext=false;await playBlob(blob,ctrl.signal,recording.segments[index].speaker,0,config.normalizeLoudness,paused,{messageId,items:recording.segments,index,gapMs:gapBefore(recording.segments,index)});
         index=nextIndex;const next=recording.segments[index];activePlayback={...activePlayback,passage:next?.passageIndex ?? (activePlayback.passage+1),chunk:next?.chunkIndex ?? 0,complete:index===recording.blobs.length};savePosition(0);activePlayback=null;
       }
+      const playedAudio=await mix?.finish();if(playedCapture===mix)playedCapture=null;
+      if(token!==revision || ctrl.signal.aborted)throw abortError();
+      if(playedAudio)await recordingStore('put',recordingKey(targetChat,messageId),{...recording,playedAudio:{...playedAudio,content:recording.content}});
       if(token===revision)status('Replay finished.');
-    } finally {if(token===revision){fadeOutBeds();activePlayback=null;advancePlayback=null;generationPolicyChanged=null;updateNextControls();controller=null;setBusy(false);}}
+    } finally {if(token===revision){playedCapture?.discard();playedCapture=null;fadeOutBeds();activePlayback=null;advancePlayback=null;generationPolicyChanged=null;updateNextControls();controller=null;setBusy(false);}}
   }
   async function playMessage(messageId) {
     if(controller && messagePlaybackId===messageId){stop();return;}
@@ -3567,52 +3629,46 @@ export async function setup(ctx) {
   const downloadUrls=new Map();
   unsubs.push(()=>{for(const [url,timer] of downloadUrls){clearTimeout(timer);URL.revokeObjectURL(url);}downloadUrls.clear();});
   async function downloadSpeech(messageId) {
-    if(busy)throw new Error('Wait for playback or planning to finish before downloading speech.');
+    if(busy)throw new Error('Wait for playback or planning to finish before downloading audio.');
     const targetChat=chatId,content=ctx.messages.getContent(messageId),token=revision;
     const recording=await recordingStore('get',recordingKey(targetChat,messageId));
     if(disposed || targetChat!==chatId || token!==revision)throw abortError();
-    const canonical=text=>String(text || '').replace(/\s+/g,' ').trim();
-    const recordedText=recording?.segments?.flatMap(segment=>segment.turns || [segment]).filter(segment=>!segment.kind).map(segment=>segment.text).join(' ');
-    const complete=recording?.fullMessage===true || recording?.fullMessage===undefined && recording && canonical(recordedText)===canonical(recording.transcript);
-    if(!complete || !sameSpeech(recording.content,content))throw new Error('Play this whole message first to save all its speech, then download it.');
+    const played=recording?.playedAudio;
+    if(!played || !sameSpeech(played.content,content))throw new Error('Play this whole message first to save its played audio mix, then download it. Previously saved speech will be reused.');
+    if(played.error)throw new Error(played.error);
+    if(!played.blob?.size)throw new Error('No played audio was saved. Replay this whole message, then download it.');
     if(disposed || targetChat!==chatId || token!==revision)throw abortError();
-    const entries=recording.segments.flatMap((segment,index)=>segment.kind || speakerExcluded(segment.speaker)?[]:[{segment,blob:recording.blobs[index]}]);
-    if(!entries.length)throw new Error('This message has no saved speech to download.');
-    if(entries.some(entry=>!entry.blob))throw new Error('Some speech is missing. Play the whole message to finish saving it before downloading.');
-    if(entries.some(({segment})=>segment.turns?.some(turn=>speakerExcluded(turn.speaker)) || segment.unison && JSON.stringify(segment.mixLevels)!==JSON.stringify(unisonLevels(segment))))throw new Error('Voice settings changed. Play the whole message again before downloading.');
     const Context=globalThis.AudioContext || globalThis.webkitAudioContext;
     if(!Context)throw new Error('This browser cannot prepare a WAV download.');
-    if(busy)throw new Error('Wait for playback or planning to finish before downloading speech.');
-    const levels=structuredClone(mixerState.channels),master=mixerState.master,normalize=config.normalizeLoudness,gap=voiceGapSetting();
+    if(busy)throw new Error('Wait for playback or planning to finish before downloading audio.');
     const ctrl=new AbortController();controller=ctrl;setBusy(true);let decoder;
     try {
-      decoder=new Context({sampleRate:48000});const tracks=[];let frames=0;
-      for(const [index,{segment,blob}] of entries.entries()){
-        status(`Preparing speech download ${index+1}/${entries.length}…`);
-        const decoded=await decoder.decodeAudioData(await blob.arrayBuffer());ctrl.signal.throwIfAborted();
-        const channels=Array.from({length:Math.min(2,decoded.numberOfChannels)},(_,channel)=>decoded.getChannelData(channel));
-        frames+=decoded.length || channels[0].length;
-        if(frames*4>128*1024*1024)throw new Error('This message is too long for a WAV download (128 MB limit).');
-        const members=segment.turns?.map(turn=>mixerVolume(1,turn.speaker,levels));
-        const level=segment.unison?1:members?.length?(members.every(level=>level===members[0])?members[0]:segment.groupLevel ?? 1):mixerVolume(1,segment.speaker,levels);
-        const gain=master*level*(normalize && !segment.unison?loudnessGain(channels,undefined,decoder.sampleRate):1);
-        tracks.push({channels,gain});
+      status('Preparing played audio download…');
+      decoder=new Context({sampleRate:48000});
+      if(played.duration*48000*4>128*1024*1024)throw new Error('This message is too long for a WAV download (128 MB limit).');
+      const decoded=await decoder.decodeAudioData(await played.blob.arrayBuffer());ctrl.signal.throwIfAborted();
+      const channels=Array.from({length:Math.min(2,decoded.numberOfChannels)},(_,channel)=>decoded.getChannelData(channel));
+      const wav=speechDownloadWav([{channels}],decoder.sampleRate);ctrl.signal.throwIfAborted();
+      let message=ctx.messages.getRecent(500).find(entry=>entry.id===messageId);
+      if(!Number.isInteger(message?.index_in_chat)){
+        const response=await api(`/chats/${encodeURIComponent(targetChat)}/messages/${encodeURIComponent(messageId)}`,{signal:ctrl.signal}).then(response=>response.json());
+        message=response.data || response;
       }
-      const wav=speechDownloadWav(tracks,decoder.sampleRate,gap);ctrl.signal.throwIfAborted();
+      const filename=playedAudioFilename(activeCharacterCard?.name || message?.name || 'Char',targetChat,message?.index_in_chat);
       if(disposed || targetChat!==chatId || token!==revision || !sameSpeech(ctx.messages.getContent(messageId),content))throw abortError();
       const url=URL.createObjectURL(new Blob([wav],{type:'audio/wav'})),link=document.createElement('a');
-      link.href=url;link.download=`Choir-${String(messageId).replace(/[^a-zA-Z0-9_-]/g,'_').slice(0,80)}-speech.wav`;link.hidden=true;document.body.append(link);link.click();link.remove();
+      link.href=url;link.download=filename;link.hidden=true;document.body.append(link);link.click();link.remove();
       downloadUrls.set(url,setTimeout(()=>{URL.revokeObjectURL(url);downloadUrls.delete(url);},30000));
-      status('Speech downloaded as one WAV at original speed. Sound effects, ambience and music are not included.');
+      status('Audio downloaded as one WAV of the completed playback, with the sounds, speed and mixer levels heard.');
     } finally {
       await decoder?.close().catch(()=>{});
       if(controller===ctrl){controller=null;setBusy(false);}
     }
   }
   function speechDownloadButton(messageId) {
-    const button=document.createElement('button');button.type='button';button.className='et-btn-subtle';button.textContent='Download speech';button.dataset.choirDownload='';
-    button.title='One WAV of the saved message speech at original speed. Sound effects, ambience and music are not included. Play the whole message first.';
-    button.setAttribute('aria-label','Download Choir speech for this message');button.onclick=()=>run(()=>downloadSpeech(messageId));return button;
+    const button=document.createElement('button');button.type='button';button.className='et-btn-subtle';button.textContent='Download audio';button.dataset.choirDownload='';
+    button.title='One WAV of the last completed whole-message playback. Includes only sounds that were on, with the speed and mixer levels heard. Replay older recordings once to save the mix.';
+    button.setAttribute('aria-label','Download Choir audio for this message');button.onclick=()=>run(()=>downloadSpeech(messageId));return button;
   }
   const decorateMessage=(target,context={})=>{
     const messageId=context.messageId || ctx.dom.getMessageId?.(context.node || target) || context.scope?.match(/^message:(.*):(?:bubble|minimal):footer$/)?.[1] || context.scope?.split(':')[1];
@@ -3952,7 +4008,16 @@ export async function setup(ctx) {
     return blob;
   }
 
-  // Incompetech sends no CORS headers, so the track streams from its URL instead of a cached blob.
+  async function musicAudioBlob(track,signal){
+    if(track.blob)return track.blob;
+    const result=await rpc('musicAudio',{url:track.url},signal,60000);
+    signal.throwIfAborted();const audio=audioBytes(result.base64,result.mimeType);
+    const blob=new Blob([audio.data],{type:audio.mimeType});
+    if(!blob.size)throw new Error('The music track was empty.');
+    return track.blob=blob;
+  }
+  // Select once; the host proxies music audio so Web Audio can include it in
+  // the same mix heard through the speakers. Existing URL caches also work.
   async function fetchMusicTrack(seg, snapshot, signal) {
     const key=foleyKey(seg.music);
     if(foleyCache.has(key))return foleyCache.get(key);
@@ -4121,40 +4186,42 @@ const paragraphAudioCache = new Map();
         const prefetchBeds=list=>{for(const batch of list)if(isBed(batch) && !batch[batch.kind].stop && !playbackExcluded(batch))getCachedOrSynthesize(batch,snapshot,bedPrefetch.signal).catch(()=>{});};
         prefetchBeds(batches);
 
-        // Current speech enters the bounded queue first. Background markers do
-        // not consume lookahead, and the next paragraph uses only spare slots
-        // after the remaining audible batches in this paragraph.
-        const speechJobs=new Map(),pendingSpeech=[];
-        let speechWorkers=0,currentBatchIndex=0,nextBatches=[];
+        const speechJobs=new Map(),speechQueues=[{pending:[],active:0,limit:Math.max(1,Number(snapshot.concurrency)||1)},{pending:[],active:0,limit:1}];
+        const cachedSpeechKeys=new Set([...paragraphAudioCache].filter(([,entry])=>!entry.signal).map(([key])=>key));
+        let currentBatchIndex=0,nextBatches=[];
         const pumpSpeech=()=>{
-          if(ctrl.signal.aborted || token!==revision || disposed){for(const job of pendingSpeech.splice(0))job.reject(abortError());return;}
-          while(pendingSpeech.length && speechWorkers<Math.max(1,Number(snapshot.concurrency)||1)){
-            const job=pendingSpeech.shift();
+          if(ctrl.signal.aborted || token!==revision || disposed){for(const queue of speechQueues)for(const job of queue.pending.splice(0))job.reject(abortError());return;}
+          for(const queue of speechQueues)while(queue.pending.length && queue.active<queue.limit){
+            const job=queue.pending.shift();
             if(playbackExcluded(job.batch)){speechJobs.delete(job.key);job.resolve(null);continue;}
-            speechWorkers++;
-            getCachedOrSynthesize(job.batch,snapshot,ctrl.signal).then(job.resolve,job.reject).finally(()=>{speechWorkers--;pumpSpeech();});
+            queue.active++;
+            getCachedOrSynthesize(job.batch,snapshot,ctrl.signal).then(job.resolve,job.reject).finally(()=>{queue.active--;pumpSpeech();});
           }
         };
-        const queueSpeech=batch=>{
+        const queueSpeech=(batch,prepare=true)=>{
           const key=segmentCacheKey(batch,snapshot);
+          const saved=paragraphAudioCache.get(key);
+          if(cachedSpeechKeys.has(key) && saved && !saved.signal){
+            speechJobs.set(key,saved.promise);
+            return prepare?saved.promise.then(blob=>preparePlayback(blob,batch,snapshot)):saved.promise;
+          }
           if(!speechJobs.has(key)){
             let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b;});promise.catch(()=>{});
-            speechJobs.set(key,promise);pendingSpeech.push({key,batch,resolve,reject});pumpSpeech();
+            speechJobs.set(key,promise);speechQueues[batch.kind==='sfx'?1:0].pending.push({key,batch,resolve,reject});pumpSpeech();
             return promise;
           }
           return speechJobs.get(key);
         };
         const prefetchSpeech=index=>{
           if(ctrl.signal.aborted || token!==revision)return;
-          let remaining=1+Math.max(0,Number(snapshot.prefetch)||0);
-          for(let next=index;next<batches.length && remaining>0;next++){
-            if(isBed(batches[next]) || playbackExcluded(batches[next]))continue;
-            queueSpeech(batches[next]);remaining--;
-          }
-          if(snapshot.prefetch>0)for(const batch of nextBatches){
-            if(remaining<=0)break;
-            if(isBed(batch) || playbackExcluded(batch))continue;
-            queueSpeech(batch);remaining--;
+          const candidates=[...batches,...nextBatches];
+          const end=speechLookaheadEnd(candidates,index,Number(snapshot.prefetch)||0,{
+            excluded:playbackExcluded,cached:batch=>{try{return cachedSpeechKeys.has(segmentCacheKey(batch,snapshot));}catch{return false;}}
+          });
+          const prepareEnd=speechLookaheadEnd(candidates,index,Number(snapshot.prefetch)||0,{excluded:playbackExcluded});
+          for(let next=index;next<=end && next<candidates.length;next++){
+            const batch=candidates[next];if(isBed(batch) || playbackExcluded(batch))continue;
+            queueSpeech(batch,next<=prepareEnd);
           }
         };
         ctrl.signal.addEventListener('abort',pumpSpeech,{once:true});
