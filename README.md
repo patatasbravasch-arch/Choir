@@ -4,14 +4,16 @@
 
 # Choir
 
-[![Version](https://img.shields.io/badge/version-1.1.6--staging.30-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/staging)
+[![Version](https://img.shields.io/badge/version-1.1.6--staging.31-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/staging)
 [![Platform](https://img.shields.io/badge/platform-Lumiverse%20Spindle-purple.svg)](https://docs.lumiverse.chat/)
-[![Tests](https://img.shields.io/badge/tests-447%20tests-blue.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-515%20tests-blue.svg)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 An installable Lumiverse Spindle extension for multi-voice narration, dialogue attribution, sound effects, ambience and background music.
 
 </div>
+
+Version **1.1.6-staging.31**, available on `lunch-test`, combines all characters in **Cast**, adds Fish Audio browsing and pasted IDs to the active chat’s preferred voices, and adds **Download speech** for a completed message as one WAV. Downloads reuse saved speech at original speed, with no new generation requests; scene sounds are excluded.
 
 Version **1.1.6-staging.30** brings the tested `lunch-test` changes into staging: guided setup with a Fish Audio key guide, chat-wide name pronunciation, cast restoration and NPC category fixes, OpenRouter Fish voice selection, reading skip controls and music planning for mood changes within a reply. It also includes playback speed and voice gaps from PR #4, with **Normal**, **Fast** and **Very fast** mixer buttons and individual speeds inside each character's **Edit** drawer. **Match Abyssal Constellation** in Advanced Settings optionally themes the mixer. Saved voice styles are bounded automatically, and unverifiable card suggestions no longer block playback.
 
@@ -98,7 +100,7 @@ Cast and connection changes save automatically with Saving / Saved / Save failed
 
 Saved audio follows the **Audio retention** setting in Advanced Settings. **This session only** stays in memory. **1**, **7** and **30 days** remove a recording after its expiry. **Indefinitely** audio is never reclaimed automatically, even when the device is full; Choir reports the storage limit instead and asks you to delete a message or chat, or choose a shorter retention period. A completed full replay also trims older passage generations from that message. It keeps the current plan, the immediately previous recording, audio for speakers set to **No voice**, and clips from other sections, so one voice, route, connection-mode or text change can be undone without paying for the same speech again, while older generations are discarded.
 
-Click **Set default** beside **Lead Cast** or **NPC Cast** to open the corresponding tab of the cast defaults popup. It contains only lead roles (**Narrator**, **`{{user}}`** and **`{{char}}`**) and **NPC cast** settings. Each lead role has its own TTS connection and voice, including **Let the LLM decide**. NPCs can **Do not generate NPC speech**, **Use one voice for everyone**, **Choose from preferred voices**, or **Let the LLM decide**. The preferred pool limits automatic NPC choices without restricting the lead cast. **Save default** supplies voices for new chats; existing chats keep their casts until you click **Apply default** beside that cast group. Applying a cast default keeps all global Speech & Planner preferences. Names, aliases, pronunciation instructions and individual NPC identities are not copied into defaults. Reopen the popup to edit the saved default, or choose **Use current chat settings** to start from the active cast. Cancel discards the draft. Existing defaults migrate their cast choices automatically.
+All characters appear together under **Cast** and in the mixer’s **Cast** tab. Existing voices, routes, aliases and pronunciation settings are retained. **Set default** opens **Voices** (Narrator, `{{user}}` and `{{char}}`) and **Automatic casting**. Automatic casting controls characters discovered in the story: disable their speech, use one shared voice, choose from a preferred pool, or let the LLM decide. Preferred Fish voices can be browsed or pasted directly in the active chat, including when the connection returns an empty catalogue. Each selected ID stays scoped to its TTS connection. **Save default** supplies choices for new chats; **Apply default** applies both voice and automatic casting defaults to the current chat without changing global Speech & Planner preferences. Names, aliases, pronunciation and discovered identities are not copied into defaults. Cancel discards the draft.
 
 Choir removes complete tabbed interface panels and phone widgets before Jev, heuristic or LLM attribution, including status, notifications and expandable notes. Detection uses grouped radio controls with matching labels and tab content, ARIA tabs and panels, or a checkbox/radio with a matching label and a local CSS `:checked` rule, within a styled UI surface. It keeps ordinary HTML story text and surrounding narration, including a story `<div>` that contains a panel. Interface controls, SVG/canvas decorations and explicitly hidden content are excluded too. This filter is local and makes no additional Jev or LLM request. Incomplete or ambiguous layouts are retained conservatively; precise exclusions can handle them.
 
@@ -131,6 +133,10 @@ Grouping can combine up to **two prebuilt Gemini voices** or **five Fish S2 voic
 Fish/Google/OpenRouter connections require a Lumiverse relay that advertises `capabilities.multiSpeaker` and accepts `parameters.turns`. Older relays safely retain separate speakers. The [relay patch](patches/lumiverse-multi-speaker.patch) adds this support for Fish S2, Google AI Studio/Vertex Gemini 3.8, and supported Fish/Gemini models on OpenRouter without changing stored connections or credentials. OpenRouter dialogue is sent as an ordered input array with text, voice and optional instructions per turn. Its Fish models use Fish voice IDs; names such as Puck belong to Gemini. The relay must be patched on the server serving each Lumiverse instance, including hosted instances. It has been applied to the local testing instance. Apply it from a compatible Lumiverse checkout with `git apply --check /path/to/Choir/patches/lumiverse-multi-speaker.patch`, then `git apply /path/to/Choir/patches/lumiverse-multi-speaker.patch` and restart Lumiverse. Run the supplied [relay tests](patches/relay-dialogue.test.ts) with Bun from that checkout. Relay changes may need to be reapplied after updating Lumiverse. Provider contracts: [OpenRouter multi-speaker TTS](https://openrouter.ai/docs/guides/overview/multimodal/tts#multi-speaker-input), [Fish dialogue API](https://docs.fish.audio/api-reference/endpoint/openapi-v1/text-to-speech) and [Gemini speech generation](https://ai.google.dev/gemini-api/docs/generate-content/speech-generation).
 
 Choir also applies limits per voice route: Fish Audio uses up to the 10,000-character application ceiling, including delivery tags; [OpenAI speech](https://developers.openai.com/api/reference/resources/audio/subresources/speech/methods/create) is capped at 4,096 characters. Gemini uses a conservative local budget of 6,000 UTF-8 bytes for text and delivery instructions, reserving space under its [8,192-token input limit](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash-tts); multilingual text may therefore use shorter chunks. Unknown providers retain the previous 2,000-character cap. These policies also apply to companion paragraph playback.
+
+### Download a message
+
+Play a whole message, then choose **Download speech** beside that message or in the drawer’s message list. Choir decodes its saved clips and exports one PCM WAV in message order without new TTS calls. The file includes speech at its original speed with the current voice levels, loudness setting and gaps; it excludes sound effects, ambience and music. Incomplete recordings and edited messages must be played in full before downloading. WAV exports are limited to 128 MB.
 
 ## Installation
 
@@ -166,6 +172,17 @@ The extension includes pre-built bundles in `dist/`. No build step is required t
 New to Fish Audio or Freesound? Follow the [step-by-step illustrated setup guides](docs/setup-guides.md). The same pictures are available in **Set up Choir → Connections → How to connect Fish Audio** and **Optional Features → How to get a Freesound API key**. Pictures use example fields and masked keys; **Enlarge picture** makes them easier to read on phones.
 
 Open **Choir** from the drawer or its input-bar action.
+
+### Certificate errors when planning or playing
+
+If Lumiverse reports “unable to verify the first certificate”, check the selected provider’s certificate chain and the host’s trusted certificate authorities. On Windows, if the certificate authority is already trusted by Windows, start Lumiverse from its folder with:
+
+```powershell
+$env:NODE_USE_SYSTEM_CA = '1'
+.\start.ps1
+```
+
+Set this before Bun starts. It adds the system’s trusted authorities while keeping certificate verification enabled. See [Bun’s certificate configuration](https://bun.com/docs/runtime/environment-variables). Custom servers must supply a valid certificate chain.
 
 ### TTS connections
 

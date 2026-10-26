@@ -122,7 +122,7 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
     replay.click();await until(()=>$('status').textContent==='Replay finished.');
     assert.equal(googleCalls(),generated);
     $('latest').click();await until(()=>$('preview').querySelectorAll('.et-card').length===3 && !$('latest').disabled);
-    blockAudio=true;$('play').click();await tick();const previous=googleCalls();
+    blockAudio=true;const previousAudioCount=audios.length;$('play').click();await until(()=>audios.length>previousAudioCount && !audios.at(-1).paused);const previous=googleCalls();
     $('stop').click();await tick();assert.equal(googleCalls(),previous);
     assert.ok(audios.at(-1).paused);
     blockAudio=false;
@@ -206,7 +206,7 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
     assert.equal(longRequests[0].input.transcript,message.content);assert.equal(longRequests[0].input.timeoutMs,240000);
     assert.equal(store.get('chat:chat-a').casts['native:native-a'].find(actor=>actor.speaker==='Traveler').voice,'echo');
     active='chat-b';listeners.get('chat.active')();await tick();await tick();
-    assert.match($('npcs').textContent,/No NPCs/);
+    assert.equal($('npcs').children.length,0);
     cleanup();assert.equal(root.children.length,0);assert.equal(listeners.size,0);assert.equal(events.size,0);
     assert.equal(settingsMount.children.length,0);assert.equal(placementListeners.size,0);
   } finally {Object.assign(globalThis,old);dom.window.close();}

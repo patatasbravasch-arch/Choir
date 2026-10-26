@@ -1,7 +1,7 @@
 import { characterCardRoleDiscovery, namePronunciation, namePronunciationTarget, namePronunciations, respellNames } from './core.js';
 import { createSetupWizard, saveSetupSettings } from './setup.js';
 import { ABYSSAL_THEME_CSS } from './abyssal-theme.js';
-import { randomUuid, sha256Hex, GEMINI_VOICES, OPENAI_VOICES, additionalVoices, apiErrorMessage, MAX_SPEECH_CHARS, MAX_CHANNEL_VOLUME, speechProviderFamily, speechRequestLimits, normalizeName, normalizeVoiceCatalogue, characterCardRoles, validateCardRoles, reconcileCardCast, unisonSpeakers, speechSourceUnits, mixUnisonAudio, transcriptFromMessage, readableText, readAlongIndex, locatePassages, spokenLength, validateCastConfig, validatePlan, npcCastActor, parsePlanJson, speechBatches, groupedSpeechBatches, audioBytes, fastClassifyPlan, resolvePlannerMode, attributionPlan, restoreAttribution, passageKey, mixerVolume, loudnessGain, castExport, castImport, applySoundCues, cueOffset, sfxCueOffset, transcriptLines, withoutLines } from './core.js';
+import { randomUuid, sha256Hex, GEMINI_VOICES, OPENAI_VOICES, additionalVoices, apiErrorMessage, MAX_SPEECH_CHARS, MAX_CHANNEL_VOLUME, speechProviderFamily, speechRequestLimits, normalizeName, normalizeVoiceCatalogue, characterCardRoles, validateCardRoles, reconcileCardCast, unisonSpeakers, speechSourceUnits, mixUnisonAudio, speechDownloadWav, transcriptFromMessage, readableText, readAlongIndex, locatePassages, spokenLength, validateCastConfig, validatePlan, npcCastActor, parsePlanJson, speechBatches, groupedSpeechBatches, audioBytes, fastClassifyPlan, resolvePlannerMode, attributionPlan, restoreAttribution, passageKey, mixerVolume, loudnessGain, castExport, castImport, applySoundCues, cueOffset, sfxCueOffset, transcriptLines, withoutLines } from './core.js';
 import { normalizeSpeedSliderMax, normalizePlaybackRate, normalizeVoiceGap, speakerPlaybackRate, effectivePlaybackRate, browserPlaybackRate, PLAYBACK_RATE_LIMITS, VOICE_GAP_LIMITS } from './core.js';
 
 const CHOIR_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 12a4.16 4.16 0 0 1-5.62 3.89 3.78 3.78 0 0 1-2.38-3.39 3.42 3.42 0 0 1 2.34-3.38l3.79-1.42a2.89 2.89 0 0 0 1.87-2.7 2 2 0 1 0-4 0v14a2 2 0 1 1-4 0"/><path d="M20 2v4"/><path d="M22 4h-4"/></svg>`;
@@ -104,7 +104,8 @@ export async function setup(ctx) {
     .ensemble-tts details{margin:10px 0;border:1px solid rgba(128,128,128,0.2);border-radius:6px;padding:8px 12px}
     .ensemble-tts details summary{cursor:pointer;font-size:0.88em;font-weight:500;opacity:0.8;user-select:none}
     .ensemble-tts details[open] summary{margin-bottom:10px}
-    .ensemble-tts .et-message{display:flex;gap:10px;align-items:center;justify-content:space-between}
+    .ensemble-tts .et-message{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between}
+    .ensemble-tts .et-message .et-btn-group{flex-wrap:wrap}
     .ensemble-tts .et-btn-group{display:flex;gap:6px;align-items:center}
     .choir-mixer[hidden],.choir-mixer.cm-hidden{display:none !important}
     ::highlight(choir-speaking){background-color:var(--lumiverse-primary-020,rgba(147,112,219,.25))}
@@ -269,17 +270,14 @@ export async function setup(ctx) {
       <small class="et-credit" data-et="musicCredit" hidden></small>
     </div>
     <div class="et-section-header">
-      <h3>Lead Cast</h3>
+      <h3>Cast</h3>
       <div class="et-btn-group"><button data-et="captureDefaults" class="et-btn-subtle" disabled>Set default</button><button data-et="applyDefaults" class="et-btn-subtle" disabled>Apply default</button><button data-et="add" class="et-btn-subtle">+ Add character</button></div>
     </div>
     <div data-et="fixed"></div>
 
-    <div class="et-section-header">
-      <h3>NPC Cast</h3>
-      <div class="et-btn-group"><button data-et="captureNpcDefaults" class="et-btn-subtle" disabled>Set default</button><button data-et="applyNpcDefaults" class="et-btn-subtle" disabled>Apply default</button><button data-et="reset" class="et-btn-subtle">Reset NPCs</button></div>
-    </div>
-    <details><summary>NPC voice settings</summary><div data-et="npcPolicyRoot" class="et-npc-policy"></div></details>
-    <div data-et="npcs"></div><p data-et="defaultStatus" role="status" aria-live="polite" style="font-size:.85em;opacity:.8"></p>
+    <div data-et="npcs"></div>
+    <details><summary>Automatic casting</summary><p style="font-size:.85em">Voice selection for characters discovered in the story.</p><div data-et="npcPolicyRoot" class="et-npc-policy"></div></details>
+    <p data-et="defaultStatus" role="status" aria-live="polite" style="font-size:.85em;opacity:.8"></p>
 
     <div class="et-section-header">
       <h3>Speech & Planner</h3>
@@ -946,10 +944,9 @@ export async function setup(ctx) {
     channelsRoot.replaceChildren();speakerLabel.replaceChildren();
     if(currentSpeaker){const prefix=doc.createElement('span');prefix.className='cm-sr-only';prefix.textContent='Speaking: ';speakerLabel.append(prefix,doc.createTextNode(currentSpeaker));}else speakerLabel.textContent='Ready to play';
     const speakers=new Set((mixerPlaybackSegments ?? plan?.segments ?? []).flatMap(speechMembers).filter(segment=>!segment.kind && segment.speaker).map(segment=>segment.speaker));
-    const mainCast=new Set((config?.fixed || []).flatMap(actor=>[actor.speaker,...(actor.aliases || [])]).map(normalizeName));
     for(const speaker of speakers){
       const channel=Object.hasOwn(mixerState.channels,speaker)?mixerState.channels[speaker]:{volume:1,mute:false};Object.defineProperty(mixerState.channels,speaker,{value:channel,writable:true,enumerable:true,configurable:true});
-      const row=doc.createElement('div');row.className='cm-channel';row.dataset.speaker=speaker;row.dataset.kind='voice';row.dataset.channelGroup=mainCast.has(normalizeName(speaker))?'main':'npcs';row.dataset.noVoice=String(speakerExcluded(speaker));
+      const row=doc.createElement('div');row.className='cm-channel';row.dataset.speaker=speaker;row.dataset.kind='voice';row.dataset.channelGroup='cast';row.dataset.noVoice=String(speakerExcluded(speaker));
       row.setAttribute('aria-current',String(currentSpeaker===speaker || currentGroupNames.includes(speaker)));const name=doc.createElement('span');name.className='cm-channel-name';name.textContent=speaker;name.title=speaker;
       const head=doc.createElement('div');head.className='cm-channel-head';
       const dot=doc.createElement('span');dot.className='cm-channel-dot';dot.setAttribute('aria-hidden','true');
@@ -970,9 +967,9 @@ export async function setup(ctx) {
       const controls=doc.createElement('div');controls.className='cm-channel-controls';const volume=makeMixerVolume(name,mixerState[kind],readout,value=>{mixerState[kind]=value;applyVolume();},MAX_CHANNEL_VOLUME);
       controls.append(volume);row.append(head,controls);channelsRoot.append(row);
     }
-    const rows=[...channelsRoot.querySelectorAll('.cm-channel')],groups=[['main','Main cast'],['npcs','NPCs'],['scene','Scene audio']],keys=groups.map(([key])=>key);
+    const rows=[...channelsRoot.querySelectorAll('.cm-channel')],groups=[['cast','Cast'],['scene','Scene audio']],keys=groups.map(([key])=>key);
     const legacySpeaker=mixerState.channelTab?.startsWith('voice:')?mixerState.channelTab.slice(6):'';
-    const selected=keys.includes(mixerState.channelGroup)?mixerState.channelGroup:legacySpeaker?(mainCast.has(normalizeName(legacySpeaker))?'main':'npcs'):mixerState.channelTab?'scene':'main';
+    const selected=keys.includes(mixerState.channelGroup)?mixerState.channelGroup:['main','npcs'].includes(mixerState.channelGroup) || legacySpeaker?'cast':mixerState.channelTab?'scene':'cast';
     mixerState.channelGroup=selected;channelTabs.replaceChildren();
     groups.forEach(([key,label],index)=>{
       const active=key===selected,tabId=`${levelsBody.id}-tab-${key}`;
@@ -984,7 +981,7 @@ export async function setup(ctx) {
     });
     for(const row of rows)row.hidden=row.dataset.channelGroup!==selected;
     const visibleRows=rows.filter(row=>!row.hidden);
-    if(!visibleRows.length){const empty=doc.createElement('p');empty.className='cm-empty';empty.textContent=selected==='npcs'?'No NPC voices in this reply.':'Plan the latest reply to see its voices.';channelsRoot.append(empty);}
+    if(!visibleRows.length){const empty=doc.createElement('p');empty.className='cm-empty';empty.textContent='Plan the latest reply to see its voices.';channelsRoot.append(empty);}
     channelCount.textContent=String(visibleRows.length);legend.hidden=selected==='scene' || !visibleRows.length;
     positionMixer();
     if(focusTabKey)[...channelTabs.children].find(tab=>tab.dataset.channelKey===focusTabKey)?.focus({preventScroll:true});
@@ -1293,9 +1290,8 @@ export async function setup(ctx) {
   $('setupWizard').onclick=()=>void setupWizard.open();
   unsubs.push(()=>setupWizard.dispose());
   function refreshDefaultControls(){
-    for(const name of ['captureDefaults','captureNpcDefaults'])$(name).disabled=busy || defaultOperation || !chatId || !castRows.length;
+    $('captureDefaults').disabled=busy || defaultOperation || !chatId || !castRows.length;
     $('applyDefaults').disabled=busy || defaultOperation || !chatId || !castRows.length || !capturedDefaults?.leadVoices;
-    $('applyNpcDefaults').disabled=busy || defaultOperation || !chatId || !castRows.length || !capturedDefaults?.npcPolicy;
   }
   function withDefaultSetup(value,preset,group){
     const candidate={...value,...(!group || group==='npc'?preset.npcPolicy?{npcPolicy:structuredClone(preset.npcPolicy)}:{}:{})};
@@ -1314,14 +1310,14 @@ export async function setup(ctx) {
   }
   function npcPolicyEditor(container,initial,getDefaultRoute,onChange,prefix='',getShared=()=>false,voicePicker=null){
     const policy=structuredClone(initial || {mode:'llm',route:'',voice:'',voices:[]}),mode=document.createElement('select');
-    for(const [value,name] of [['skip','Do not generate NPC speech'],['single','Use one voice for everyone'],['preferred','Choose from preferred voices'],['llm','Let the LLM decide']])option(mode,value,name);
-    mode.value=policy.mode;const connection=defaultConnection(getShared()?'':policy.route,`${prefix}NPC connection`),voice=document.createElement('select'),pool=document.createElement('select');pool.multiple=true;pool.size=5;
+    for(const [value,name] of [['skip','Do not voice discovered characters'],['single','Use one shared voice'],['preferred','Choose from preferred voices'],['llm','Let the LLM decide']])option(mode,value,name);
+    mode.value=policy.mode;const connection=defaultConnection(getShared()?'':policy.route,`${prefix}Casting connection`),voice=document.createElement('select'),pool=document.createElement('select');pool.multiple=true;pool.size=5;
     const selectedRoute=()=>connection.value || getDefaultRoute();
-    const voiceField=voicePicker?.(voice,selectedRoute,`${prefix}Shared NPC voice`,()=>{policy.voice=voice.value;onChange(read());});
-    const poolField=voicePicker?.(pool,selectedRoute,`${prefix}Preferred NPC voices`,()=>{policy.voices=[...pool.selectedOptions].map(item=>item.value);onChange(read());});
-    const voiceLabel=voiceField?.node || defaultLabel(`${prefix}Shared NPC voice`,voice),poolLabel=poolField?.node || defaultLabel(`${prefix}Preferred NPC voices`,pool),connectionLabel=defaultLabel(`${prefix}NPC connection`,connection);
-    const hint=document.createElement('small');hint.textContent='NPCs only. Ctrl / Cmd-click to pick several voices.';
-    container.append(defaultLabel(`${prefix}NPC casting`,mode),connectionLabel,voiceLabel,poolLabel,hint);let request=0;
+    const voiceField=voicePicker?.(voice,selectedRoute,`${prefix}Shared voice`,()=>{policy.voice=voice.value;onChange(read());});
+    const poolField=voicePicker?.(pool,selectedRoute,`${prefix}Preferred voices`,()=>{policy.voices=[...pool.selectedOptions].map(item=>item.value);onChange(read());});
+    const voiceLabel=voiceField?.node || defaultLabel(`${prefix}Shared voice`,voice),poolLabel=poolField?.node || defaultLabel(`${prefix}Preferred voices`,pool),connectionLabel=defaultLabel(`${prefix}Casting connection`,connection);
+    const hint=document.createElement('small');hint.textContent='For discovered characters. Ctrl / Cmd-click to pick several voices.';
+    container.append(defaultLabel(`${prefix}Automatic casting`,mode),connectionLabel,voiceLabel,poolLabel,hint);let request=0;
     const show=()=>{connection.disabled=getShared();connection.value=getShared()?'':policy.route || '';connectionLabel.hidden=policy.mode==='skip';voiceLabel.hidden=policy.mode!=='single';poolLabel.hidden=policy.mode!=='preferred';voiceField?.refresh();poolField?.refresh();};
     const fill=catalogue=>{
       if(voicePicker)catalogue=voicePicker.merge(catalogue,selectedRoute());
@@ -1343,6 +1339,40 @@ export async function setup(ctx) {
     pool.onchange=()=>{policy.voices=[...pool.selectedOptions].map(item=>item.value);onChange(read());};
     return {refresh,read};
   }
+  function fishVoicePicker({active,mergeVoices,remember,onFeedback,openLibrary,selectedMessage}) {
+    const voicePicker=(voice,getRoute,name,onSelect)=>{
+      const node=document.createElement('div'),tools=document.createElement('div');tools.style.cssText='display:flex;flex-wrap:wrap;gap:6px;margin-top:6px';
+      const browse=document.createElement('button'),paste=document.createElement('button');browse.type=paste.type='button';browse.textContent='Browse voice catalogue';paste.textContent='Paste voice ID';
+      browse.setAttribute('aria-label',`Browse Fish voice catalogue for ${name}`);paste.setAttribute('aria-label',`Paste Fish voice ID for ${name}`);
+      const editor=document.createElement('div');editor.hidden=true;editor.style.cssText='display:grid;gap:6px;margin-top:6px';
+      const id=document.createElement('input'),description=document.createElement('input');id.type=description.type='text';id.maxLength=200;description.maxLength=600;id.placeholder='Fish Audio voice ID';description.placeholder='Optional voice description';
+      id.setAttribute('aria-label',`Fish voice ID for ${name}`);description.setAttribute('aria-label',`Fish voice description for ${name}`);
+      const use=document.createElement('button'),discard=document.createElement('button');use.type=discard.type='button';use.textContent='Use this voice';discard.textContent='Close voice ID';use.setAttribute('aria-label',`Use Fish voice ID for ${name}`);
+      const hide=()=>{editor.hidden=true;paste.setAttribute('aria-expanded','false');};hide();
+      const choose=(item,selectedRoute=getRoute())=>{
+        if(!active())return;
+        if(selectedRoute!==getRoute() || detectProvider(selectedRoute)!=='fish_audio'){onFeedback('Select a Fish Audio connection for this voice.');return;}
+        const voiceId=String(item.id || '').trim();
+        if(!/^[A-Za-z0-9_-]{1,200}$/.test(voiceId)){onFeedback('Enter a Fish Audio voice ID using letters, numbers, hyphens or underscores.');return;}
+        if([...GEMINI_VOICES,...OPENAI_VOICES].some(voice=>voice.id===voiceId)){onFeedback(`Fish Audio requires a Fish voice ID; ${voiceId} belongs to Gemini or OpenAI.`);return;}
+        const known=mergeVoices(voiceCatalogues.get(selectedRoute) || [],selectedRoute).find(voice=>voice.id===voiceId);
+        const entry={id:voiceId,route:selectedRoute,name:String(item.name || known?.name || voiceId).slice(0,200),description:String(item.description || known?.description || '').replace(/[|\r\n]+/g,' ').slice(0,600)};
+        remember(entry);
+        if(![...voice.options].some(option=>option.value===voiceId))option(voice,voiceId,entry.name);
+        if(voice.multiple)[...voice.options].find(option=>option.value===voiceId).selected=true;else voice.value=voiceId;
+        onSelect();hide();onFeedback(selectedMessage(entry.name));voice.focus();
+      };
+      browse.onclick=()=>{const selectedRoute=getRoute();openLibrary({targetSpeaker:name,defaultQuery:name.includes('{{')?'character':name.includes('Narrator')?'narrator':'voice',onSelect:item=>choose(item,selectedRoute)});};
+      paste.onclick=()=>{if(!editor.hidden){hide();return;}id.value=voice.multiple?'':voice.value;description.value='';editor.hidden=false;paste.setAttribute('aria-expanded','true');id.focus();};
+      use.onclick=()=>choose({id:id.value,description:description.value});discard.onclick=()=>{hide();paste.focus();};
+      editor.onkeydown=event=>{if(event.key==='Escape'){event.preventDefault();event.stopPropagation();discard.click();}else if(event.key==='Enter'){event.preventDefault();use.click();}};
+      tools.append(browse,paste);editor.append(id,description,use,discard);node.append(defaultLabel(name,voice),tools,editor);
+      const refresh=()=>{tools.hidden=detectProvider(getRoute())!=='fish_audio';if(tools.hidden)hide();};refresh();
+      return {node,refresh};
+    };
+    voicePicker.merge=mergeVoices;
+    return voicePicker;
+  }
   function openDefaultEditor(group='lead',useCurrent=false){
     closeDefaultEditor?.();
     const current=capture(),draft=structuredClone(useCurrent || !capturedDefaults?current:withDefaultSetup(current,capturedDefaults));
@@ -1354,7 +1384,7 @@ export async function setup(ctx) {
     const intro=document.createElement('p');intro.style.fontSize='.85em';intro.textContent='New chats start with these voices.';
     const tabs=document.createElement('div');tabs.className='et-default-tabs';tabs.setAttribute('role','tablist');tabs.setAttribute('aria-label','Default settings');
     const body=document.createElement('div');body.className='et-default-body';const panels=[];const buttons=[];
-    for(const [key,title] of [['lead','Lead cast'],['npc','NPC cast']]){
+    for(const [key,title] of [['lead','Voices'],['npc','Automatic casting']]){
       const panel=document.createElement('div');panel.dataset.panel=key;panel.setAttribute('role','tabpanel');panel.id=`choir-default-${key}`;
       const button=document.createElement('button');button.type='button';button.textContent=title;button.id=`choir-default-tab-${key}`;button.setAttribute('role','tab');button.setAttribute('aria-controls',panel.id);panel.setAttribute('aria-labelledby',button.id);
       tabs.append(button);body.append(panel);panels.push(panel);buttons.push(button);
@@ -1364,36 +1394,7 @@ export async function setup(ctx) {
     const route=()=>scope(current),draftVoices=new Map((capturedDefaults?.voiceCatalogue || []).map(voice=>[`${voice.route}:${voice.id}`,voice]));
     let closeLibrary;
     const mergeVoices=(catalogue,selectedRoute)=>[...new Map([...catalogue,...[...draftVoices.values()].filter(voice=>voice.route===selectedRoute)].map(voice=>[voice.id,voice])).values()];
-    const voicePicker=(voice,getRoute,name,onSelect)=>{
-      const node=document.createElement('div'),tools=document.createElement('div');tools.style.cssText='display:flex;flex-wrap:wrap;gap:6px;margin-top:6px';
-      const browse=document.createElement('button'),paste=document.createElement('button');browse.type=paste.type='button';browse.textContent='Browse voice catalogue';paste.textContent='Paste voice ID';
-      browse.setAttribute('aria-label',`Browse Fish voice catalogue for ${name}`);paste.setAttribute('aria-label',`Paste Fish voice ID for ${name}`);
-      const editor=document.createElement('div');editor.hidden=true;editor.style.cssText='display:grid;gap:6px;margin-top:6px';
-      const id=document.createElement('input'),description=document.createElement('input');id.type=description.type='text';id.maxLength=200;description.maxLength=600;id.placeholder='Fish Audio voice ID';description.placeholder='Optional voice description';
-      id.setAttribute('aria-label',`Fish voice ID for ${name}`);description.setAttribute('aria-label',`Fish voice description for ${name}`);
-      const use=document.createElement('button'),discard=document.createElement('button');use.type=discard.type='button';use.textContent='Use this voice';discard.textContent='Close voice ID';use.setAttribute('aria-label',`Use Fish voice ID for ${name}`);
-      const hide=()=>{editor.hidden=true;paste.setAttribute('aria-expanded','false');};hide();
-      const choose=(item,selectedRoute=getRoute())=>{
-        if(!dialog.isConnected || disposed)return;
-        if(selectedRoute!==getRoute() || detectProvider(selectedRoute)!=='fish_audio'){feedback.textContent='Select a Fish Audio connection for this voice.';return;}
-        const voiceId=String(item.id || '').trim();
-        if(!/^[A-Za-z0-9_-]{1,200}$/.test(voiceId)){feedback.textContent='Enter a Fish Audio voice ID using letters, numbers, hyphens or underscores.';return;}
-        const known=draftVoices.get(`${selectedRoute}:${voiceId}`) || voiceCatalogues.get(selectedRoute)?.find(voice=>voice.id===voiceId);
-        const entry={id:voiceId,route:selectedRoute,name:String(item.name || known?.name || voiceId).slice(0,200),description:String(item.description || known?.description || '').replace(/[|\r\n]+/g,' ').slice(0,600)};
-        draftVoices.set(`${selectedRoute}:${voiceId}`,entry);
-        if(![...voice.options].some(option=>option.value===voiceId))option(voice,voiceId,entry.name);
-        if(voice.multiple)[...voice.options].find(option=>option.value===voiceId).selected=true;else voice.value=voiceId;
-        onSelect();hide();feedback.textContent=`Selected ${entry.name}. Save default to keep this choice.`;voice.focus();
-      };
-      browse.onclick=()=>{const selectedRoute=getRoute();closeLibrary?.();closeLibrary=openVoiceLibraryModal({targetSpeaker:name,defaultQuery:name.includes('{{')?'character':name.includes('Narrator')?'narrator':'voice',onSelect:item=>choose(item,selectedRoute)});};
-      paste.onclick=()=>{if(!editor.hidden){hide();return;}id.value=voice.multiple?'':voice.value;description.value='';editor.hidden=false;paste.setAttribute('aria-expanded','true');id.focus();};
-      use.onclick=()=>choose({id:id.value,description:description.value});discard.onclick=()=>{hide();paste.focus();};
-      editor.onkeydown=event=>{if(event.key==='Escape'){event.preventDefault();event.stopPropagation();discard.click();}else if(event.key==='Enter'){event.preventDefault();use.click();}};
-      tools.append(browse,paste);editor.append(id,description,use,discard);node.append(defaultLabel(name,voice),tools,editor);
-      const refresh=()=>{tools.hidden=detectProvider(getRoute())!=='fish_audio';if(tools.hidden)hide();};refresh();
-      return {node,refresh};
-    };
-    voicePicker.merge=mergeVoices;
+    const voicePicker=fishVoicePicker({active:()=>dialog.isConnected && !disposed,mergeVoices,remember:entry=>draftVoices.set(`${entry.route}:${entry.id}`,entry),onFeedback:message=>feedback.textContent=message,openLibrary:options=>{closeLibrary?.();closeLibrary=openVoiceLibraryModal(options);},selectedMessage:name=>`Selected ${name}. Save default to keep this choice.`});
     const voiceRefreshes=[];
     for(const [index,name] of ['Narrator','{{user}}','{{char}}'].entries()){
       const actor=draft.fixed[index] || {speaker:name,voice:'',style:''};draft.fixed[index]=actor;
@@ -2055,30 +2056,27 @@ export async function setup(ctx) {
       test.onclick=()=>audition(`${namePronunciationTarget({speaker:name.value,sayAsName:sayAsName.value})} opened the door.`);tools.append(pronunciationHint,document.createElement('br'),test);editor.append(tools);
     }
     if(!required){
-      const move=document.createElement('button');move.type='button';move.className='et-btn-subtle';
-      const toNPC=container===$('fixed');move.textContent=toNPC?'Move to NPC cast':'Move to lead cast';move.setAttribute('aria-label',`Move ${actor.speaker} to ${toNPC?'NPC':'lead'} cast`);
-      move.onclick=()=>{
-        const value=capture(),key=normalizeName(name.value),matches=entry=>normalizeName(entry.speaker)===key;
-        const current=toNPC?value.fixed.find(matches):(value.casts[scope(value)] || []).find(matches);if(!current)return;
-        const overrides=new Set((value.cardCastNPCs || []).map(normalizeName));
-        if(toNPC){value.fixed=value.fixed.filter(entry=>!matches(entry));value.casts[scope(value)]=[...(value.casts[scope(value)] || []).filter(entry=>!matches(entry)),current];for(const alias of [current.speaker,...(current.aliases || [])])overrides.add(normalizeName(alias));}
-        else{value.casts=Object.fromEntries(Object.entries(value.casts).map(([route,actors])=>[route,actors.filter(entry=>!matches(entry))]));value.fixed.push(current);for(const alias of [current.speaker,...(current.aliases || [])])overrides.delete(normalizeName(alias));}
-        value.cardCastNPCs=[...overrides];config=value;clearPlan();renderCast();scheduleSettingsSave();status(`${current.speaker} moved to ${toNPC?'NPC':'lead'} cast.`);
-      };
-      const remove=document.createElement('button');remove.type='button';remove.textContent='Remove';remove.onclick=()=>{row.remove();scheduleSettingsSave();renderMixer();};editor.append(move,remove);
+      const remove=document.createElement('button');remove.type='button';remove.textContent='Remove';remove.onclick=()=>{row.remove();scheduleSettingsSave();renderMixer();};editor.append(remove);
     }
     container.append(row);
     paintSpeakerSpeeds();
     updateCardProviderControls();
     return {row,voiceChoice:()=>[name.value.trim(),voice.value],setExcluded:value=>{excluded.checked=value;},read:()=>({speaker:name.value.trim(),voice:single?actor.voice || '':voice.value,route:single?actor.route || '':route.value,gender:gender.value,style:style.value.trim(),aliases:aliases.value.split(',').map(a=>a.trim()).filter((a,i,list)=>a && normalizeName(a)!==normalizeName(name.value) && list.findIndex(b=>normalizeName(b)===normalizeName(a))===i),pronunciation:pronunciation.value.trim(),sayAs:sayAs.value.trim(),sayAsName:sayAsName.value,accent:accent.value.trim(),excluded:excluded.checked})};
   }
+  let closePolicyLibrary;
+  unsubs.push(()=>closePolicyLibrary?.());
   function renderCast() {
     $('fixed').replaceChildren();$('npcs').replaceChildren();
-    $('npcPolicyRoot').replaceChildren();npcPolicyEditor($('npcPolicyRoot'),config.npcPolicy,()=>scope(config),value=>{config=capture();config.npcPolicy=value;generationPolicyChanged?.();renderMixer();scheduleSettingsSave();},'',()=>config.connectionMode==='one');
+    closePolicyLibrary?.();
+    const policyRoot=$('npcPolicyRoot');policyRoot.replaceChildren();
+    const picker=fishVoicePicker({active:()=>policyRoot.isConnected && !disposed,
+      mergeVoices:(catalogue,route)=>[...new Map([...catalogue,...(voiceCatalogues.get(route) || [])].map(voice=>[voice.id,voice])).values()],
+      remember:entry=>{addExtraVoice(entry.id,entry.description || entry.name,entry.route);},
+      onFeedback:message=>status(message),openLibrary:options=>{closePolicyLibrary?.();closePolicyLibrary=openVoiceLibraryModal(options);},selectedMessage:name=>`Selected ${name}. Saving automatically.`});
+    npcPolicyEditor(policyRoot,config.npcPolicy,()=>scope(config),value=>{config=capture();config.npcPolicy=value;generationPolicyChanged?.();renderMixer();scheduleSettingsSave();},'',()=>config.connectionMode==='one',picker);
     castRows=config.fixed.map(actor=>makeRow(actor,$('fixed'),normalizeName(actor.speaker)==='narrator'));
     const npcs=config.casts[scope(config)] || [];
     npcRows=npcs.map(actor=>makeRow(actor,$('npcs')));
-    if(!npcs.length){const p=document.createElement('p');p.style.cssText='font-size:.85em;opacity:.75';p.textContent='No NPCs cast yet.';$('npcs').append(p);}
     updateProviderVisibility();
     renderMixer();
     refreshDefaultControls();
@@ -3415,7 +3413,7 @@ export async function setup(ctx) {
       const {blobs,warnings,passages,passageKeys}=await player.playbackPromise;
       {
         if(token!==revision || ctrl.signal.aborted)throw abortError();
-        try{const partial=await recordingStore('get',key);await recordingStore('put',key,{...partial,content:source.content,transcript:source.transcript,signature,segments,blobs,passages,passageKeys,speechTexts:segments.map(segment=>recordingSpeechText(segment,snapshot)),sfxPlacement:SFX_PLACEMENT_VERSION,retention:snapshot.retention});storageError='';}
+        try{const partial=await recordingStore('get',key);await recordingStore('put',key,{...partial,content:source.content,transcript:source.transcript,signature,fullMessage:fullPlayback,segments,blobs,passages,passageKeys,speechTexts:segments.map(segment=>recordingSpeechText(segment,snapshot)),sfxPlacement:SFX_PLACEMENT_VERSION,retention:snapshot.retention});storageError='';}
         catch(error){storageError=error.message;}
       }
       if(token===revision){renderMessages();status((storageError?`Playback finished. Audio could not be saved: ${storageError}`:snapshot.retention==='session'?'Playback finished. Audio kept for this session; Replay is available beside the message.':'Playback finished. Audio saved on this device; Replay is available beside the message.')+foleyWarning(warnings));}
@@ -3566,6 +3564,56 @@ export async function setup(ctx) {
     else {const label=document.createElement('span');label.textContent='Plan this message to show its sections.';entry.list.append(label);}
   }
   function refreshSectionControls(){const isSecEnabled=Boolean(config?.sectionButtons);for(const entry of messageSections){if(entry.controls){entry.controls.hidden=!isSecEnabled;entry.controls.style.display=isSecEnabled?'flex':'none';}void renderSectionControls(entry).catch(error=>{if(!disposed)status(`Section controls unavailable: ${error.message}`,true);});}}
+  const downloadUrls=new Map();
+  unsubs.push(()=>{for(const [url,timer] of downloadUrls){clearTimeout(timer);URL.revokeObjectURL(url);}downloadUrls.clear();});
+  async function downloadSpeech(messageId) {
+    if(busy)throw new Error('Wait for playback or planning to finish before downloading speech.');
+    const targetChat=chatId,content=ctx.messages.getContent(messageId),token=revision;
+    const recording=await recordingStore('get',recordingKey(targetChat,messageId));
+    if(disposed || targetChat!==chatId || token!==revision)throw abortError();
+    const canonical=text=>String(text || '').replace(/\s+/g,' ').trim();
+    const recordedText=recording?.segments?.flatMap(segment=>segment.turns || [segment]).filter(segment=>!segment.kind).map(segment=>segment.text).join(' ');
+    const complete=recording?.fullMessage===true || recording?.fullMessage===undefined && recording && canonical(recordedText)===canonical(recording.transcript);
+    if(!complete || !sameSpeech(recording.content,content))throw new Error('Play this whole message first to save all its speech, then download it.');
+    if(disposed || targetChat!==chatId || token!==revision)throw abortError();
+    const entries=recording.segments.flatMap((segment,index)=>segment.kind || speakerExcluded(segment.speaker)?[]:[{segment,blob:recording.blobs[index]}]);
+    if(!entries.length)throw new Error('This message has no saved speech to download.');
+    if(entries.some(entry=>!entry.blob))throw new Error('Some speech is missing. Play the whole message to finish saving it before downloading.');
+    if(entries.some(({segment})=>segment.turns?.some(turn=>speakerExcluded(turn.speaker)) || segment.unison && JSON.stringify(segment.mixLevels)!==JSON.stringify(unisonLevels(segment))))throw new Error('Voice settings changed. Play the whole message again before downloading.');
+    const Context=globalThis.AudioContext || globalThis.webkitAudioContext;
+    if(!Context)throw new Error('This browser cannot prepare a WAV download.');
+    if(busy)throw new Error('Wait for playback or planning to finish before downloading speech.');
+    const levels=structuredClone(mixerState.channels),master=mixerState.master,normalize=config.normalizeLoudness,gap=voiceGapSetting();
+    const ctrl=new AbortController();controller=ctrl;setBusy(true);let decoder;
+    try {
+      decoder=new Context({sampleRate:48000});const tracks=[];let frames=0;
+      for(const [index,{segment,blob}] of entries.entries()){
+        status(`Preparing speech download ${index+1}/${entries.length}…`);
+        const decoded=await decoder.decodeAudioData(await blob.arrayBuffer());ctrl.signal.throwIfAborted();
+        const channels=Array.from({length:Math.min(2,decoded.numberOfChannels)},(_,channel)=>decoded.getChannelData(channel));
+        frames+=decoded.length || channels[0].length;
+        if(frames*4>128*1024*1024)throw new Error('This message is too long for a WAV download (128 MB limit).');
+        const members=segment.turns?.map(turn=>mixerVolume(1,turn.speaker,levels));
+        const level=segment.unison?1:members?.length?(members.every(level=>level===members[0])?members[0]:segment.groupLevel ?? 1):mixerVolume(1,segment.speaker,levels);
+        const gain=master*level*(normalize && !segment.unison?loudnessGain(channels,undefined,decoder.sampleRate):1);
+        tracks.push({channels,gain});
+      }
+      const wav=speechDownloadWav(tracks,decoder.sampleRate,gap);ctrl.signal.throwIfAborted();
+      if(disposed || targetChat!==chatId || token!==revision || !sameSpeech(ctx.messages.getContent(messageId),content))throw abortError();
+      const url=URL.createObjectURL(new Blob([wav],{type:'audio/wav'})),link=document.createElement('a');
+      link.href=url;link.download=`Choir-${String(messageId).replace(/[^a-zA-Z0-9_-]/g,'_').slice(0,80)}-speech.wav`;link.hidden=true;document.body.append(link);link.click();link.remove();
+      downloadUrls.set(url,setTimeout(()=>{URL.revokeObjectURL(url);downloadUrls.delete(url);},30000));
+      status('Speech downloaded as one WAV at original speed. Sound effects, ambience and music are not included.');
+    } finally {
+      await decoder?.close().catch(()=>{});
+      if(controller===ctrl){controller=null;setBusy(false);}
+    }
+  }
+  function speechDownloadButton(messageId) {
+    const button=document.createElement('button');button.type='button';button.className='et-btn-subtle';button.textContent='Download speech';button.dataset.choirDownload='';
+    button.title='One WAV of the saved message speech at original speed. Sound effects, ambience and music are not included. Play the whole message first.';
+    button.setAttribute('aria-label','Download Choir speech for this message');button.onclick=()=>run(()=>downloadSpeech(messageId));return button;
+  }
   const decorateMessage=(target,context={})=>{
     const messageId=context.messageId || ctx.dom.getMessageId?.(context.node || target) || context.scope?.match(/^message:(.*):(?:bubble|minimal):footer$/)?.[1] || context.scope?.split(':')[1];
     if(!messageId)return;
@@ -3580,8 +3628,9 @@ export async function setup(ctx) {
     const isSecEnabled=Boolean(config?.sectionButtons);
     controls.hidden=!isSecEnabled;
     controls.style.display=isSecEnabled?'flex':'none';
-    button.onclick=()=>run(()=>playMessage(messageId));controls.append(button,progress,sections);target.append(controls);
-    return ()=>{entry.version++;messageSections.delete(entry);controls.remove();statuses.delete(progress);if(!statuses.size)messageStatuses.delete(messageId);};
+    const download=speechDownloadButton(messageId);download.style.cssText='font:12px system-ui;cursor:pointer;margin:4px 0';
+    button.onclick=()=>run(()=>playMessage(messageId));controls.append(button,progress,sections);target.append(controls,download);
+    return ()=>{entry.version++;messageSections.delete(entry);controls.remove();download.remove();statuses.delete(progress);if(!statuses.size)messageStatuses.delete(messageId);};
   };
   const registerDecorator=ctx.ui.registerDomDecorator?.bind(ctx.ui) || ctx.registerDomDecorator?.bind(ctx);
   if(registerDecorator) {
@@ -3603,6 +3652,7 @@ export async function setup(ctx) {
       const actions=document.createElement('div');actions.className='et-btn-group';
       const button=document.createElement('button');button.type='button';button.className='et-btn-subtle';button.textContent='Plan';button.onclick=()=>run(()=>prepare(message.id,false,undefined,true));actions.append(button);
       const replay=document.createElement('button');replay.type='button';replay.className='et-btn-subtle';replay.textContent='Replay';replay.onclick=()=>run(()=>replayRecording(message.id));actions.append(replay);
+      actions.append(speechDownloadButton(message.id));
       const removeAudio=document.createElement('button');removeAudio.type='button';removeAudio.className='et-btn-danger';removeAudio.textContent='Delete audio';removeAudio.onclick=()=>run(async()=>{
         const targetChat=chatId,key=recordingKey(targetChat,message.id);
         stop(false);status('Deleting saved audio…');
@@ -3624,7 +3674,6 @@ export async function setup(ctx) {
   }
   $('save').onclick=()=>run(save);
   $('captureDefaults').onclick=()=>run(()=>{if(!defaultOperation && chatId)openDefaultEditor('lead');});
-  $('captureNpcDefaults').onclick=()=>run(()=>{if(!defaultOperation && chatId)openDefaultEditor('npc');});
   const applyCastDefault=group=>run(async()=>{
     if(defaultOperation)return;
     if(!chatId)throw new Error('Open a chat first.');
@@ -3653,8 +3702,7 @@ export async function setup(ctx) {
       throw error;
     }finally{defaultOperation=false;if(!disposed){if(targetChat===chatId && version===loadVersion)setBusy(false);refreshDefaultControls();}}
   });
-  $('applyDefaults').onclick=()=>applyCastDefault('lead');
-  $('applyNpcDefaults').onclick=()=>applyCastDefault('npc');
+  $('applyDefaults').onclick=()=>applyCastDefault();
   $('stop').onclick=()=>stop();
   $('testPlanner').onclick=()=>run(async()=>{
     stop(false);const token=revision,ctrl=new AbortController();controller=ctrl;setBusy(true);
@@ -3703,7 +3751,6 @@ export async function setup(ctx) {
     preview.hidden=false;
   };
   $('add').onclick=()=>{castRows.push(makeRow({speaker:`Character ${castRows.length}`,voice:'',style:''},$('fixed'),false,true));scheduleSettingsSave();renderMixer();};
-  $('reset').onclick=()=>{config=capture();config.casts[scope(config)]=[];renderCast();clearPlan();scheduleSettingsSave();status('NPC cast cleared.');};
         const doSearchVoices = () => {
     const query = $('voiceSearchQuery')?.value?.trim() || '';
     openVoiceLibraryModal({

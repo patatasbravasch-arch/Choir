@@ -1,11 +1,11 @@
 {
-  "version": "1.1.6-staging.30",
+  "version": "1.1.6-staging.31",
   "name": "Choir",
   "identifier": "choir",
   "author": "Choir contributors",
   "github": "https://github.com/patatasbravasch-arch/Choir",
   "homepage": "https://github.com/patatasbravasch-arch/Choir",
-  "description": "Narrator, persona, main characters and persistent LLM-cast NPC voices, spoken through Lumiverse TTS connections.",
+  "description": "Narrator, persona and character voices, spoken through Lumiverse TTS connections.",
   "permissions": [
     "generation",
     "cors_proxy",

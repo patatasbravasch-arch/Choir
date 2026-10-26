@@ -1,6 +1,6 @@
 {
   "name": "choir",
-  "version": "1.1.6-staging.30",
+  "version": "1.1.6-staging.31",
   "private": true,
   "type": "module",
   "scripts": {
@@ -8,6 +8,7 @@
     "pretest": "node scripts/build.mjs",
     "test": "node --test tests/*.test.mjs tests/*.browser.mjs",
     "test:ui": "node --test tests/*.browser.mjs",
+    "test:download:chromium": "node scripts/build.mjs && node tests/audio-download.chromium.mjs",
     "test:chromium": "node scripts/build.mjs && node tests/chromium.smoke.mjs",
     "test:setup:chromium": "node scripts/build.mjs && node tests/onboarding.chromium.mjs",
     "test:fluidity:chromium": "node scripts/build.mjs && node tests/fluidity.chromium.mjs"

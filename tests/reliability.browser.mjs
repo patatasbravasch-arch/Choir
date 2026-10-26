@@ -8,6 +8,47 @@ import {validatePlan,speechSourceUnits,transcriptFromMessage} from '../src/core.
 import {speechPanel} from './fixtures/speech-panel.mjs';
 import {phoneWidget} from './fixtures/phone-widget.mjs';
 
+test('Fish preferred voices can be pasted into the chat, persist and constrain synthesis with an empty catalogue',async()=>{
+ for(const relay of [false,true]){
+  const h=await fishGroupingHarness();try{
+   if(relay){h.connections[0].provider='openrouter_tts';h.connections[0].model='fish-audio/s2.1-pro';}
+   const saved=h.store.get('chat:chat-a');saved.fixed.forEach((actor,index)=>actor.voice=['a','b','c'][index].repeat(32));saved.batchSpeech=false;h.store.set('chat:chat-a',saved);h.state.catalogues={a:{voices:[]}};await h.reload();
+   const root=h.$('npcPolicyRoot'),mode=root.querySelector('select');mode.value='preferred';mode.dispatchEvent(new h.dom.window.Event('change'));
+   const paste=root.querySelector('[aria-label="Paste Fish voice ID for Preferred voices"]');assert.ok(paste,'Preferred Fish voices need a paste control in the active chat');
+   for(const id of ['11111111111111111111111111111111','22222222222222222222222222222222']){
+    paste.click();root.querySelector('[aria-label="Fish voice ID for Preferred voices"]').value=id;root.querySelector('[aria-label="Use Fish voice ID for Preferred voices"]').click();
+   }
+   await until(()=>h.$('saveState').textContent==='Saved automatically');await h.reload();
+   const policy=h.store.get('chat:chat-a').npcPolicy;assert.equal(policy.voices.length,2);
+   assert.equal(h.$('npcPolicyRoot').querySelector('[aria-label="Preferred voices"]').selectedOptions.length,2);
+   h.state.planForCatalogue=true;await h.plan().catch(error=>{throw new Error(h.$('status').textContent,{cause:error});});await h.play();
+   const guard=h.synthesis.find(request=>request.text.includes('Wait'));assert.ok(guard);assert.ok(policy.voices.includes(guard.voice));assert.equal(guard.connectionId,'a');
+   assert.equal(h.requests.filter(request=>request.action==='searchVoices').length,0);
+  }finally{await h.close();}
+ }
+});
+
+test('speech download refuses missing, partial and edited messages and reuses complete cached speech without TTS',async()=>{
+ const originalContext=globalThis.AudioContext;let decoded=0;
+ globalThis.AudioContext=class{
+  sampleRate=24000;async resume(){}async close(){}
+  createMediaElementSource(){return {connect(){},disconnect(){}};}createGain(){return {gain:{value:1},connect(){},disconnect(){}};}
+  async decodeAudioData(){decoded++;return {numberOfChannels:1,length:2,getChannelData:()=>Float32Array.of(0.25,-0.25)};}
+ };
+ const h=await harness();const downloads=[];h.dom.window.HTMLAnchorElement.prototype.click=function(){downloads.push(this.download);};
+ try{
+  const download=()=>h.footer.querySelector('[data-choir-download]').click();
+  download();await until(()=>h.$('status').textContent.includes('Play this whole message first'));assert.equal(decoded,0);assert.equal(downloads.length,0);
+  await h.plan();await h.play();const requests=h.synthesis.length;decoded=0;await h.reload();const backendRequests=h.requests.length;
+  download();await until(()=>h.$('status').textContent.startsWith('Speech downloaded'));assert.equal(h.synthesis.length,requests);assert.equal(h.requests.length,backendRequests);assert.equal(downloads.length,1);assert.match(downloads[0],/\.wav$/);assert.equal(decoded,4);
+  const wav=h.audioBlobs.at(-1);assert.equal(wav.type,'audio/wav');assert.equal(new DataView(await wav.arrayBuffer()).getUint32(40,true),16);
+  h.message.content='An edited reply.';download();await until(()=>h.$('status').textContent.includes('Play this whole message first'));assert.equal(downloads.length,1);
+  h.message.content='At dawn. "Hello." "Wait." The gate closed.';h.$('sectionButtons').checked=true;h.$('sectionButtons').dispatchEvent(new h.dom.window.Event('change'));await h.plan();await until(()=>h.footer.querySelector('[data-choir-section]'));
+  const partial=h.footer.querySelector('[data-choir-section]');assert.ok(partial);partial.click();await until(()=>h.$('status').textContent.includes('Playback finished'));
+  download();await until(()=>h.$('status').textContent.includes('Play this whole message first'));assert.equal(downloads.length,1);
+ }finally{await h.close();globalThis.AudioContext=originalContext;}
+});
+
 test('Freesound key saved by another tab survives unrelated preference edits',async()=>{
   const h=await harness();try{
     assert.equal(h.$('freesoundApiKey').value,'');
@@ -207,7 +248,7 @@ async function harness(mixerPreferences,mobile=false){
           result=validatePlan({segments:speechSourceUnits(request.input.transcript).map(unit=>{
             const speaker=unit.kind==='narration'?'Narrator':unit.text.includes('Wait')?'Guard':'Mira';
             const actor=[...cast.fixed,...cast.npcs].find(actor=>actor.speaker===speaker),route=actor?.route || cast.defaultRoute;
-            const voice=cast.voices.filter(voice=>voice.route===route).at(-1).id;
+            const voice=cast.voices.filter(voice=>voice.route===route && (cast.fixed.includes(actor) || cast.npcPolicy?.mode!=='preferred' || cast.npcPolicy.voices.includes(voice.id))).at(-1).id;
             return {speaker,voice,route,text:unit.text};
           })},request.input.transcript,cast);
         }
@@ -456,7 +497,7 @@ const playedFoley=async h=>(await Promise.all(h.audioBlobs.map(blob=>blob.text()
 
 const captureDefault=h=>{h.$('captureDefaults').click();const dialog=()=>document.querySelector('[role="dialog"][aria-label="Set default"]');[...dialog().querySelectorAll('button')].find(button=>button.textContent==='Use current chat settings').click();[...dialog().querySelectorAll('button')].find(button=>button.textContent==='Save default').click();};
 
-test('legacy voice styles are bounded across saved leads and NPC connections before planning and playback',async()=>{
+test('legacy voice styles are bounded across saved leads and Casting connections before planning and playback',async()=>{
  const h=await harness();try{
   const saved=h.store.get('chat:chat-a'),longStyle='Warm and measured. '.repeat(50),bounded=longStyle.slice(0,600);
   saved.fixed[0].style=longStyle;saved.fixed[2].style=longStyle;
@@ -489,15 +530,15 @@ test('cast defaults contain only lead and NPC choices; cancel and navigation dis
  const h=await harness();try{
   const current=structuredClone(h.store.get('chat:chat-a')),get=()=>document.querySelector('[role="dialog"][aria-label="Set default"]'),button=name=>[...get().querySelectorAll('button')].find(item=>item.textContent===name);
   h.$('captureDefaults').click();assert.ok(get());assert.equal(get().querySelectorAll('[role="tab"]').length,2);assert.equal(get().querySelector('[data-default-field]'),null);
-  assert.equal(h.$('captureDefaults').closest('.et-section-header').querySelector('h3').textContent,'Lead Cast');
-  assert.equal(h.$('captureNpcDefaults').closest('.et-section-header').querySelector('h3').textContent,'NPC Cast');
+  assert.equal(h.$('captureDefaults').closest('.et-section-header').querySelector('h3').textContent,'Cast');
+  assert.equal(h.$('captureNpcDefaults'),null);
   const voice=get().querySelector('[aria-label="Default {{char}} voice"]');voice.value='';voice.dispatchEvent(new h.dom.window.Event('change'));
-  button('Lead cast').focus();get().dispatchEvent(new h.dom.window.KeyboardEvent('keydown',{key:'Tab',shiftKey:true,bubbles:true}));assert.equal(document.activeElement,button('Save default'));
-  get().dispatchEvent(new h.dom.window.KeyboardEvent('keydown',{key:'Tab',bubbles:true}));assert.equal(document.activeElement,button('Lead cast'));
+  button('Voices').focus();get().dispatchEvent(new h.dom.window.KeyboardEvent('keydown',{key:'Tab',shiftKey:true,bubbles:true}));assert.equal(document.activeElement,button('Save default'));
+  get().dispatchEvent(new h.dom.window.KeyboardEvent('keydown',{key:'Tab',bubbles:true}));assert.equal(document.activeElement,button('Voices'));
   button('Cancel').click();assert.equal(get(),null);assert.equal(h.store.has('settings:captured-defaults'),false);assert.deepEqual(h.store.get('chat:chat-a'),current);
   h.$('captureDefaults').click();const automatic=get().querySelector('[aria-label="Default {{char}} voice"]');automatic.value='';automatic.dispatchEvent(new h.dom.window.Event('change'));button('Save default').click();
   await until(()=>!get());const preset=structuredClone(h.store.get('settings:captured-defaults'));assert.equal(preset.version,2);assert.equal(preset.preferences,undefined);assert.equal(preset.leadVoices[2].voice,'');assert.deepEqual(h.store.get('chat:chat-a'),current);
-  h.$('captureNpcDefaults').click();assert.equal(get().querySelector('[aria-selected="true"]').textContent,'NPC cast');
+  h.$('captureDefaults').click();assert.equal(get().querySelector('[aria-selected="true"]').textContent,'Voices');
   h.state.active='chat-new';h.subscriptions.get('chat.active')();await until(()=>h.$('saveState').textContent==='Default setup loaded');assert.equal(get(),null);
   assert.deepEqual(h.store.get('settings:captured-defaults'),preset);assert.equal(h.synthesis.length,0);
  }finally{await h.close();}
@@ -544,12 +585,12 @@ test('Set default browses Fish voices for the selected route, rejects invalid ID
 test('Fish NPC default IDs support shared and preferred voices without altering the active chat',async()=>{
  for(const mode of ['single','preferred']){
   const h=await fishGroupingHarness();try{
-   const before=structuredClone(h.store.get('chat:chat-a'));h.$('captureNpcDefaults').click();const dialog=document.querySelector('[aria-label="Set default"]'),selection=dialog.querySelector('[aria-label="Default NPC casting"]');
-   selection.value=mode;selection.dispatchEvent(new h.dom.window.Event('change'));const name=mode==='single'?'Default Shared NPC voice':'Default Preferred NPC voices';
+   const before=structuredClone(h.store.get('chat:chat-a'));h.$('captureDefaults').click();const dialog=document.querySelector('[aria-label="Set default"]'),selection=dialog.querySelector('[aria-label="Default Automatic casting"]');
+   selection.value=mode;selection.dispatchEvent(new h.dom.window.Event('change'));const name=mode==='single'?'Default Shared voice':'Default Preferred voices';
    dialog.querySelector(`[aria-label="Paste Fish voice ID for ${name}"]`).click();dialog.querySelector(`[aria-label="Fish voice ID for ${name}"]`).value='fish_npc_default';dialog.querySelector(`[aria-label="Use Fish voice ID for ${name}"]`).click();
    [...dialog.querySelectorAll('button')].find(button=>button.textContent==='Save default').click();await until(()=>!dialog.isConnected);
    const preset=h.store.get('settings:captured-defaults');assert.equal(mode==='single'?preset.npcPolicy.voice:preset.npcPolicy.voices[0],'fish_npc_default');assert.deepEqual(h.store.get('chat:chat-a'),before);
-   h.$('applyNpcDefaults').click();await until(()=>h.$('defaultStatus').textContent.startsWith('Default applied'));await h.reload();
+   h.$('applyDefaults').click();await until(()=>h.$('defaultStatus').textContent.startsWith('Default applied'));await h.reload();
    const picker=h.$('npcPolicyRoot').querySelector(`[aria-label="${name.replace('Default ','')}"]`);assert.ok([...picker.selectedOptions].some(option=>option.value==='fish_npc_default'));
   }finally{await h.close();}
  }
@@ -560,13 +601,13 @@ test('NPC default modes can be applied per chat, skip synthesis or enforce share
   const h=await harness();try{
    if(routing==='one'){h.$('connectionMode').value='one';h.$('connectionMode').dispatchEvent(new h.dom.window.Event('change'));await until(()=>h.$('saveState').textContent==='Settings saved');}
    const before=structuredClone(h.store.get('chat:chat-a'));
-   h.$('captureNpcDefaults').click();const dialog=document.querySelector('[role="dialog"][aria-label="Set default"]'),change=(name,value)=>{const input=dialog.querySelector(`[aria-label="${name}"]`);input.value=value;input.dispatchEvent(new h.dom.window.Event('change'));return input;};
-   [...dialog.querySelectorAll('button')].find(button=>button.textContent==='NPC cast').click();change('Default NPC casting',mode);
-   if(mode==='single')change('Default Shared NPC voice','m');
-   if(mode==='preferred'){const pool=dialog.querySelector('[aria-label="Default Preferred NPC voices"]');[...pool.options].forEach(option=>option.selected=['m','new'].includes(option.value));pool.dispatchEvent(new h.dom.window.Event('change'));}
+   h.$('captureDefaults').click();const dialog=document.querySelector('[role="dialog"][aria-label="Set default"]'),change=(name,value)=>{const input=dialog.querySelector(`[aria-label="${name}"]`);input.value=value;input.dispatchEvent(new h.dom.window.Event('change'));return input;};
+   [...dialog.querySelectorAll('button')].find(button=>button.textContent==='Automatic casting').click();change('Default Automatic casting',mode);
+   if(mode==='single')change('Default Shared voice','m');
+   if(mode==='preferred'){const pool=dialog.querySelector('[aria-label="Default Preferred voices"]');[...pool.options].forEach(option=>option.selected=['m','new'].includes(option.value));pool.dispatchEvent(new h.dom.window.Event('change'));}
    [...dialog.querySelectorAll('button')].find(button=>button.textContent==='Save default').click();await until(()=>!dialog.isConnected);
    const preset=structuredClone(h.store.get('settings:captured-defaults'));assert.equal(preset.npcPolicy.mode,mode);assert.deepEqual(h.store.get('chat:chat-a'),before);
-   h.$('applyNpcDefaults').click();await until(()=>h.$('defaultStatus').textContent.startsWith('Default applied'));
+   h.$('applyDefaults').click();await until(()=>h.$('defaultStatus').textContent.startsWith('Default applied'));
    if(routing==='one'){const stored=structuredClone(h.store.get('chat:chat-a'));stored.npcPolicy.route='native:b';h.store.set('chat:chat-a',stored);await h.reload();}
    h.state.planForCatalogue=mode==='preferred';h.message.content='At dawn. "Hello." "Wait."';await h.plan();await h.play();
    if(mode==='skip')assert.ok(!h.synthesis.some(request=>request.text.includes('Wait')));
@@ -577,9 +618,9 @@ test('NPC default modes can be applied per chat, skip synthesis or enforce share
    const paragraph='Guard said, "A new sentence."',bridge=globalThis.__CHOIR_API__,cuePlan=bridge.planParagraph(paragraph);assert.equal(cuePlan.segments.at(-1).speaker,'Guard');
    const start=h.synthesis.length;await bridge.playParagraph({text:paragraph});const cue=h.synthesis.slice(start).find(request=>request.text.includes('A new sentence'));
    if(mode==='skip')assert.equal(cue,undefined);else{assert.ok(cue);assert.equal(cue.voice,mode==='single'?'m':mode==='preferred'?'new':'g');assert.equal(cue.connectionId,'a');}
-   await h.reload();assert.equal(h.$('npcPolicyRoot').querySelector('[aria-label="NPC casting"]').value,mode);
-   const selection=h.$('npcPolicyRoot').querySelector('[aria-label="NPC casting"]');selection.value=mode==='llm'?'skip':'llm';selection.dispatchEvent(new h.dom.window.Event('change'));await until(()=>h.$('saveState').textContent==='Saved automatically');
-   assert.deepEqual(h.store.get('settings:captured-defaults'),preset);await h.reload();assert.equal(h.$('npcPolicyRoot').querySelector('[aria-label="NPC casting"]').value,mode==='llm'?'skip':'llm');
+   await h.reload();assert.equal(h.$('npcPolicyRoot').querySelector('[aria-label="Automatic casting"]').value,mode);
+   const selection=h.$('npcPolicyRoot').querySelector('[aria-label="Automatic casting"]');selection.value=mode==='llm'?'skip':'llm';selection.dispatchEvent(new h.dom.window.Event('change'));await until(()=>h.$('saveState').textContent==='Saved automatically');
+   assert.deepEqual(h.store.get('settings:captured-defaults'),preset);await h.reload();assert.equal(h.$('npcPolicyRoot').querySelector('[aria-label="Automatic casting"]').value,mode==='llm'?'skip':'llm');
    if(mode==='skip'){await h.play();assert.ok(h.synthesis.some(request=>request.text.includes('Wait')));}
   }finally{await h.close();}
  }
@@ -674,7 +715,7 @@ test('legacy defaults migrate cast choices and cannot replace newer global prefe
  const h=await harness();try{
   const saved=h.store.get('chat:chat-a');h.store.set('settings:captured-defaults',{version:1,preferences:{chunk:500,enableMusic:false,npcPolicy:{mode:'skip',route:'',voice:'',voices:[]}},leadVoices:saved.fixed.map(actor=>({voice:actor.voice,route:actor.route || ''}))});
   h.store.set('settings:global',{chunk:8000,enableMusic:true});h.state.active='chat-new';h.subscriptions.get('chat.active')();await until(()=>h.$('saveState').textContent==='Default setup loaded');
-  assert.equal(h.$('chunk').value,'8000');assert.equal(h.$('enableMusic').checked,true);assert.equal(h.$('npcPolicyRoot').querySelector('[aria-label="NPC casting"]').value,'skip');assert.equal(h.$('fixed').children[2].querySelector('[data-choir-voice]').value,'m');
+  assert.equal(h.$('chunk').value,'8000');assert.equal(h.$('enableMusic').checked,true);assert.equal(h.$('npcPolicyRoot').querySelector('[aria-label="Automatic casting"]').value,'skip');assert.equal(h.$('fixed').children[2].querySelector('[data-choir-voice]').value,'m');
   captureDefault(h);await until(()=>h.$('defaultStatus').textContent.startsWith('Default saved.'));assert.equal(h.store.get('settings:captured-defaults').version,2);assert.equal(h.store.get('settings:captured-defaults').preferences,undefined);
  }finally{await h.close();}
 });
@@ -933,15 +974,17 @@ test('catalogue outages keep the saved lead and NPC editors and cannot erase the
  }finally{await h.close();}
 });
 
-test('a character moved to NPC keeps its voice and pronunciation and stays there after card discovery and reload',async()=>{
+test('legacy discovered characters keep their voice and pronunciation in the unified cast after reload',async()=>{
  const h=await harness();try{
-  h.state.character={name:'Mira',description:'# Mira\nName: Mira\nA warm lead character.'};const saved=h.store.get('chat:chat-a');saved.fixed[2].sayAs='Mee Rah';h.store.set('chat:chat-a',saved);await h.reload();
-  const move=h.$('fixed').querySelector('[aria-label="Move Mira to NPC cast"]');assert.ok(move);move.click();
-  await until(()=>h.$('saveState').textContent==='Saved automatically');assert.equal(h.$('fixed').children.length,2);assert.match(h.$('npcs').textContent,/Mira/);
-  const actor=h.store.get('chat:chat-a').casts['native:a'].find(actor=>actor.speaker==='Mira');assert.equal(actor.voice,'m');assert.equal(actor.sayAs,'Mee Rah');
-  await h.reload();await h.plan();assert.equal(h.$('fixed').children.length,2);assert.match(h.$('npcs').textContent,/Mira/);
-  h.$('npcs').querySelector('[aria-label="Move Mira to lead cast"]').click();await until(()=>h.$('saveState').textContent==='Saved automatically');
-  await h.reload();assert.equal(h.$('fixed').children.length,3);assert.equal(h.store.get('chat:chat-a').fixed[2].sayAs,'Mee Rah');
+  h.state.character={name:'Mira',description:'# Mira\nName: Mira\nA warm lead character.'};
+  const saved=h.store.get('chat:chat-a'),mira=saved.fixed.pop();mira.sayAs='Mee Rah';
+  saved.casts['native:a'].push(mira);saved.cardCastNPCs=['mira'];h.store.set('chat:chat-a',saved);await h.reload();
+  assert.equal(h.$('fixed').children.length,2);assert.match(h.$('npcs').textContent,/Mira/);
+  assert.equal(document.querySelector('[aria-label="Move Mira to NPC cast"]'),null);
+  assert.deepEqual([...document.querySelectorAll('.et-section-header h3')].filter(node=>/Cast/.test(node.textContent)).map(node=>node.textContent),['Cast']);
+  await h.plan();await h.reload();
+  const actor=h.store.get('chat:chat-a').casts['native:a'].find(actor=>actor.speaker==='Mira');
+  assert.equal(actor.voice,'m');assert.equal(actor.sayAs,'Mee Rah');assert.match(h.$('npcs').textContent,/Mira/);
  }finally{await h.close();}
 });
 
@@ -1262,38 +1305,35 @@ test('compact mute and skip icons remain distinct, accessible and reversible wit
  }finally{await h.close();}
 });
 
-test('grouped channel tabs separate leads, NPCs and scene audio on desktop and mobile and retain independent levels',async()=>{
+test('one cast channel tab includes every character on desktop and mobile and retains independent levels',async()=>{
  for(const mobile of [false,true]){
- const h=await harness(undefined,mobile);try{
-  h.$('showMixer').click();await h.plan();document.querySelector('[aria-label="Channel levels"]').click();
-  const tabs=()=>[...document.querySelectorAll('.cm-channel-tab')],tab=name=>tabs().find(item=>item.textContent===name),visible=()=>[...document.querySelectorAll('.cm-channel')].filter(row=>!row.hidden);
-  assert.deepEqual(tabs().map(item=>item.textContent),['Main cast','NPCs','Scene audio']);assert.deepEqual(visible().map(row=>row.dataset.speaker),['Narrator','Mira']);
-  const panel=document.querySelector('[role="tabpanel"]');assert.equal(panel.id,tab('Main cast').getAttribute('aria-controls'));assert.equal(panel.getAttribute('aria-labelledby'),tab('Main cast').id);
-  const percent=document.querySelector('[aria-label="Mira volume percent"]');percent.value='42';percent.dispatchEvent(new h.dom.window.Event('input'));document.querySelector('[aria-label="Mira silent"]').click();
-  tab('NPCs').click();assert.deepEqual(visible().map(row=>row.dataset.speaker),['Guard']);assert.equal(panel.getAttribute('aria-labelledby'),tab('NPCs').id);
-  h.state.blockAudio=true;h.$('play').click();await until(()=>h.audios[0]?.paused===false);assert.deepEqual(visible().map(row=>row.dataset.speaker),['Guard']);assert.equal(h.audios[0].volume,1);h.$('stop').click();
-  await until(()=>h.store.get('ui:mixer')?.channelGroup==='npcs');await h.reload();assert.deepEqual(visible().map(row=>row.dataset.speaker),['Guard']);assert.equal(document.querySelector('[aria-label="Mira silent"]').getAttribute('aria-pressed'),'true');
-  tab('Scene audio').click();assert.deepEqual(visible().map(row=>row.dataset.speaker),['SFX','Ambience','Music']);assert.equal(document.querySelector('[data-kind="music"]').dataset.enabled,'false');
-  const effects=document.querySelector('[aria-label="SFX volume percent"]');effects.value='31';effects.dispatchEvent(new h.dom.window.Event('input'));
-  const music=document.querySelector('[aria-label="Music volume percent"]');music.value='230';music.dispatchEvent(new h.dom.window.Event('input'));await until(()=>h.store.get('ui:mixer')?.music===2.3);
-  tab('Main cast').click();assert.equal(document.querySelector('[aria-label="Mira volume percent"]').value,'42');assert.equal(document.querySelector('[aria-label="SFX volume percent"]').value,'31');
-  await h.reload();assert.equal(document.querySelector('[aria-label="Music volume percent"]').value,'230');
- }finally{await h.close();}
+  const h=await harness(undefined,mobile);try{
+   h.$('showMixer').click();await h.plan();document.querySelector('[aria-label="Channel levels"]').click();
+   const tabs=()=>[...document.querySelectorAll('.cm-channel-tab')],tab=name=>tabs().find(item=>item.textContent===name),visible=()=>[...document.querySelectorAll('.cm-channel')].filter(row=>!row.hidden);
+   assert.deepEqual(tabs().map(item=>item.textContent),['Cast','Scene audio']);assert.deepEqual(visible().map(row=>row.dataset.speaker),['Narrator','Mira','Guard']);
+   const panel=document.querySelector('[role="tabpanel"]');assert.equal(panel.getAttribute('aria-labelledby'),tab('Cast').id);
+   const percent=document.querySelector('[aria-label="Mira volume percent"]');percent.value='42';percent.dispatchEvent(new h.dom.window.Event('input'));document.querySelector('[aria-label="Mira silent"]').click();
+   await until(()=>h.store.get('ui:mixer')?.channels.Mira?.mute);await h.reload();assert.deepEqual(visible().map(row=>row.dataset.speaker),['Narrator','Mira','Guard']);
+   tab('Scene audio').click();assert.deepEqual(visible().map(row=>row.dataset.speaker),['SFX','Ambience','Music']);
+   const effects=document.querySelector('[aria-label="SFX volume percent"]');effects.value='31';effects.dispatchEvent(new h.dom.window.Event('input'));
+   await until(()=>h.store.get('ui:mixer')?.sfx===0.31);tab('Cast').click();assert.equal(document.querySelector('[aria-label="Mira volume percent"]').value,'42');
+   assert.equal(document.querySelector('[aria-label="Mira silent"]').getAttribute('aria-pressed'),'true');assert.equal(document.querySelector('[aria-label="SFX volume percent"]').value,'31');
+  }finally{await h.close();}
  }
 });
 
-test('group tabs support arrow keys, migrate legacy selection and keep empty groups and disabled sounds accessible',async()=>{
- const h=await harness({channelTab:'voice:Guard'},true);try{
-  await h.plan();const tabs=()=>[...document.querySelectorAll('.cm-channel-tab')],selected=()=>tabs().find(tab=>tab.getAttribute('aria-selected')==='true'),visible=()=>[...document.querySelectorAll('.cm-channel')].filter(row=>!row.hidden);
-  assert.equal(selected().textContent,'NPCs');
-  selected().dispatchEvent(new h.dom.window.KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true}));assert.equal(selected().textContent,'Scene audio');assert.equal(document.activeElement,selected());
-  selected().dispatchEvent(new h.dom.window.KeyboardEvent('keydown',{key:'Home',bubbles:true}));assert.equal(selected().textContent,'Main cast');
-  selected().dispatchEvent(new h.dom.window.KeyboardEvent('keydown',{key:'End',bubbles:true}));assert.equal(selected().textContent,'Scene audio');assert.equal(tabs().filter(tab=>tab.tabIndex===0).length,1);
-  h.$('ambience').click();h.$('sfx').click();assert.equal(selected().textContent,'Scene audio');assert.equal(visible().length,3);assert.equal(document.querySelector('[data-kind="ambience"]').dataset.enabled,'false');
-  tabs().find(tab=>tab.textContent==='NPCs').click();h.message.content='Only narration remains.';await h.plan();assert.equal(selected().textContent,'NPCs');assert.equal(visible().length,0);assert.match(document.querySelector('[role="tabpanel"]').textContent,/No NPC voices in this reply/);
-  h.setMobile(false);assert.equal(document.querySelector('.cm-channel-tabs').hidden,false);assert.ok(document.querySelector('[role="tabpanel"]'));assert.equal(selected().textContent,'NPCs');
-  h.message.content='At dawn. "Hello." "Wait."';await h.plan();assert.deepEqual(visible().map(row=>row.dataset.speaker),['Guard']);h.setMobile(true);assert.equal(visible().length,1);
- }finally{await h.close();}
+test('unified cast tabs support arrow keys and migrate both legacy cast groups',async()=>{
+ for(const legacy of [{channelTab:'voice:Guard'},{channelGroup:'main'},{channelGroup:'npcs'}]){
+  const h=await harness(legacy,true);try{
+   await h.plan();const tabs=()=>[...document.querySelectorAll('.cm-channel-tab')],selected=()=>tabs().find(tab=>tab.getAttribute('aria-selected')==='true');
+   assert.equal(selected().textContent,'Cast');
+   selected().dispatchEvent(new h.dom.window.KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true}));assert.equal(selected().textContent,'Scene audio');assert.equal(document.activeElement,selected());
+   selected().dispatchEvent(new h.dom.window.KeyboardEvent('keydown',{key:'Home',bubbles:true}));assert.equal(selected().textContent,'Cast');
+   selected().dispatchEvent(new h.dom.window.KeyboardEvent('keydown',{key:'End',bubbles:true}));assert.equal(selected().textContent,'Scene audio');assert.equal(tabs().filter(tab=>tab.tabIndex===0).length,1);
+   h.$('ambience').click();assert.equal(document.querySelector('[data-kind="ambience"]').dataset.enabled,'false');
+   h.setMobile(false);assert.equal(document.querySelector('.cm-channel-tabs').hidden,false);
+  }finally{await h.close();}
+ }
 });
 
 test('Channel levels collapse independently, persist their state and retain disabled sound levels and voice controls',async()=>{

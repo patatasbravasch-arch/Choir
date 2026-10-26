@@ -50,10 +50,10 @@ export function setupIssues(draft, connections, session = {}) {
     if (actor===draft.fixed[0] && !actor.voice && jevNeedsNarratorVoice(draft,connections)) issues.push({step:2,message:'Choose a narrator voice for Jev on this connection, turn off narrator speech, or switch to the Standard LLM planner.'});
   }
   const policy = draft.npcPolicy || {mode:'skip'};
-  if (policy.mode !== 'skip') requireRoute(draft.connectionMode === 'one' ? route : policy.route || route, 'NPC speech', 2);
-  if (policy.mode === 'single' && !policy.voice) issues.push({step:2,message:'Choose a shared NPC voice.'});
-  if (policy.mode === 'preferred' && !policy.voices?.length) issues.push({step:2,message:'Select at least one preferred NPC voice.'});
-  if (policy.mode === 'llm' && draft.plannerMode === 'heuristic') issues.push({step:2,message:'Automatic NPC voice selection needs Jev or an LLM planner. Choose shared, preferred, or disabled NPC speech.'});
+  if (policy.mode !== 'skip') requireRoute(draft.connectionMode === 'one' ? route : policy.route || route, 'discovered character speech', 2);
+  if (policy.mode === 'single' && !policy.voice) issues.push({step:2,message:'Choose a shared voice.'});
+  if (policy.mode === 'preferred' && !policy.voices?.length) issues.push({step:2,message:'Select at least one preferred voice.'});
+  if (policy.mode === 'llm' && draft.plannerMode === 'heuristic') issues.push({step:2,message:'Automatic voice selection needs Jev or an LLM planner. Choose shared, preferred, or disabled discovered character speech.'});
   if ((draft.enableSfx || draft.enableAmbience) && !draft.freesoundApiKey?.trim()) issues.push({step:3,message:'Sound effects and ambient sound need a Freesound API key.'});
   if ((draft.enableSfx || draft.enableAmbience || draft.enableMusic) && !llm?.model) issues.push({step:3,message:'Sound effects, ambience, and music need a Planner LLM connection for cue selection.'});
   if (draft.fishVoiceSource != null && !['community','own','both'].includes(draft.fishVoiceSource)) issues.push({step:2,message:'Choose a valid Fish voice source.'});
@@ -363,7 +363,7 @@ export function createSetupWizard(ctx, adapter) {
       if(completed){
         element('div','♪',body).className='cs-mark';
         element('p','Your setup is saved. New chats will use these cast defaults. Existing chats keep their voices.',body);
-        element('p','Use Plan latest, then Play in the voice mixer. Open a character’s editor in Lead cast to adjust names, aliases, or “Say name as” pronunciation.',body).className='cs-hint';
+        element('p','Use Plan latest, then Play in the voice mixer. Open a character’s editor in Cast to adjust names, aliases, or “Say name as” pronunciation.',body).className='cs-hint';
         button('Test final playback',body,()=>testVoice());element('p','Optional: this synthesizes and plays one short narrator sample and may incur provider charges.',body).className='cs-hint';lock();return;
       }
       if(step===0){
@@ -419,16 +419,16 @@ export function createSetupWizard(ctx, adapter) {
         });
         const fishSourceWrap=element('div','',body);fishSourceWrap.hidden=!hasFishRoute();
         select('Voices the planner picks from',[['community','Fish community library'],['own','My Fish voices'],['both','Both']],draft.fishVoiceSource,fishSourceWrap,value=>{draft.fishVoiceSource=value;render();},'Applies to automatic Fish casting. “My Fish voices” uses your assigned and added voices; add custom IDs in the drawer. Explicit voice assignments stay unchanged.');
-        const npc=element('div','',body);npc.className='cs-card';element('h3','NPC casting',npc);
+        const npc=element('div','',body);npc.className='cs-card';element('h3','Automatic casting',npc);
         const policy=draft.npcPolicy;
-        select('NPC casting',[['skip','Disabled'],['single','Shared voice'],['preferred','Preferred voices'],['llm','Automatic selection']],policy.mode,npc,value=>{policy.mode=value;render();});
-        if(policy.mode!=='skip' && draft.connectionMode==='several') select('NPC connection',routes(),policy.route || '',npc,value=>{policy.route=value;policy.voice='';policy.voices=[];render();});
-        if(policy.mode==='single')voiceField(policy,npc,'Shared NPC');
+        select('Automatic casting',[['skip','Disabled'],['single','Shared voice'],['preferred','Preferred voices'],['llm','Automatic selection']],policy.mode,npc,value=>{policy.mode=value;render();});
+        if(policy.mode!=='skip' && draft.connectionMode==='several') select('Casting connection',routes(),policy.route || '',npc,value=>{policy.route=value;policy.voice='';policy.voices=[];render();});
+        if(policy.mode==='single')voiceField(policy,npc,'Shared');
         if(policy.mode==='preferred'){
-          input('Preferred NPC voice IDs',(policy.voices || []).join(', '),npc,value=>{policy.voices=value.split(',').map(id=>id.trim()).filter(Boolean);},{hint:'Comma-separated IDs from the selected NPC connection.'});
+          input('Preferred voice IDs',(policy.voices || []).join(', '),npc,value=>{policy.voices=value.split(',').map(id=>id.trim()).filter(Boolean);},{hint:'Comma-separated IDs from the selected Casting connection.'});
           const id=renderId;void adapter.voices(draft.connectionMode==='one'?defaultRoute():policy.route || defaultRoute()).then(list=>{if(!closed && id===renderId)element('small',`Available: ${list.map(item=>item.id).join(', ')}`,npc);}).catch(error=>{if(!closed && id===renderId)say(safeError(error),true);});
         }
-        element('p','Automatic NPC selection needs Jev or an LLM and may make planner calls. Shared or disabled NPC speech is easiest for local heuristic attribution.',npc).className='cs-hint';
+        element('p','Automatic selection needs Jev or an LLM and may make planner calls. Shared or disabled discovered character speech is easiest for local heuristic attribution.',npc).className='cs-hint';
       } else if(step===3){
         element('p','Start with speech, then add the extras you want. Unconfigured features should stay off.',body);
         const sound=element('div','',body);sound.className='cs-card';element('h3','A soundscape for your story',sound);
@@ -463,7 +463,7 @@ export function createSetupWizard(ctx, adapter) {
         const automation=element('div','',body);automation.className='cs-card';element('h3','Automation',automation);
         check('Auto-plan new replies',draft.autoPlan,automation,value=>{draft.autoPlan=value;},'Plans incoming replies automatically. LLM or Jev calls may incur charges.');
         check('Auto-play new replies',draft.auto,automation,value=>{draft.auto=value;},'Automatically generates speech for new replies. Provider charges and browser playback restrictions can apply.');
-        element('p','Automatic voice selection is controlled by NPC casting on the previous step. Nothing plays or calls a planner as part of saving setup.',body).className='cs-hint';
+        element('p','Automatic voice selection is controlled by Automatic casting on the previous step. Nothing plays or calls a planner as part of saving setup.',body).className='cs-hint';
       } else {
         element('p','Review your choices. Ready means configuration is present; only a successful explicit test confirms a connection worked.',body);
         const issues=setupIssues(draft,connections,session());
@@ -475,7 +475,7 @@ export function createSetupWizard(ctx, adapter) {
         const plannerConnection=(draft.plannerMode==='jev'?connections.decision:connections.llm).find(item=>draft.plannerMode==='jev'?(draft.decisionConnection?item.id===draft.decisionConnection:item.is_default):(draft.planner?item.id===draft.planner:item.is_default));
         const plannerDetail=draft.plannerMode==='heuristic'?'Local heuristic · ambiguous dialogue may need manual help':`${draft.plannerMode==='jev'?'Jev':'Standard LLM'} · ${plannerConnection?.name || (draft.plannerMode==='jev' && connections.directJev && session().jev?'Session Jev connection':'Missing planner connection')}${plannerConnection?.model?` · ${plannerConnection.model}`:''}`;
         review('Planner',plannerDetail+(draft.plannerMode==='jev'?` · LLM fallback: ${draft.allowLlmFallback?'on':'off'}`:''),1,issues.some(item=>item.step===1)?'Needs Attention':'Ready');
-        review('Cast defaults',draft.fixed.map((actor,index)=>`${['Narrator','Persona','Main character'][index]}: ${actor.excluded?'disabled':(actor.voice || (draft.plannerMode==='llm'?'LLM chooses during planning':draft.plannerMode==='jev'?'Choir chooses with Jev':'needs a voice'))+` (gender preference: ${actor.gender || 'auto'})`}`).join(' · ')+` · NPCs: ${draft.npcPolicy.mode}`+(hasFishRoute()?` · Fish voice source: ${draft.fishVoiceSource}`:''),2,issues.some(item=>item.step===2)?'Needs Attention':'Ready');
+        review('Cast defaults',draft.fixed.map((actor,index)=>`${['Narrator','Persona','Main character'][index]}: ${actor.excluded?'disabled':(actor.voice || (draft.plannerMode==='llm'?'LLM chooses during planning':draft.plannerMode==='jev'?'Choir chooses with Jev':'needs a voice'))+` (gender preference: ${actor.gender || 'auto'})`}`).join(' · ')+` · Automatic casting: ${draft.npcPolicy.mode}`+(hasFishRoute()?` · Fish voice source: ${draft.fishVoiceSource}`:''),2,issues.some(item=>item.step===2)?'Needs Attention':'Ready');
         review('Optional features',[['Sound effects',draft.enableSfx],['Ambience',draft.enableAmbience],[draft.loopMusic?'Music (loop between replies)':'Music',draft.enableMusic],['Auto-plan',draft.autoPlan],['Auto-play',draft.auto]].filter(item=>item[1]).map(item=>item[0]).join(', ') || 'All optional features are off',3,issues.some(item=>item.step===3)?'Needs Attention':'Optional');
         review('Reading',`Custom skip rules: ${draft.ignoredTags || 'none'} · Automatic non-story filtering: ${draft.skipMeta===false?'off':'on'} · Highlight: ${draft.readAlong || 'off'} · Follow narration: ${draft.followNarration?'on':'off'} · Message controls: ${draft.sectionButtons?'on':'off'} · Auto-plan shortcut: ${draft.showAutoPlanAction?'shown':'hidden'}`,3,'Optional');
         const retentionLabel={session:'this session only',1:'1 day',7:'7 days',30:'30 days',forever:'indefinitely'}[draft.retention] || 'invalid';

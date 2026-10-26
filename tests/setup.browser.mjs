@@ -184,7 +184,7 @@ test('deleted saved actor and NPC routes can be reached and repaired on the voic
   h.click('Next');assert.equal(h.root().querySelector('h2').textContent,'TTS & Voices');
   assert.match(h.root().textContent,/available TTS connection.*Narrator/s);
   h.select('Narrator connection','native:tts');await until(()=>h.label('Narrator voice').options.length===3);h.select('Narrator voice','voice');
-  h.select('NPC connection','native:tts');await until(()=>h.label('Shared NPC voice').options.length===3);h.select('Shared NPC voice','voice');h.click('Next');
+  h.select('Casting connection','native:tts');await until(()=>h.label('Shared voice').options.length===3);h.select('Shared voice','voice');h.click('Next');
   assert.equal(h.root().querySelector('h2').textContent,'Optional Features');h.wizard.dispose();
 });
 
@@ -193,7 +193,7 @@ test('switching default connections clears inherited voice IDs while preserving 
   const config={...base(),npcPolicy:{mode:'preferred',voices:['voice'],voice:'voice'}};config.fixed[1].route='native:tts';
   const h=uiHarness({existing:true,config,connections});await h.wizard.open();h.click('Next');h.select('Default TTS connection','other');h.click('Next');
   assert.equal(h.label('Narrator voice').value,'');assert.equal(h.label('Persona voice').value,'voice');assert.equal(h.label('Main character voice').value,'');
-  assert.equal(h.label('Preferred NPC voice IDs').value,'');
+  assert.equal(h.label('Preferred voice IDs').value,'');
   await until(()=>h.label('Narrator voice').options.length===3);h.select('Narrator voice','other');h.select('Default TTS provider','openai_tts');assert.equal(h.label('Narrator voice').value,'');
   await until(()=>h.label('Narrator voice').options.length===3);
   h.select('Narrator voice','voice');h.select('Voice connection mode','one');assert.equal(h.label('Persona voice').value,'voice');

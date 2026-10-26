@@ -482,7 +482,7 @@ export function validateCastConfig(config) {
   if (!names.has('narrator')) throw new Error('The fixed cast must include Narrator.');
   const policy=config.npcPolicy;
   if(policy){
-    if(!['llm','skip','single','preferred'].includes(policy.mode))throw new Error('Choose a valid NPC casting mode.');
+    if(!['llm','skip','single','preferred'].includes(policy.mode))throw new Error('Choose a valid Automatic casting mode.');
     const route=policy.route || config.defaultRoute || '',available=id=>config.voices.some(v=>v.id===id && (v.route || '')===route);
     if(policy.mode==='single' && !available(policy.voice))throw new Error('Choose an available shared NPC voice.');
     if(policy.mode==='preferred' && (!Array.isArray(policy.voices) || !policy.voices.length || policy.voices.some(id=>!available(id))))throw new Error('Select at least one available preferred NPC voice.');
@@ -796,6 +796,29 @@ export function mixUnisonAudio(tracks,sampleRate,{normalize=true}={}) {
   for(const [offset,text] of [[0,'RIFF'],[8,'WAVE'],[12,'fmt '],[36,'data']])[...text].forEach((char,index)=>view.setUint8(offset+index,char.charCodeAt(0)));
   view.setUint32(4,data.length-8,true);view.setUint32(16,16,true);view.setUint16(20,1,true);view.setUint16(22,channelCount,true);view.setUint32(24,sampleRate,true);view.setUint32(28,sampleRate*channelCount*2,true);view.setUint16(32,channelCount*2,true);view.setUint16(34,16,true);view.setUint32(40,data.length-44,true);
   for(let index=0;index<length;index++)for(let channel=0;channel<channelCount;channel++)view.setInt16(44+(index*channelCount+channel)*2,Math.round(channels[channel][index]*headroom*32767),true);
+  return data;
+}
+
+// Encode decoded speech in order. All tracks use the decoder's sample rate;
+// mono is duplicated when another track is stereo. Encoded MP3/WAV bytes must
+// never be concatenated directly, since each clip has its own container.
+export function speechDownloadWav(tracks,sampleRate,gapMs=0) {
+  if(!Array.isArray(tracks) || !tracks.length || !Number.isInteger(sampleRate) || sampleRate<8000 || sampleRate>192000 || !Number.isFinite(gapMs) || gapMs<0 || gapMs>10000)throw new Error('Invalid speech download.');
+  for(const track of tracks)if(!Array.isArray(track.channels) || !track.channels.length || track.channels.length>2 || !track.channels[0].length || track.channels.some(channel=>!(channel instanceof Float32Array) || channel.length!==track.channels[0].length) || !Number.isFinite(track.gain ?? 1) || (track.gain ?? 1)<0)throw new Error('Invalid speech download channels.');
+  const count=Math.max(...tracks.map(track=>track.channels.length)),gap=Math.round(sampleRate*gapMs/1000);
+  const length=tracks.reduce((sum,track)=>sum+track.channels[0].length,0)+gap*(tracks.length-1),size=44+length*count*2;
+  if(!Number.isSafeInteger(size) || size>128*1024*1024)throw new Error('This message is too long for a WAV download (128 MB limit).');
+  const data=new Uint8Array(size),view=new DataView(data.buffer);
+  for(const [offset,text] of [[0,'RIFF'],[8,'WAVE'],[12,'fmt '],[36,'data']])[...text].forEach((char,index)=>view.setUint8(offset+index,char.charCodeAt(0)));
+  view.setUint32(4,size-8,true);view.setUint32(16,16,true);view.setUint16(20,1,true);view.setUint16(22,count,true);view.setUint32(24,sampleRate,true);view.setUint32(28,sampleRate*count*2,true);view.setUint16(32,count*2,true);view.setUint16(34,16,true);view.setUint32(40,size-44,true);
+  let frame=0;
+  for(const track of tracks){
+    for(let i=0;i<track.channels[0].length;i++,frame++)for(let channel=0;channel<count;channel++){
+      const value=track.channels[Math.min(channel,track.channels.length-1)][i]*(track.gain ?? 1);
+      view.setInt16(44+(frame*count+channel)*2,Math.round(Math.max(-1,Math.min(1,Number.isFinite(value)?value:0))*32767),true);
+    }
+    frame+=gap;
+  }
   return data;
 }
 
@@ -1265,7 +1288,7 @@ export function fastClassifyPlan(transcript, config, failure) {
     style: '',
     gender: 'auto'
   };
-  if (!narrator.voice) return stop('missing-voice',`Heuristic needs a voice for ${narrator.speaker}. Choose a voice in Lead Cast or click Apply default for this chat; “Let LLM choose” requires Standard LLM.`);
+  if (!narrator.voice) return stop('missing-voice',`Heuristic needs a voice for ${narrator.speaker}. Choose a voice in Cast or click Apply default for this chat; “Let LLM choose” requires Standard LLM.`);
 
   const dialogueUnits = units.filter(u => u.kind === 'dialogue');
 
@@ -1294,7 +1317,7 @@ export function fastClassifyPlan(transcript, config, failure) {
   // Find candidate characters (excluding narrator)
   const allCast = [...(config.fixed || []), ...(config.npcs || [])];
   const candidates = allCast.filter(a => normalizeName(a.speaker) !== 'narrator');
-  if (!candidates.length) return stop('no-characters','Heuristic found quoted dialogue but no character in the cast. Add the speaker to Lead Cast or choose Jev or LLM.',dialogueUnits[0]);
+  if (!candidates.length) return stop('no-characters','Heuristic found quoted dialogue but no character in the cast. Add the speaker to Cast or choose Jev or LLM.',dialogueUnits[0]);
 
   // Emotion/style detector
   const detectStyle = (textSnippet) => {
