@@ -88,7 +88,7 @@ try{
     await characterSpeed.fill('0.75');await characterSpeed.press('Tab');
     await page.waitForFunction(()=>window.fixtureStore.get('ui:mixer')?.channels?.Narrator?.speed===.75);
     const order=await page.locator('.cm-auto-plan>[data-choir-action]').evaluateAll(nodes=>nodes.map(n=>n.dataset.choirAction));
-    assert.deepEqual(order,['auto-plan','sfx','auto-play','ambience','music','follow']);
+    assert.deepEqual(order,['auto-plan','sfx','auto-play','ambience','music','follow','message-controls']);
     const bounds=await page.locator('[data-choir-mixer]').evaluate(n=>{const r=n.getBoundingClientRect();return {x:r.x,right:r.right,width:r.width,viewport:innerWidth,scroll:n.scrollWidth,client:n.clientWidth};});
     assert.ok(bounds.x>=0 && bounds.right<=bounds.viewport+1 && bounds.scroll<=bounds.client+1,JSON.stringify(bounds));
     if(process.env.CHOIR_LAYOUT_SCREENSHOTS)await page.screenshot({path:path.join(process.env.CHOIR_LAYOUT_SCREENSHOTS,`choir-controls-${mobile?'mobile':'desktop'}.png`)});

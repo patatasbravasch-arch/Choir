@@ -18,7 +18,7 @@ try{
  await page.goto(`http://127.0.0.1:${server.address().port}`);await page.waitForFunction(()=>window.ready);
  assert.equal(await page.getByRole('heading',{name:'Cast',exact:true}).count(),1);
  assert.equal(await page.getByRole('heading',{name:'NPC Cast',exact:true}).count(),0);
- const download=page.locator('footer [data-choir-download]');await download.click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.includes('Play this whole message first'));
+ const download=page.locator('footer [data-choir-download]');assert.equal(await download.isVisible(),false);
  await page.locator('[data-et="latest"]').click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Ready:'));
  await page.getByRole('button',{name:'Open Choir voice mixer',exact:true}).click();
  await page.locator('[data-choir-action="playback"]').click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.includes('Playback finished'));
@@ -97,7 +97,7 @@ try{
    transaction.oncomplete=()=>{db.close();resolve();};transaction.onerror=()=>{db.close();reject(transaction.error);};
   };
  }));
- await download.click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.includes('Play this whole message first'));
+ await page.evaluate(()=>window.fixtureEvents.get('MESSAGE_EDITED')({messageId:'reply'}));await download.waitFor({state:'hidden'});
  await page.locator('details').filter({has:page.locator('[data-et="messages"]')}).locator('summary').click();
  await page.locator('[data-et="messages"]').getByRole('button',{name:'Replay',exact:true}).click();
  await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent==='Replay finished.');

@@ -41,14 +41,14 @@ test('inactive cast collapses without losing fixed or discovered voice settings 
 test('mixer layout hides and reorders controls across reload without changing sound settings and reset preserves levels',async()=>{
  const h=await harness({master:0.7,playbackRate:1.75,voiceGapMs:250,layout:{speedPresets:'invalid'},quickButtonOrder:['music','music','unknown','sfx']});try{
   const check=key=>document.querySelector(`[data-choir-layout="${key}"]`),change=(key,value)=>{const input=check(key);input.checked=value;input.dispatchEvent(new h.dom.window.Event('change'));};
-  const mixer=()=>document.querySelector('[data-choir-mixer]');assert.equal(mixer().querySelector('.cm-speed-options').hidden,false);assert.deepEqual([...mixer().querySelectorAll('.cm-auto-plan button')].map(button=>button.dataset.choirAction),['music','sfx','auto-plan','auto-play','ambience','follow']);
+  const mixer=()=>document.querySelector('[data-choir-mixer]');assert.equal(mixer().querySelector('.cm-speed-options').hidden,false);assert.deepEqual([...mixer().querySelectorAll('.cm-auto-plan button')].map(button=>button.dataset.choirAction),['music','sfx','auto-plan','auto-play','ambience','follow','message-controls']);
   assert.equal(mixer().querySelector('[data-choir-customize]'),null);assert.equal(h.$('mixerLayout').hidden,true);h.$('customizeMixer').click();assert.equal(h.$('mixerLayout').hidden,false);assert.equal(h.$('customizeMixer').getAttribute('aria-expanded'),'true');assert.equal(mixer().dataset.collapsed,'true','customization works while the mixer is closed');
   h.$('enableMusic').checked=true;h.$('enableMusic').dispatchEvent(new h.dom.window.Event('change'));await until(()=>h.$('saveState').textContent==='Saved automatically');
   change('speedPresets',false);change('speedSlider',true);change('gapSlider',true);change('music',false);document.querySelector('[aria-label="Move SFX earlier"]').click();await until(()=>h.store.get('ui:mixer')?.quickButtonOrder[0]==='sfx');
   assert.equal(h.$('enableMusic').checked,true);assert.equal(h.store.get('chat:chat-a').enableMusic,true);assert.equal(h.synthesis.length,0);assert.equal(h.requests.filter(request=>request.action==='plan').length,0);
   await h.reload();assert.equal(mixer().querySelector('.cm-speed-options').hidden,true);assert.equal(mixer().querySelector('[data-choir-action="music"]').hidden,true);assert.equal(mixer().querySelector('[aria-label="Playback speed in mixer value"]').value,'1.75');assert.equal(mixer().querySelector('[aria-label="Gap between voices in mixer value"]').value,'250');
-  for(const key of ['auto-plan','auto-play','sfx','ambience','music','follow'])change(key,false);assert.equal(mixer().querySelector('.cm-auto-plan').hidden,true);document.querySelector('.cm-reset-layout').click();await until(()=>h.store.get('ui:mixer')?.layout.speedPresets===true);
-  assert.equal(mixer().querySelector('.cm-speed-options').hidden,false);assert.deepEqual([...mixer().querySelectorAll('.cm-auto-plan button')].map(button=>button.dataset.choirAction),['auto-plan','auto-play','sfx','ambience','music','follow']);assert.equal(h.store.get('ui:mixer').master,0.7);assert.equal(h.store.get('ui:mixer').playbackRate,1.75);assert.equal(h.store.get('ui:mixer').voiceGapMs,250);
+  for(const key of ['auto-plan','auto-play','sfx','ambience','music','follow','message-controls'])change(key,false);assert.equal(mixer().querySelector('.cm-auto-plan').hidden,true);document.querySelector('.cm-reset-layout').click();await until(()=>h.store.get('ui:mixer')?.layout.speedPresets===true);
+  assert.equal(mixer().querySelector('.cm-speed-options').hidden,false);assert.deepEqual([...mixer().querySelectorAll('.cm-auto-plan button')].map(button=>button.dataset.choirAction),['auto-plan','auto-play','sfx','ambience','music','follow','message-controls']);assert.equal(h.store.get('ui:mixer').master,0.7);assert.equal(h.store.get('ui:mixer').playbackRate,1.75);assert.equal(h.store.get('ui:mixer').voiceGapMs,250);
  }finally{await h.close();}
 });
 
@@ -100,6 +100,25 @@ test('Fish preferred voices can be pasted into the chat, persist and constrain s
  }
 });
 
+test('optional Message controls mixer button persists the drawer setting and message actions follow replaced swipe controls',async()=>{
+ const h=await harness();try{
+  const card=document.createElement('div');card.dataset.messageId=h.message.id;document.body.append(card);card.append(h.footer);
+  const swipe=document.createElement('div');swipe.dataset.component='SwipeControls';card.prepend(swipe);
+  let decorator;const register=h.ctx.ui.registerDomDecorator;h.ctx.ui.registerDomDecorator=options=>{decorator=options;return register(options);};await h.reload();
+  const quick=()=>document.querySelector('[data-choir-action="message-controls"]'),controls=()=>card.querySelector('[data-choir-message-controls]');
+  assert.equal(quick().hidden,true);assert.equal(controls().parentElement,swipe);assert.equal(controls().hidden,true);
+  const show=document.querySelector('[data-choir-layout="message-controls"]');show.checked=true;show.dispatchEvent(new h.dom.window.Event('change'));
+  quick().click();await until(()=>h.store.get('chat:chat-a')?.sectionButtons===true);assert.equal(h.$('sectionButtons').checked,true);assert.equal(quick().getAttribute('aria-pressed'),'true');assert.equal(controls().hidden,false);
+  assert.equal(controls().querySelector('[data-choir-download]').hidden,true);assert.equal(controls().querySelector('details').hidden,false);
+  swipe.remove();decorator.update(h.footer);assert.equal(controls().parentElement,h.footer,'removed host controls use the footer fallback');
+  const replacement=document.createElement('div');replacement.dataset.component='SwipeControls';card.prepend(replacement);decorator.update(h.footer);
+  assert.equal(controls().parentElement,replacement);assert.equal(card.querySelectorAll('[data-choir-message-controls]').length,1);
+  await h.reload();assert.equal(quick().hidden,false);assert.equal(quick().getAttribute('aria-pressed'),'true');assert.equal(card.querySelectorAll('[data-choir-message-controls]').length,1);
+  h.$('sectionButtons').checked=false;h.$('sectionButtons').dispatchEvent(new h.dom.window.Event('change'));await until(()=>h.store.get('chat:chat-a')?.sectionButtons===false);assert.equal(quick().getAttribute('aria-pressed'),'false');assert.equal(controls().hidden,true);
+  assert.equal(h.synthesis.length,0);assert.equal(h.requests.filter(request=>request.action==='plan').length,0);
+ }finally{await h.close();}
+});
+
 test('audio download refuses unplayed and edited messages and reuses the completed played mix without TTS',async()=>{
  const originalContext=globalThis.AudioContext,restoreRecorder=mockMixRecorder();let decoded=0;
  globalThis.AudioContext=class{
@@ -111,14 +130,15 @@ test('audio download refuses unplayed and edited messages and reuses the complet
  const h=await harness();const downloads=[];h.dom.window.HTMLAnchorElement.prototype.click=function(){downloads.push(this.download);};
  try{
   const download=()=>h.footer.querySelector('[data-choir-download]').click();
+  assert.equal(h.footer.querySelector('[data-choir-download]').hidden,true);
   download();await until(()=>h.$('status').textContent.includes('Play this whole message first'));assert.equal(decoded,0);assert.equal(downloads.length,0);
   await h.plan();await h.play();const requests=h.synthesis.length;decoded=0;await h.reload();const backendRequests=h.requests.length;
-  download();await until(()=>h.$('status').textContent.startsWith('Audio downloaded'));assert.equal(h.synthesis.length,requests);assert.equal(h.requests.length,backendRequests);assert.equal(downloads.length,1);assert.match(downloads[0],/\.wav$/);assert.equal(decoded,1);
+  await until(()=>!h.footer.querySelector('[data-choir-download]').hidden);download();await until(()=>h.$('status').textContent.startsWith('Audio downloaded'));assert.equal(h.synthesis.length,requests);assert.equal(h.requests.length,backendRequests);assert.equal(downloads.length,1);assert.match(downloads[0],/\.wav$/);assert.equal(decoded,1);
   const wav=h.audioBlobs.at(-1);assert.equal(wav.type,'audio/wav');assert.equal(new DataView(await wav.arrayBuffer()).getUint32(40,true),4);
-  h.message.content='An edited reply.';download();await until(()=>h.$('status').textContent.includes('Play this whole message first'));assert.equal(downloads.length,1);
+  h.message.content='An edited reply.';h.events.get('MESSAGE_EDITED')({messageId:h.message.id});assert.equal(h.footer.querySelector('[data-choir-download]').hidden,true);download();await until(()=>h.$('status').textContent.includes('Play this whole message first'));assert.equal(downloads.length,1);
   h.message.content='Another dawn. "Hello." "Wait." The gate closed.';h.$('sectionButtons').checked=true;h.$('sectionButtons').dispatchEvent(new h.dom.window.Event('change'));await h.plan();await until(()=>h.footer.querySelector('[data-choir-section]'));
   const partial=h.footer.querySelector('[data-choir-section]');assert.ok(partial);partial.click();await until(()=>h.$('status').textContent.includes('Playback finished'));
-  download();await until(()=>h.$('status').textContent.includes('Play this whole message first'));assert.equal(downloads.length,1);
+  assert.equal(h.footer.querySelector('[data-choir-download]').hidden,true);download();await until(()=>h.$('status').textContent.includes('Play this whole message first'));assert.equal(downloads.length,1);
  }finally{await h.close();globalThis.AudioContext=originalContext;restoreRecorder();}
 });
 
@@ -2671,7 +2691,7 @@ test('message play reuses the current validated plan even when saving it fails, 
   const h=await harness();try{
     h.state.failPlanSave=true;h.$('latest').click();await until(()=>h.$('status').textContent.includes('Settings storage failed'));
     assert.equal(h.requests.filter(r=>r.action==='plan').length,1);
-    const button=h.footer.querySelector('button');assert.equal(button.textContent,'');assert.equal(button.style.width,'28px');
+    const button=h.footer.querySelector('button');assert.equal(button.textContent,'');
     button.click();button.click();await until(()=>h.$('status').textContent.includes('Playback finished'));
     assert.equal(h.requests.filter(r=>r.action==='plan').length,1);const synthesized=h.synthesis.length;
     button.click();await until(()=>h.$('status').textContent.includes('Playback finished'));assert.equal(h.requests.filter(r=>r.action==='plan').length,1);assert.equal(h.synthesis.length,synthesized);

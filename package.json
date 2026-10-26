@@ -1,6 +1,6 @@
 {
   "name": "choir",
-  "version": "1.1.6-staging.38",
+  "version": "1.1.6-staging.39",
   "private": true,
   "type": "module",
   "scripts": {
@@ -15,7 +15,8 @@
     "test:chromium": "node scripts/build.mjs && node tests/chromium.smoke.mjs",
     "test:setup:chromium": "node scripts/build.mjs && node tests/onboarding.chromium.mjs",
     "test:fluidity:chromium": "node scripts/build.mjs && node tests/fluidity.chromium.mjs",
-    "test:layout:chromium": "node scripts/build.mjs && node tests/interface-layout.chromium.mjs"
+    "test:layout:chromium": "node scripts/build.mjs && node tests/interface-layout.chromium.mjs",
+    "test:messages:chromium": "node scripts/build.mjs && node tests/message-controls.chromium.mjs"
   },
   "devDependencies": {"jsdom":"26.1.0","fake-indexeddb":"6.2.4"}
 }

@@ -51,7 +51,7 @@ try{
   await plan(page);await page.locator('[data-choir-action="playback"]').click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Playing 1/'));await page.locator('[data-et="stop"]').click();
   await until(async()=>Boolean(await summary(page)));assert.ok((await summary(page)).clips.filter(Boolean).length<3);
   await replay(page);await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.includes('Some speech is missing'));assert.equal((await summary(page)).mixBytes,0);
-  await page.locator('footer [data-choir-download]').click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.includes('Play this whole message first'));
+  await page.locator('footer [data-choir-download]').waitFor({state:'hidden'});
   console.log('PASS: interrupted playback cannot become a silently truncated completed Replay/download.');await context.close();
  }
  {
@@ -60,7 +60,7 @@ try{
   await page.evaluate(()=>window.recordingEdit(value=>{value.blobs[1]=undefined;for(const key of Object.keys(value.passages))if(key.includes('Welcome'))delete value.passages[key];}));
   await replay(page);await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.includes('Some speech is missing'));
   assert.equal((await summary(page)).mixBytes,complete.mixBytes);assert.deepEqual(await download(page),baseline,'a previously verified complete mix remains downloadable unchanged');
-  await page.evaluate(()=>window.recordingEdit(value=>{delete value.playedAudio.complete;}));await page.locator('footer [data-choir-download]').click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.includes('Some speech is missing'));
+  await page.evaluate(async()=>{await window.recordingEdit(value=>{delete value.playedAudio.complete;});window.fixtureEvents.get('MESSAGE_EDITED')({messageId:'reply'});});await page.locator('footer [data-choir-download]').waitFor({state:'hidden'});
   console.log('PASS: a failed partial Replay preserves the complete mix; an unverified legacy partial mix is refused.');await context.close();
  }
  {
@@ -86,7 +86,7 @@ try{
   const context=await browser.newContext({acceptDownloads:true,viewport:{width:1440,height:1000}}),page=await mount(context);await plan(page);
   await page.locator('[data-choir-action="playback"]').click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Playing 1/'));await page.locator('[data-et="stop"]').click();await play(page);
   assert.match(await status(page),/This playback was resumed/);assert.equal((await summary(page)).mixBytes,0);
-  await page.locator('footer [data-choir-download]').click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.includes('This playback was resumed'));
+  await page.locator('footer [data-choir-download]').waitFor({state:'hidden'});
   const calls=await page.evaluate(()=>window.calls.length);await replay(page);await finishReplay(page);const wav=await download(page);assert.ok(seconds(wav)>=3 && seconds(wav)<4.5);assert.equal(await page.evaluate(()=>window.calls.length),calls);
   console.log('PASS: resumed export has explicit guidance; Replay from the start creates a complete WAV without new synthesis.');await context.close();
  }
