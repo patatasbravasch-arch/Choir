@@ -78,6 +78,71 @@ test('music audio is proxied as checked audio only from the incompetech track di
  const failed=await harness(null,async()=>({status:404}));failed.send('musicAudio',{url:'https://incompetech.com/music/royalty-free/mp3-royaltyfree/Missing.mp3'});assert.match((await failed.result()).message.error,/Music audio HTTP 404/);
 });
 
+function stagedMusic(bytes=new Uint8Array([0xff,0xfb,0x90,0,1,2,3])){
+ const calls={reads:[],deleted:[],fetches:[]};
+ const files={
+  async fetch(url,options){calls.fetches.push({url,options});return {fileId:'music-file',size:bytes.length,mimeType:'application/octet-stream'};},
+  async readChunk(source,offset,userId){calls.reads.push({source,offset,userId});const data=bytes.slice(offset,offset+1024*1024);return {data,offset,size:bytes.length,eof:offset+data.length===bytes.length};},
+  async delete(fileId,userId){calls.deleted.push({fileId,userId});return true;}
+ };
+ return {files,calls};
+}
+const musicUrl='https://incompetech.com/music/royalty-free/mp3-royaltyfree/Jazz%20Brunch.mp3';
+const withMusicFiles=files=>harness(null,()=>{throw new Error('The transparent media proxy must not handle staged music files');},null,null,null,null,{}, {files});
+
+test('music file downloads accept octet-stream MP3s and preserve every byte across host chunk and base64 boundaries',async()=>{
+ for(const tail of [0,1,2]){
+  const bytes=Uint8Array.from({length:1024*1024+tail},(_,index)=>index%251);bytes.set([0xff,0xfb,0x90,0]);
+  const {files,calls}=stagedMusic(bytes),h=await withMusicFiles(files);h.send('musicAudio',{url:musicUrl});
+  const message=(await h.result()).message;assert.equal(message.error,undefined);assert.equal(message.result.mimeType,'audio/mpeg');
+  assert.deepEqual(Buffer.from(message.result.base64,'base64'),Buffer.from(bytes));
+  const {url,options}=calls.fetches[0];assert.equal(url,musicUrl);assert.equal(options.userId,'user-a');assert.equal(options.maxBytes,25*1024*1024);assert.equal(options.timeoutMs,60000);assert.equal(options.signal.aborted,false);
+  assert.deepEqual(calls.reads.map(read=>read.offset),tail?[0,1024*1024]:[0]);assert.ok(calls.reads.every(read=>read.source.fileId==='music-file' && read.userId==='user-a'));
+  assert.deepEqual(calls.deleted,[{fileId:'music-file',userId:'user-a'}]);
+ }
+ const tagged=stagedMusic(new Uint8Array([0x49,0x44,0x33,4,0,0,0,0,0,0,0xff,0xfb,0x90,0])),h=await withMusicFiles(tagged.files);h.send('musicAudio',{url:musicUrl});assert.equal((await h.result()).message.error,undefined);
+});
+
+test('music file downloads reject non-audio, invalid MP3 tags, oversized and truncated files and always delete staging',async()=>{
+ const cases=[
+  {bytes:new TextEncoder().encode('<html>Download error</html>'),error:/not a valid MP3/},
+  {bytes:new TextEncoder().encode('export default 1'),error:/not a valid MP3/},
+  {bytes:new Uint8Array([0xff,0xf1,0x50,0x80]),error:/not a valid MP3/},
+  {bytes:new Uint8Array([0x49,0x44,0x33,4,0,0,0xff,0,0,0]),error:/not a valid MP3/},
+  {size:25*1024*1024+1,error:/oversized/},
+  {size:0,error:/oversized/},
+  {badChunk:{data:new Uint8Array(),offset:0,size:7,eof:false},error:/incomplete/},
+  {badChunk:{data:new Uint8Array([0xff,0xfb,0x90,0]),offset:1,size:7,eof:false},error:/incomplete/},
+  {badChunk:{data:new Uint8Array([0xff,0xfb,0x90,0]),offset:0,size:7,eof:true},error:/incomplete/}
+ ];
+ for(const item of cases){
+  const {files,calls}=stagedMusic(item.bytes);if(item.size!==undefined)files.fetch=async()=>({fileId:'music-file',size:item.size});if(item.badChunk)files.readChunk=async()=>item.badChunk;
+  const h=await withMusicFiles(files);h.send('musicAudio',{url:musicUrl});assert.match((await h.result()).message.error,item.error);assert.equal(calls.deleted.length,1);
+ }
+});
+
+test('Stop cancels a staged music fetch or chunk read and late completions are deleted without sending audio',async()=>{
+ for(const phase of ['fetch','read']){
+  const {files,calls}=stagedMusic();let release,started;
+  const waiting=new Promise(resolve=>started=resolve),original=phase==='fetch'?files.fetch:files.readChunk;
+  files[phase==='fetch'?'fetch':'readChunk']=async(...args)=>{const result=await original(...args);started();return new Promise(resolve=>release=()=>resolve(result));};
+  const h=await withMusicFiles(files);h.send('musicAudio',{url:musicUrl});await waiting;h.send('cancel',{});release();await new Promise(resolve=>setTimeout(resolve,10));
+  assert.equal(calls.fetches[0].options.signal.aborted,true);assert.equal(calls.deleted.length,1);assert.equal(h.sent.filter(row=>row.message.result || row.message.error).length,0);
+ }
+});
+
+test('older hosts explain unsupported octet-stream music without bypassing or retrying the transparent proxy',async()=>{
+ let calls=0;const h=await harness(null,async(url,options)=>{calls++;assert.deepEqual({...options},{responseType:'arraybuffer',mediaType:'audio'});throw new Error('CORS proxy transparent proxy only serves audio data (received Content-Type: application/octet-stream)');});
+ h.send('musicAudio',{url:musicUrl});assert.match((await h.result()).message.error,/Update Lumiverse.*file-download support/);assert.equal(calls,1);
+});
+
+test('staged music failures never fall back to another download path and cleanup errors do not hide completed audio',async()=>{
+ for(const reason of ['Download failed: HTTP 404','CORS proxy permission not granted','Insufficient staging space']){
+  const h=await withMusicFiles({fetch:async()=>{throw new Error(reason);},readChunk(){},delete(){}});h.send('musicAudio',{url:musicUrl});assert.equal((await h.result()).message.error,reason);
+ }
+ const staged=stagedMusic();staged.files.delete=async()=>{throw new Error('File expired');};const h=await withMusicFiles(staged.files);h.send('musicAudio',{url:musicUrl});assert.equal((await h.result()).message.result.mimeType,'audio/mpeg');
+});
+
 test('Freesound previews download through the CORS proxy as checked audio, only from freesound.org',async()=>{
  const requests=[];
  const h=await harness(null,async(url,options)=>{requests.push({url,options});return url.includes('missing')?{status:404,body:''}:{status:200,headers:{'content-type':'audio/mpeg; charset=binary'},body:'QUJD',encoding:'base64'};});
@@ -202,11 +267,11 @@ test('casting asks every provider for plain-text rows at temperature 0 with the 
     assert.ok(h.sent.some(item=>item.message.progress?.stage==='Waiting for planner response'));
   }
 });
-async function harness(generate, cors, provider, deadline, stream, decisions,connectionOverrides={}) {
+async function harness(generate, cors, provider, deadline, stream, decisions,connectionOverrides={},extraSpindle={}) {
   let handler;const sent=[];let wake;
   const connection={id:'llm-a',is_default:true,model:'gemini-flash-text',provider,...connectionOverrides};
-  vm.runInNewContext(bundle,{spindle:{onFrontendMessage:h=>handler=h,sendToFrontend:(message,user,options)=>{sent.push({message,user,options});if(message.result || message.error)wake?.();},generate:{raw:generate,rawStream:stream},connections:{get:async()=>connection,list:async()=>[connection]},cors,decisions},
-    console,Map,Set,AbortController,TextEncoder,setTimeout:deadline?(fn,ms)=>{deadline(fn,ms);return 0;}:setTimeout,clearTimeout,URL,crypto:globalThis.crypto,atob,Uint8Array,DataView});
+  vm.runInNewContext(bundle,{spindle:{onFrontendMessage:h=>handler=h,sendToFrontend:(message,user,options)=>{sent.push({message,user,options});if(message.result || message.error)wake?.();},generate:{raw:generate,rawStream:stream},connections:{get:async()=>connection,list:async()=>[connection]},cors,decisions,...extraSpindle},
+    console,Map,Set,AbortController,TextEncoder,setTimeout:deadline?(fn,ms)=>{deadline(fn,ms);return 0;}:setTimeout,clearTimeout,URL,crypto:globalThis.crypto,atob,btoa,Uint8Array,DataView});
   return {sent,send:(action,input,id='request')=>handler({namespace:'choir',action,input,id},'user-a','session-a'),
     result:()=>sent.some(item=>item.message.result || item.message.error)?Promise.resolve(sent.findLast(item=>item.message.result || item.message.error)):new Promise(resolve=>{wake=()=>resolve(sent.at(-1));})};
 }

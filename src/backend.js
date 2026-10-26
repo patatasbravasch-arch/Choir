@@ -402,6 +402,51 @@ async function getJson(url, headers, signal, service) {
 }
 
 const MUSIC_BASE = 'https://incompetech.com/music/royalty-free/';
+const MUSIC_MAX_BYTES=25*1024*1024;
+function musicMp3Header(bytes){
+  if(bytes.length>=10 && bytes[0]===0x49 && bytes[1]===0x44 && bytes[2]===0x33 && bytes[3]>=2 && bytes[3]<=4 && bytes[4]!==0xff && !bytes.slice(6,10).some(byte=>byte&0x80))return true;
+  return bytes.length>=4 && bytes[0]===0xff && (bytes[1]&0xe0)===0xe0 && (bytes[1]&0x18)!==0x08 && (bytes[1]&0x06)===0x02 && (bytes[2]&0xf0)!==0xf0 && (bytes[2]&0x0c)!==0x0c;
+}
+async function downloadMusicAudio(url,userId,signal){
+  // Incompetech labels its MP3 files application/octet-stream. The transparent
+  // media proxy correctly rejects that label; the documented file API accepts
+  // binary downloads with the same cors_proxy permission and URL protections.
+  const files=spindle.files;
+  if(!files || !['fetch','readChunk','delete'].every(method=>typeof files[method]==='function')){
+    try{
+      const response=await spindle.cors(url,{responseType:'arraybuffer',mediaType:'audio'});
+      signal.throwIfAborted();
+      if(response.status<200 || response.status>=300)throw new Error(`Music audio HTTP ${response.status}`);
+      return {base64:response.body,mimeType:(response.headers?.['content-type'] || 'audio/mpeg').split(';')[0]};
+    }catch(error){
+      if(/transparent proxy only serves audio.*application\/octet-stream/i.test(error.message))throw new Error('Update Lumiverse to a version with file-download support to play Incompetech music. Its MP3 files are labelled application/octet-stream.');
+      throw error;
+    }
+  }
+  let file;
+  try{
+    file=await files.fetch(url,{userId,fileName:'Choir-music.mp3',maxBytes:MUSIC_MAX_BYTES,timeoutMs:60000,signal});
+    signal.throwIfAborted();
+    if(!file?.fileId || !Number.isSafeInteger(file.size) || file.size<4 || file.size>MUSIC_MAX_BYTES)throw new Error('Invalid or oversized music download (25 MB limit).');
+    const parts=[];let offset=0,carry=new Uint8Array();
+    while(offset<file.size){
+      signal.throwIfAborted();
+      const chunk=await files.readChunk({fileId:file.fileId},offset,userId);
+      signal.throwIfAborted();
+      const data=chunk?.data;
+      if(!(data instanceof Uint8Array) || !data.length || data.length>1024*1024 || chunk.offset!==offset || chunk.size!==file.size || data.length>file.size-offset || chunk.eof!==(offset+data.length===file.size))throw new Error('The music download was incomplete.');
+      if(offset===0 && !musicMp3Header(data))throw new Error('The music download is not a valid MP3 file.');
+      const joined=new Uint8Array(carry.length+data.length);joined.set(carry);joined.set(data,carry.length);
+      const complete=joined.length-joined.length%3;
+      // Whole three-byte groups can be encoded separately and concatenated;
+      // carry the final 0–2 bytes across the host's 1 MiB chunk boundaries.
+      for(let start=0;start<complete;start+=32766)parts.push(btoa(String.fromCharCode(...joined.subarray(start,Math.min(complete,start+32766)))));
+      carry=joined.slice(complete);offset+=data.length;
+    }
+    if(carry.length)parts.push(btoa(String.fromCharCode(...carry)));
+    return {base64:parts.join(''),mimeType:'audio/mpeg'};
+  }finally{if(file?.fileId)try{await files.delete(file.fileId,userId);}catch{}}
+}
 // The catalog is fetched once per backend process; a failed fetch is retried after a minute, not per cue.
 let musicCatalog, musicCatalogFailedAt = 0;
 function loadMusicCatalog() {
@@ -734,10 +779,9 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
     if (message.action === 'musicAudio') {
       const url = new URL(String(input.url || ''));
       if (url.protocol !== 'https:' || url.hostname !== 'incompetech.com' || url.username || url.password || url.port || !/^\/music\/royalty-free\/mp3-royaltyfree\/[^/]+\.mp3$/.test(url.pathname) || url.search || url.hash) throw new Error('Music audio URL is not an incompetech track.');
-      const response = await spindle.cors(url.href, { responseType: 'arraybuffer', mediaType: 'audio' });
+      const audio = await downloadMusicAudio(url.href,userId,controller.signal);
       if (controller.signal.aborted) return;
-      if (response.status < 200 || response.status >= 300) throw new Error(`Music audio HTTP ${response.status}`);
-      send({result:{base64:response.body,mimeType:(response.headers?.['content-type'] || 'audio/mpeg').split(';')[0]}}); return;
+      send({result:audio}); return;
     }
     if (message.action === 'freesoundPreview') {
       const url = new URL(String(input.url || ''));
