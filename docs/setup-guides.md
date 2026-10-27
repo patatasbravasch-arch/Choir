@@ -1,10 +1,12 @@
-# Illustrated sound setup
+# Sound setup guides
 
-These pictures are diagrams of the steps, not screenshots. Website layouts can change. Every key shown is a masked placeholder; never share your real API keys.
+The Freesound website pictures are actual screenshots; the Fish and Choir panels are illustrations. Each caption identifies its picture. Website layouts can change. Never share your real API keys.
 
 ## How to connect Fish Audio
 
 Create a Fish API key, save it in a Lumiverse TTS connection, then choose and test that connection in Choir.
+
+The pictures are illustrated examples, not screenshots. Labels and page layouts can change. All keys shown are masked placeholders.
 
 ### 1. Sign in to Fish Audio
 
@@ -85,47 +87,49 @@ In TTS & Voices, select your narrator voice and click Test narrator voice. Liste
 
 ## How to get a Freesound API key
 
-Get a Freesound API key, paste it into Optional Features, then enable the sound features and choose the LLM that selects sound cues.
+Request a Freesound API key, then open Playback → Soundscape in this wizard to enable sounds, add the key, and choose the LLM that selects sound cues.
+
+The first three pictures are actual Freesound website screenshots, captured 27 October 2026. The credentials table was empty, so no private key is shown. The Choir panels are illustrations. Website layouts can change.
 
 ### 1. Sign in to Freesound
 
 Sign in to Freesound or create an account. Verify your email if asked before requesting API credentials.
 
-[Open Freesound](https://freesound.org/)
+[Open Freesound API credentials](https://freesound.org/apiv2/apply/)
 
-![Illustration of signing in to Freesound; no account information is shown.](../assets/guides/freesound-account.svg)
+![Actual Freesound token-authentication instructions explaining the account requirement and Client secret/Api key column.](../assets/guides/freesound-token-instructions.webp)
 
-*Use your Freesound account to request API credentials.*
+*Actual Freesound documentation. Sign in to request your own API credentials.*
 
 ### 2. Request API credentials
 
-Open the API credentials page and complete the application form shown there. Use a name such as Choir and describe your intended sound-effects and ambience use.
+Open the API credentials page and complete Create new API credentials. Use a name such as Choir and describe your intended sound-effects and ambience use. Name and Description are required; URL and Callback URL are not marked required. Choir uses token authentication, so it does not need an OAuth callback. Read the API terms and accept them if you agree, then select Request new access credentials.
 
 [Open Freesound API credentials](https://freesound.org/apiv2/apply/)
 
 [Official API authentication help](https://freesound.org/docs/api/authentication.html#token-authentication)
 
-![Illustration of where to request credentials. The live page supplies the application form.](../assets/guides/freesound-apply.svg)
+![Actual Freesound API application form with Name, URL, Callback URL, Description, unchecked API terms, and Request new access credentials.](../assets/guides/freesound-api-application.webp)
 
-*Request credentials for the application you will use.*
+*Actual, unsubmitted application form. No account details or credentials are included.*
 
 ### 3. Copy Client secret/Api key
 
-In your API credentials, copy the value under Client secret/Api key. Do not copy Client ID: it is a different value and will not authenticate Choir’s sound searches.
+After Freesound issues your credentials, copy the value under Client secret/Api key. Do not copy Client ID: it is a different value and will not authenticate Choir’s sound searches. The screenshot shows the real column headings before any credentials have been created.
 
 [Open your API credentials](https://freesound.org/apiv2/apply/)
 
 [Official token authentication instructions](https://freesound.org/docs/api/authentication.html#token-authentication)
 
-![Illustration highlighting Client secret/Api key, with a masked placeholder value.](../assets/guides/freesound-secret.svg)
+![Actual Freesound API credentials table headings: Name, Client id, Client secret/Api key, Redirect url, and Actions. No credential rows are present.](../assets/guides/freesound-api-key-column.webp)
 
-*Copy the secret/API key column, not Client ID.*
+*Actual credentials table, currently empty. Copy your issued value from Client secret/Api key.*
 
 ### 4. Paste the key into Choir
 
-In the Choir setup wizard, open Optional Features. Paste the copied secret into Freesound API key. Keep the key private; the field hides it while you type.
+In Playback → Soundscape, enable Sound effects and/or Ambient sound to reveal Freesound API key. Paste the copied secret into that field. Keep the key private; the field hides it while you type.
 
-![Illustration showing the Freesound API key field in Optional Features.](../assets/guides/freesound-paste.svg)
+![Illustration of the Freesound key field after enabling effects or ambience in Playback.](../assets/guides/freesound-paste.svg)
 
 *Paste the Freesound key into Choir’s dedicated field.*
 
@@ -137,11 +141,11 @@ Enable Sound effects and/or Ambient sound. Select a working Sound cue LLM connec
 
 *The Freesound key finds audio; the cue LLM chooses when to use it.*
 
-### 6. Finish setup and try Plan & Play
+### 6. Finish setup and try a message
 
-Continue to Review and click Finish setup to save your choices. In Choir’s Plan & Play section, use Plan latest on a story with a sound or ambience cue, then Play in the voice mixer to check the result.
+Continue to Review and click Finish setup to save your choices. In Choir, use Plan latest on a story with a sound or ambience cue, then Play in the voice mixer to check the result.
 
-![Illustration highlighting Finish setup; then try a story in Plan & Play.](../assets/guides/freesound-finish.svg)
+![Illustration highlighting Finish setup; then plan and play a story.](../assets/guides/freesound-finish.svg)
 
 *Finish setup saves the choices for your sound test.*
 

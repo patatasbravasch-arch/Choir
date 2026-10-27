@@ -85,6 +85,7 @@ export const SETUP_CSS = `
   .choir-setup .cs-guide figure{margin:12px 0 0;min-width:0}
   .choir-setup .cs-guide-picture{overflow:auto;max-height:440px;border-radius:8px}
   .choir-setup .cs-guide-picture img{display:block;width:100%;max-width:360px;height:auto;margin:auto}
+  .choir-setup .cs-guide-picture[data-picture-kind="screenshot"] img{max-width:620px}
   .choir-setup .cs-guide-picture.cs-picture-large img{width:720px;max-width:none;margin:0}
   .choir-setup .cs-guide figcaption{font-size:.85em;color:var(--cs-muted);margin:6px 0}
   .choir-setup .cs-guide .cs-picture-toggle{font-size:.88em;padding:5px 10px;min-height:36px}

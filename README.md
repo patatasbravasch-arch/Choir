@@ -4,7 +4,7 @@
 
 # Choir
 
-[![Version](https://img.shields.io/badge/version-1.1.6--staging.43-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/lunch-test)
+[![Version](https://img.shields.io/badge/version-1.1.6--staging.44-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/lunch-test)
 [![Platform](https://img.shields.io/badge/platform-Lumiverse%20Spindle-purple.svg)](https://docs.lumiverse.chat/)
 [![Tests](https://img.shields.io/badge/tests-567%20tests-blue.svg)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -13,7 +13,7 @@ An installable Lumiverse Spindle extension for multi-voice narration, dialogue a
 
 </div>
 
-Version **1.1.6-staging.43** refreshes first-time setup: a compact progress bar, visible navigation actions, separate speech/planner choices, and a focused editor for each voice. Accents and delivery modes can be set and auditioned during setup. Playback puts audio retention and everyday controls first; buffering and text filters have a secondary page. Review groups editable choices and distinguishes configuration from successful tests. The embedded Choir icon and illustrated guides work offline. Existing chat casts and first-install/skip behavior are preserved. See [setup guide](ONBOARDING.md).
+Version **1.1.6-staging.44** replaces the Freesound website diagrams with real screenshots of the API application, credentials column headings, and official token instructions. The pictures work offline, enlarge on phones, and contain no private credentials. The guide now follows **Playback → Soundscape** in the refreshed setup wizard. See [setup guide](ONBOARDING.md).
 
 Version **1.1.6-staging.42** brings the refined drawer to `lunch-test`: **Cast / Sound / Saved / Setup**, compact character rows and focused voice/pronunciation pages. **Sound → Customize mixer → Volume limits** sets persistent ceilings for Master, Voices, Music, Ambience and SFX. **Saved → Download all** exports complete played mixes as individual WAVs in one ZIP (256 MB maximum), skipping partial, expired or changed recordings. The setup wizard still opens on first install and remains available from Setup. See [drawer usage](docs/ui-cleanup.md).
 
@@ -197,7 +197,7 @@ The extension includes pre-built bundles in `dist/`. No build step is required t
 
 ## Configuration
 
-New to Fish Audio or Freesound? Follow the [step-by-step illustrated setup guides](docs/setup-guides.md). The same pictures are available in **Set up Choir → Connections → How to connect Fish Audio** and **Optional Features → How to get a Freesound API key**. Pictures use example fields and masked keys; **Enlarge picture** makes them easier to read on phones.
+New to Fish Audio or Freesound? Follow the [step-by-step setup guides](docs/setup-guides.md). The same pictures are available in **Set up Choir → Connections → How to connect Fish Audio** and **Playback → Soundscape → How to get a Freesound API key**. Freesound website pictures are real screenshots; Fish and Choir panels are labeled illustrations. No private credentials are shown; **Enlarge picture** makes them easier to read on phones.
 
 Open **Choir** from the drawer or its input-bar action.
 

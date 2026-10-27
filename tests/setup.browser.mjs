@@ -2,6 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {JSDOM} from 'jsdom';
 import {IDBFactory} from 'fake-indexeddb';
+import {readFileSync} from 'node:fs';
 import {createSetupWizard,saveSetupSettings,ONBOARDING_KEY} from '../src/setup.js';
 import {setup} from '../dist/frontend.js';
 
@@ -122,10 +123,19 @@ function checkIllustratedGuide(h,id,expectedSteps,secret){
   for(const step of steps){
     const title=step.querySelector('h4').textContent,picture=step.querySelector('.cs-guide-picture'),image=picture.querySelector('img'),caption=step.querySelector('figcaption');
     assert.ok(image.alt.length>25,`Missing descriptive alternative text for ${title}`);
-    assert.match(image.src,/^data:image\/svg\+xml;charset=utf-8,/);assert.equal(image.loading,'lazy');
-    const svg=decodeURIComponent(image.src.split(',').slice(1).join(','));
-    assert.match(svg,/<svg\b/);assert.doesNotMatch(svg,/<script\b|<foreignObject\b|(?:href|src)=["']https?:/i);
-    assert.ok(!svg.includes(secret));assert.ok(!image.alt.includes(secret));assert.ok(!step.outerHTML.includes(secret));
+    assert.equal(image.loading,'lazy');assert.ok(image.width>0 && image.height>0);
+    if(picture.dataset.pictureKind==='screenshot'){
+      assert.match(image.src,/^assets\/guides\/[a-z-]+\.webp$/);
+      const bytes=readFileSync(new URL('../'+image.src,import.meta.url));
+      assert.equal(bytes.toString('ascii',0,4),'RIFF');assert.equal(bytes.toString('ascii',8,12),'WEBP');
+      assert.ok(!bytes.includes(Buffer.from(secret)));
+    }else{
+      assert.match(image.src,/^data:image\/svg\+xml;charset=utf-8,/);
+      const svg=decodeURIComponent(image.src.split(',').slice(1).join(','));
+      assert.match(svg,/<svg\b/);assert.doesNotMatch(svg,/<script\b|<foreignObject\b|(?:href|src)=["']https?:/i);
+      assert.ok(!svg.includes(secret));
+    }
+    assert.ok(!image.alt.includes(secret));assert.ok(!step.outerHTML.includes(secret));
     assert.ok(caption.textContent.trim());assert.equal(picture.getAttribute('aria-describedby'),caption.id);
     const toggle=step.querySelector('button');assert.equal(toggle.getAttribute('aria-label'),`Enlarge picture: ${title}`);assert.equal(toggle.getAttribute('aria-expanded'),'false');
     toggle.click();assert.ok(picture.classList.contains('cs-picture-large'));assert.equal(toggle.getAttribute('aria-expanded'),'true');
@@ -156,13 +166,16 @@ test('Fish Audio illustrated guide has an offline picture for every step and enl
   }finally{h.wizard.dispose();h.dom.window.close();}
 });
 
-test('Freesound illustrated guide explains the secret and sound cue LLM while keeping draft credentials out of pictures',async()=>{
+test('Freesound guide uses real website captures and explains the secret without exposing draft credentials',async()=>{
   const secret='freesound-guide-private-draft-key',h=uiHarness({config:{...base(),freesoundApiKey:secret}});
   try{
     await h.wizard.start();h.click('Next');h.click('Next');h.click('Next');await tick();
     h.input('Freesound API key',secret+'-edited');const before=h.calls.map(call=>call[0]);
     const guide=checkIllustratedGuide(h,'freesound',['freesound-account','freesound-apply','freesound-secret','freesound-paste','freesound-enable','freesound-finish'],secret);
     assert.equal(guide.querySelector('summary').textContent,'How to get a Freesound API key');
+    assert.equal(guide.querySelectorAll('[data-picture-kind="screenshot"]').length,3);
+    assert.match(guide.textContent,/actual Freesound website screenshots/);assert.match(guide.textContent,/credentials table was empty/);
+    assert.match(guide.textContent,/Playback → Soundscape/);assert.doesNotMatch(guide.textContent,/Optional Features/);
     assert.match(guide.textContent,/Client secret\/Api key/);assert.match(guide.textContent,/Do not copy Client ID/);
     assert.match(guide.textContent,/Sound effects and\/or Ambient sound/);assert.match(guide.textContent,/Sound cue LLM connection/);
     assert.match(guide.textContent,/Finish setup/);assert.match(guide.textContent,/Plan latest/);assert.match(guide.textContent,/do not need to set up an OAuth/);

@@ -295,8 +295,8 @@ export function createSetupWizard(ctx, adapter) {
         const item=element('li','',steps);item.dataset.guideStep=step.id;
         element('h4',step.title,item);element('p',step.body,item);
         if(step.links?.length){const links=element('div','',item);links.className='cs-guide-links';for(const link of step.links)externalLink(links,link.label,link.url);}
-        const figure=element('figure','',item),picture=element('div','',figure);picture.className='cs-guide-picture';
-        const image=element('img','',picture);image.src=step.picture;image.alt=step.alt;image.width=360;image.height=240;image.loading='lazy';image.decoding='async';
+        const figure=element('figure','',item),picture=element('div','',figure);picture.className='cs-guide-picture';picture.dataset.pictureKind=step.kind;
+        const image=element('img','',picture);image.src=step.picture;image.alt=step.alt;image.width=step.width;image.height=step.height;image.loading='lazy';image.decoding='async';
         const caption=element('figcaption',step.caption,figure);caption.id=`cs-${step.id}-caption`;picture.setAttribute('aria-describedby',caption.id);
         const toggle=button('Enlarge picture',figure,()=>{
           const enlarged=picture.classList.toggle('cs-picture-large');toggle.textContent=enlarged?'Reduce picture':'Enlarge picture';

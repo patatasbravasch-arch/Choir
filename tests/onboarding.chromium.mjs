@@ -60,9 +60,10 @@ async function checkIllustratedGuide(page,wizard,id,screenshot){
   for(const image of await images.all()){
     await image.scrollIntoViewIfNeeded();
     await image.evaluate(node=>node.decode());
-    assert.equal(await image.evaluate(node=>node.complete && node.naturalWidth===360 && node.naturalHeight===240),true);
-    assert.match(await image.getAttribute('src'),/^data:image\/svg\+xml/);
+    assert.equal(await image.evaluate(node=>node.complete && node.naturalWidth===Number(node.getAttribute('width')) && node.naturalHeight===Number(node.getAttribute('height'))),true);
+    assert.match(await image.getAttribute('src'),/^data:image\/(?:svg\+xml|webp)/);
   }
+  assert.equal(await guide.locator('img[src^="data:image/webp"]').count(),id==='freesound'?3:0);
   const enlarge=guide.getByRole('button',{name:/^Enlarge picture:/}).first();
   await enlarge.scrollIntoViewIfNeeded();await enlarge.focus();await page.keyboard.press('Enter');
   const picture=guide.locator('.cs-picture-large');assert.equal(await picture.count(),1);
@@ -70,6 +71,18 @@ async function checkIllustratedGuide(page,wizard,id,screenshot){
   assert.equal(await wizard.evaluate(node=>node.scrollWidth<=node.clientWidth+1),true);
   const reduce=guide.getByRole('button',{name:/^Reduce picture:/}).first();await reduce.click();
   assert.equal(await guide.locator('.cs-picture-large').count(),0);
+  if(id==='freesound'){
+    const application=guide.locator('[data-guide-step="freesound-apply"]');
+    await application.getByRole('button',{name:/^Enlarge picture:/}).click();
+    const form=application.locator('.cs-guide-picture');
+    assert.equal(await form.evaluate(node=>document.activeElement===node && node.scrollHeight>node.clientHeight),true);
+    await page.keyboard.press('End');await page.waitForFunction(()=>document.activeElement?.matches('.cs-guide-picture') && document.activeElement.scrollTop>0);
+    if(process.env.CHOIR_FREESOUND_FORM_SCREENSHOTS){
+      await mkdir(process.env.CHOIR_FREESOUND_FORM_SCREENSHOTS,{recursive:true});
+      await wizard.screenshot({path:path.join(process.env.CHOIR_FREESOUND_FORM_SCREENSHOTS,`freesound-form-${page.viewportSize().width}.png`)});
+    }
+    await application.getByRole('button',{name:/^Reduce picture:/}).click();
+  }
   await guide.locator('[data-guide-step]').first().scrollIntoViewIfNeeded();
   if(screenshot)await wizard.screenshot({path:screenshot});
   assert.equal(await page.evaluate(()=>window.calls.length),0);
@@ -170,5 +183,5 @@ try{
   await captureWizard(compact,'touch-landscape');await mobile.setViewportSize({width:320,height:700});
   await mobile.keyboard.press('Escape');await mobile.waitForFunction(()=>window.fixtureStore.get('onboarding:state')?.deferred);await withDrawerControl(mobile,'setupWizard',()=>mobile.locator('[data-et="setupWizard"]').click());await compact.waitFor();await compact.getByRole('button',{name:'Skip for now',exact:true}).click();
   await mobile.evaluate(()=>window.cleanup());await mobile.close();assert.deepEqual(errors,[]);
-  console.log('PASS: Chrome setup, 12 offline Fish/Freesound illustrations on desktop and 320px mobile, keyboard picture enlargement, voice gender, saved buffering/retention settings, reading settings, actual-name audition, Richter alias pronunciation, respelled narration/dialogue, original text highlights, and expanded 320px modal layout. No external provider requests.');
+  console.log('PASS: Chrome setup, 9 offline illustrations and 3 real Freesound screenshots on desktop and 320px mobile, keyboard picture enlargement and tall-form scrolling, voice gender, saved buffering/retention settings, reading settings, actual-name audition, Richter alias pronunciation, respelled narration/dialogue, original text highlights, and expanded 320px modal layout. No external provider requests.');
 }finally{await browser?.close();await new Promise(resolve=>server.close(resolve));}

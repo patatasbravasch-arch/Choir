@@ -1,17 +1,19 @@
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { guideGetAssetEntries, guideBuildMarkdown } from '../src/setup-guides.js';
+import { guideGetIllustrationEntries, guideBuildMarkdown } from '../src/setup-guides.js';
 const root = new URL('../', import.meta.url);
 const manifest = JSON.parse(readFileSync(new URL('spindle.json', root), 'utf8'));
 mkdirSync(new URL('dist/', root), { recursive: true });
 const core = readFileSync(new URL('src/core.js', root), 'utf8').replace(/^export /gm, '');
-const guides = readFileSync(new URL('src/setup-guides.js', root), 'utf8').replace(/^export /gm, '');
+// Inline real screenshots as well as SVG diagrams so the wizard works offline.
+const guides = readFileSync(new URL('src/setup-guides.js', root), 'utf8').replace(/^export /gm, '')
+  .replace(/'assets\/guides\/([a-z0-9-]+\.webp)'/g, (_, file) => JSON.stringify('data:image/webp;base64,' + readFileSync(new URL(`assets/guides/${file}`, root)).toString('base64')));
 const setupUi = readFileSync(new URL('src/setup-ui.js', root), 'utf8').replace(/^export /gm, '');
 const setup = readFileSync(new URL('src/setup.js', root), 'utf8').replace(/^import .* from '\.\/setup-(?:guides|ui)\.js';\r?\n/gm, '').replace(/^export /gm, '');
-// The same illustrations ship inside the frontend for offline setup and as
-// ordinary SVGs for the shareable Markdown guide.
+// Real screenshot files live in assets/guides; generate the remaining diagrams
+// for the shareable Markdown guide from the same source as the frontend.
 mkdirSync(new URL('assets/guides/', root), {recursive:true});
-for(const asset of guideGetAssetEntries()){
+for(const asset of guideGetIllustrationEntries()){
   writeFileSync(new URL(`assets/guides/${asset.fileName}`, root), asset.svg);
 }
 mkdirSync(new URL('docs/', root), {recursive:true});

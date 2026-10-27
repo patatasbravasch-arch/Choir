@@ -164,7 +164,7 @@ reusable. Saved recordings also store the spoken spelling per passage. Explicit
 Replay refreshes affected passages without requesting another plan, including
 legacy recordings that did not store pronunciation metadata.
 
-**How to get a Freesound API key** under Optional Features provides a compact,
+**How to get a Freesound API key** under Playback → Soundscape provides a compact,
 expandable walkthrough: sign in/create an account, request a credential for
 your Choir setup, copy **Client secret/Api key**, then paste it and choose sound
 features and a cue LLM before finishing. Links open Freesound's official site,
@@ -172,6 +172,10 @@ application page, and [token authentication instructions](https://freesound.org/
 in a separate tab so the wizard draft remains open. Choir searches sounds and
 uses previews with token authentication; no OAuth setup is needed. The guide
 does not send a request, change settings, or enable features when expanded.
+Its Freesound website pictures are real screenshots captured on 27 October 2026;
+the credentials table was empty and no credential was created for the guide.
+The form, real column headings, and official token instructions work offline
+inside Choir. Choir and Fish panels remain clearly labeled illustrations.
 
 ## Verification
 

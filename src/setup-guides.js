@@ -1,4 +1,10 @@
-// These are diagrams, not screenshots. Reuse the same SVGs in the wizard and docs.
+// Reuse the same offline pictures in the wizard and docs. Freesound website
+// captures are lossless screenshots; Choir and Fish panels are illustrations.
+const GUIDE_SCREENSHOTS = {
+  account: { picture: 'assets/guides/freesound-token-instructions.webp', pictureFile: 'freesound-token-instructions.webp', width: 840, height: 408 },
+  application: { picture: 'assets/guides/freesound-api-application.webp', pictureFile: 'freesound-api-application.webp', width: 766, height: 1020 },
+  secret: { picture: 'assets/guides/freesound-api-key-column.webp', pictureFile: 'freesound-api-key-column.webp', width: 766, height: 140 },
+};
 function guideEscape(value) {
   return String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
 }
@@ -46,7 +52,11 @@ function guideIllustration(title, content, description) {
 }
 
 function guideStep(id, title, body, links, svg, alt, caption) {
-  return { id, title, body, links, picture: 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg), alt, caption };
+  return { id, title, body, links, picture: 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg), pictureFile: id + '.svg', kind: 'illustration', width: 360, height: 240, alt, caption };
+}
+
+function guideScreenshotStep(id, title, body, links, capture, alt, caption) {
+  return { id, title, body, links, ...GUIDE_SCREENSHOTS[capture], kind: 'screenshot', alt, caption };
 }
 
 export const SETUP_GUIDES = {
@@ -159,73 +169,49 @@ export const SETUP_GUIDES = {
   },
   freesound: {
     title: 'How to get a Freesound API key',
-    intro: 'Get a Freesound API key, paste it into Optional Features, then enable the sound features and choose the LLM that selects sound cues.',
-    note: 'The pictures are illustrated examples, not screenshots. Labels and page layouts can change. All keys shown are masked placeholders.',
+    intro: 'Request a Freesound API key, then open Playback → Soundscape in this wizard to enable sounds, add the key, and choose the LLM that selects sound cues.',
+    note: 'The first three pictures are actual Freesound website screenshots, captured 27 October 2026. The credentials table was empty, so no private key is shown. The Choir panels are illustrations. Website layouts can change.',
     steps: [
-      guideStep(
+      guideScreenshotStep(
         'freesound-account',
         'Sign in to Freesound',
         'Sign in to Freesound or create an account. Verify your email if asked before requesting API credentials.',
-        [{ label: 'Open Freesound', url: 'https://freesound.org/' }],
-        guideIllustration('Freesound · account',
-          guideText(20, 73, 'Sign in or create an account', 17, '#eef5fc', 600) +
-          guideBox(20, 88, 312, 29) + guideText(31, 108, 'Your account', 13, '#b4c4d6') +
-          guideBox(20, 126, 312, 29) + guideText(31, 146, 'Password: ••••••••', 13, '#b4c4d6') +
-          guideButton(20, 169, 118, 'Sign in') + guideFocus(20, 169, 118, 31) +
-          guideText(20, 216, 'Verify your email if prompted.', 12, '#b4c4d6'),
-          'An example Freesound account page highlights Sign in.'),
-        'Illustration of signing in to Freesound; no account information is shown.',
-        'Use your Freesound account to request API credentials.'
+        [{ label: 'Open Freesound API credentials', url: 'https://freesound.org/apiv2/apply/' }],
+        'account',
+        'Actual Freesound token-authentication instructions explaining the account requirement and Client secret/Api key column.',
+        'Actual Freesound documentation. Sign in to request your own API credentials.'
       ),
-      guideStep(
+      guideScreenshotStep(
         'freesound-apply',
         'Request API credentials',
-        'Open the API credentials page and complete the application form shown there. Use a name such as Choir and describe your intended sound-effects and ambience use.',
+        'Open the API credentials page and complete Create new API credentials. Use a name such as Choir and describe your intended sound-effects and ambience use. Name and Description are required; URL and Callback URL are not marked required. Choir uses token authentication, so it does not need an OAuth callback. Read the API terms and accept them if you agree, then select Request new access credentials.',
         [{ label: 'Open Freesound API credentials', url: 'https://freesound.org/apiv2/apply/' }, { label: 'Official API authentication help', url: 'https://freesound.org/docs/api/authentication.html#token-authentication' }],
-        guideIllustration('Freesound · API credentials',
-          guideText(20, 73, 'Request API credentials', 18, '#eef5fc', 600) +
-          guideBox(20, 91, 312, 34, '#244e68', '#71deff') + guideText(30, 114, 'freesound.org/apiv2/apply/', 13, '#bfefff', 600) +
-          guideFocus(20, 91, 312, 34) +
-          guideText(20, 158, 'Example application name: Choir', 13) +
-          guideText(20, 183, 'Purpose: story effects and ambience', 13) +
-          guideText(20, 210, 'Complete the form on that page.', 12, '#b4c4d6'),
-          'An example diagram highlights the Freesound API credentials address and suggests an application name and purpose.'),
-        'Illustration of where to request credentials. The live page supplies the application form.',
-        'Request credentials for the application you will use.'
+        'application',
+        'Actual Freesound API application form with Name, URL, Callback URL, Description, unchecked API terms, and Request new access credentials.',
+        'Actual, unsubmitted application form. No account details or credentials are included.'
       ),
-      guideStep(
+      guideScreenshotStep(
         'freesound-secret',
         'Copy Client secret/Api key',
-        'In your API credentials, copy the value under Client secret/Api key. Do not copy Client ID: it is a different value and will not authenticate Choir’s sound searches.',
+        'After Freesound issues your credentials, copy the value under Client secret/Api key. Do not copy Client ID: it is a different value and will not authenticate Choir’s sound searches. The screenshot shows the real column headings before any credentials have been created.',
         [{ label: 'Open your API credentials', url: 'https://freesound.org/apiv2/apply/' }, { label: 'Official token authentication instructions', url: 'https://freesound.org/docs/api/authentication.html#token-authentication' }],
-        guideIllustration('Freesound · API credentials',
-          guideText(20, 73, 'Your API credentials', 18, '#eef5fc', 600) +
-          guideBox(20, 91, 312, 71) +
-          '<path d="M115 91v71M20 122h312" stroke="#3b526b"/>' +
-          guideText(29, 112, 'Client ID', 12, '#b4c4d6', 600) +
-          guideText(125, 112, 'Client secret/Api key', 12, '#eef5fc', 600) +
-          guideText(29, 146, '(ID)', 13, '#b4c4d6') +
-          guideText(125, 146, '•••• •••• ••••', 15, '#71deff') +
-          guideFocus(119, 94, 209, 64) +
-          guideText(20, 193, 'Copy the secret / API key column.', 13, '#71deff', 600) +
-          guideText(20, 215, 'Client ID is not the API key.', 12, '#b4c4d6'),
-          'An example credentials table highlights the Client secret/Api key column and leaves Client ID unselected.'),
-        'Illustration highlighting Client secret/Api key, with a masked placeholder value.',
-        'Copy the secret/API key column, not Client ID.'
+        'secret',
+        'Actual Freesound API credentials table headings: Name, Client id, Client secret/Api key, Redirect url, and Actions. No credential rows are present.',
+        'Actual credentials table, currently empty. Copy your issued value from Client secret/Api key.'
       ),
       guideStep(
         'freesound-paste',
         'Paste the key into Choir',
-        'In the Choir setup wizard, open Optional Features. Paste the copied secret into Freesound API key. Keep the key private; the field hides it while you type.',
+        'In Playback → Soundscape, enable Sound effects and/or Ambient sound to reveal Freesound API key. Paste the copied secret into that field. Keep the key private; the field hides it while you type.',
         [],
-        guideIllustration('Choir · Optional Features',
-          guideText(20, 74, 'Optional Features', 18, '#eef5fc', 600) +
+        guideIllustration('Choir · Playback',
+          guideText(20, 74, 'Soundscape', 18, '#eef5fc', 600) +
           guideText(20, 112, 'Freesound API key', 13, '#b4c4d6') +
           guideBox(20, 127, 312, 36) + guideText(31, 151, '•••• •••• ••••', 15) +
           guideFocus(20, 127, 312, 36) +
           guideText(20, 195, 'Paste Client secret/Api key here.', 13, '#71deff', 600),
-          'An example Optional Features step highlights Choir’s masked Freesound API key field.'),
-        'Illustration showing the Freesound API key field in Optional Features.',
+          'An example Playback Soundscape section highlights Choir’s masked Freesound API key field.'),
+        'Illustration of the Freesound key field after enabling effects or ambience in Playback.',
         'Paste the Freesound key into Choir’s dedicated field.'
       ),
       guideStep(
@@ -233,21 +219,21 @@ export const SETUP_GUIDES = {
         'Enable sounds and choose the cue LLM',
         'Enable Sound effects and/or Ambient sound. Select a working Sound cue LLM connection so Choir can choose relevant sounds for the story. You can leave these features off if you do not want sounds.',
         [],
-        guideIllustration('Choir · Optional Features',
+        guideIllustration('Choir · Playback',
           guideText(20, 74, 'Choose your sound features', 17, '#eef5fc', 600) +
           guideCheck(106, 'Sound effects') +
           guideCheck(139, 'Ambient sound') +
           guideText(20, 174, 'Sound cue LLM connection', 13, '#b4c4d6') +
           guideBox(20, 186, 312, 29) + guideText(31, 206, 'Your working LLM connection', 12) + guideText(310, 206, '▾', 14) +
           guideFocus(20, 186, 312, 29),
-          'An example Optional Features step enables sound effects and ambient sound and highlights the Sound cue LLM connection.'),
+          'An example Playback step enables sound effects and ambient sound and highlights the Sound cue LLM connection.'),
         'Illustration highlighting the LLM used to choose sound cues.',
         'The Freesound key finds audio; the cue LLM chooses when to use it.'
       ),
       guideStep(
         'freesound-finish',
-        'Finish setup and try Plan & Play',
-        'Continue to Review and click Finish setup to save your choices. In Choir’s Plan & Play section, use Plan latest on a story with a sound or ambience cue, then Play in the voice mixer to check the result.',
+        'Finish setup and try a message',
+        'Continue to Review and click Finish setup to save your choices. In Choir, use Plan latest on a story with a sound or ambience cue, then Play in the voice mixer to check the result.',
         [],
         guideIllustration('Choir · Review',
           guideText(20, 74, 'Review', 18, '#eef5fc', 600) +
@@ -255,9 +241,9 @@ export const SETUP_GUIDES = {
           guideCheck(134, 'Sound features enabled') +
           guideCheck(163, 'Sound cue LLM selected') +
           guideButton(20, 181, 139, 'Finish setup') + guideFocus(20, 181, 139, 31) +
-          guideText(184, 202, 'Then Plan & Play', 12, '#b4c4d6'),
+          guideText(184, 202, 'Then plan and play', 12, '#b4c4d6'),
           'An example Review step highlights Finish setup after the key, sound features, and cue LLM have been chosen.'),
-        'Illustration highlighting Finish setup; then try a story in Plan & Play.',
+        'Illustration highlighting Finish setup; then plan and play a story.',
         'Finish setup saves the choices for your sound test.'
       ),
     ],
@@ -274,26 +260,26 @@ export const SETUP_GUIDES = {
   },
 };
 
-export function guideGetAssetEntries() {
-  return Object.values(SETUP_GUIDES).flatMap(guide => guide.steps.map(step => ({
-    fileName: step.id + '.svg',
+export function guideGetIllustrationEntries() {
+  return Object.values(SETUP_GUIDES).flatMap(guide => guide.steps.filter(step => step.kind === 'illustration').map(step => ({
+    fileName: step.pictureFile,
     svg: decodeURIComponent(step.picture.slice('data:image/svg+xml;charset=utf-8,'.length)),
   })));
 }
 
 export function guideBuildMarkdown() {
   const lines = [
-    '# Illustrated sound setup',
+    '# Sound setup guides',
     '',
-    'These pictures are diagrams of the steps, not screenshots. Website layouts can change. Every key shown is a masked placeholder; never share your real API keys.',
+    'The Freesound website pictures are actual screenshots; the Fish and Choir panels are illustrations. Each caption identifies its picture. Website layouts can change. Never share your real API keys.',
     '',
   ];
   for (const guide of Object.values(SETUP_GUIDES)) {
-    lines.push('## ' + guide.title, '', guide.intro, '');
+    lines.push('## ' + guide.title, '', guide.intro, '', guide.note, '');
     guide.steps.forEach((step, index) => {
       lines.push('### ' + (index + 1) + '. ' + step.title, '', step.body, '');
       for (const link of step.links) lines.push('[' + link.label + '](' + link.url + ')', '');
-      lines.push('![' + step.alt.replaceAll('[', '').replaceAll(']', '') + '](../assets/guides/' + step.id + '.svg)', '', '*' + step.caption + '*', '');
+      lines.push('![' + step.alt.replaceAll('[', '').replaceAll(']', '') + '](../assets/guides/' + step.pictureFile + ')', '', '*' + step.caption + '*', '');
     });
     lines.push('### Troubleshooting', '');
     for (const item of guide.troubleshooting) lines.push('- ' + item);
