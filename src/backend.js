@@ -1,5 +1,7 @@
 import { cardAnalysisRoles, reconcileCastDuplicates, castIdentityResolver, validateCastConfig, validatePlan, npcCastActor, parsePlanJson, resolvePlanReferences, castReply, speechSourceUnits, normalizeName, unisonSpeakers, fastClassifyPlan, resolvePlannerMode, soundCuePrompt, parseSoundCues, rankMusic, MUSIC_GENRES, skipCheckPrompt, parseSkipRows, skippedLines } from './core.js';
 
+import { voiceDelivery } from './delivery.js';
+
 async function jevPost(url, headers, payload, signal) {
   signal?.throwIfAborted();
   // Spindle forwards options through worker postMessage. AbortSignal is not
@@ -859,8 +861,8 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
       if (typeof input.apiKey !== 'string' || !input.apiKey.trim()) throw new Error('Enter a Fish Audio API key for this session.');
       const segment = input.segment;
       if (!segment || typeof segment.text !== 'string' || !segment.text.trim()) throw new Error('Invalid speech chunk.');
-      const text = segment.style && !segment.text.startsWith('[') ? `[${segment.style}] ${segment.text}` : segment.text;
       const model = input.model || 's2.1-pro';
+      const {text}=voiceDelivery({segment,actor:{},family:'fish_audio',connection:{model},useStyle:input.useStyle!==false});
       const response = await spindle.cors('https://api.fish.audio/v1/tts', {
         method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${input.apiKey.trim()}`,'model':model},
         body:JSON.stringify({text,reference_id:segment.voice || undefined,format:'mp3'})

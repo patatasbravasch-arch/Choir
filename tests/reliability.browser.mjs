@@ -4,7 +4,7 @@ import {createHash} from 'node:crypto';
 import {JSDOM} from 'jsdom';
 import {IDBFactory,IDBObjectStore} from 'fake-indexeddb';
 import {setup} from '../dist/frontend.js';
-import {validatePlan,speechSourceUnits,transcriptFromMessage} from '../src/core.js';
+import {validatePlan,speechSourceUnits,transcriptFromMessage,stripAudioTags} from '../src/core.js';
 import {speechPanel} from './fixtures/speech-panel.mjs';
 import {phoneWidget} from './fixtures/phone-widget.mjs';
 
@@ -2290,7 +2290,8 @@ test('OpenRouter Fish grouping uses Fish voice IDs and exposes Fish catalogue to
   [...dialog.querySelectorAll('button')].find(button=>button.textContent==='Cancel').click();
   await h.plan();await h.play();assert.equal(h.synthesis.length,1);
   assert.deepEqual(h.synthesis[0].parameters.turns.map(turn=>turn.voice),['1','3','4','1'].map(char=>char.repeat(32)));
-  assert.equal(h.synthesis[0].parameters.turns.map(turn=>turn.text).join(' '),h.message.content);
+  assert.equal(h.synthesis[0].parameters.turns.map(turn=>stripAudioTags(turn.text)).join(' '),h.message.content);
+  assert.ok(h.synthesis[0].parameters.turns.every(turn=>turn.style===''));assert.ok(h.synthesis[0].parameters.turns.some(turn=>turn.text.startsWith('[')));
   assert.match(h.$('groupingStatus').title,/up to 5 voices per call/);
   await h.reload();await h.play();assert.equal(h.synthesis.length,1);
  }finally{await h.close();}
@@ -2344,7 +2345,8 @@ test('Fish S2 sends a moderate dialogue-narration-dialogue passage as one call w
   assert.ok(passage.length>600 && passage.length<900);h.message.content=passage;
   await h.plan();assert.match(h.$('groupingStatus').title,/up to 5 voices per call/);assert.match(h.$('groupingStatus').textContent,/1 speech batch/);
   await h.play();assert.equal(h.synthesis.length,1);assert.deepEqual(h.synthesis[0].parameters.turns.map(turn=>[turn.speaker,turn.voice]),[['Mira','m'],['Narrator','n'],['Mira','m']]);
-  assert.equal(h.synthesis[0].parameters.turns.map(turn=>turn.text).join(' '),passage);
+  assert.equal(h.synthesis[0].parameters.turns.map(turn=>stripAudioTags(turn.text)).join(' '),passage);
+  assert.ok(h.synthesis[0].parameters.turns.every(turn=>turn.style===''));assert.ok(h.synthesis[0].parameters.turns.some(turn=>turn.text.startsWith('[')));
   await h.reload();await h.play();assert.equal(h.synthesis.length,1);
  }finally{await h.close();}
 });

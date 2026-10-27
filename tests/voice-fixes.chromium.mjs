@@ -44,9 +44,9 @@ try{
   const actual=await page.evaluate(()=>({calls:window.calls,gains:window.gains.map(gain=>gain.gain.value),fixed:window.fixtureStore.get('chat:fixture').fixed}));
   assert.equal(actual.fixed.length,3);assert.equal(actual.fixed[2].speaker,'Kian');assert.equal(actual.fixed[2].voice,'m');assert.ok(actual.fixed[2].aliases.includes('Kian Frost'));
   assert.equal(actual.calls.length,3);assert.ok(actual.calls.every(call=>!call.parameters.turns));
-  const kian=actual.calls.find(call=>call.voice==='m');assert.ok(kian.parameters.voice_direction.includes('Accent: Irish'));
-  if(preset){assert.equal(kian.text.match(/\[whispering\]/g).length,1);assert.ok(!kian.parameters.voice_direction.includes('Theatrical'));}
-  else assert.ok(kian.parameters.voice_direction.includes('Theatrical'));
+  const kian=actual.calls.find(call=>call.voice==='m');assert.ok(kian.text.includes('[Accent: Irish]'));assert.equal(kian.parameters.voice_direction,'');
+  if(preset){assert.equal(kian.text.match(/\[whispering\]/g).length,1);assert.ok(!kian.text.includes('Theatrical'));}
+  else assert.ok(kian.text.includes('[Theatrical]'));
   const loud=.8/Math.SQRT2*actual.gains[0],quiet=.0141421356/Math.SQRT2*actual.gains[1];
   assert.ok(Math.abs(loud-.12)<.002,JSON.stringify(actual.gains));assert.ok(Math.abs(quiet-.12)<.002,JSON.stringify(actual.gains));
   await page.locator('[data-choir-action="playback"]').click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.includes('Playback finished'));
