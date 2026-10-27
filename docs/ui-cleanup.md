@@ -55,6 +55,8 @@ Gemini separates sustained performance metadata from momentary inline vocal soun
 
 **Mixed providers work per character.** A Fish character and Gemini narrator use separate connections and adapters. They are never combined into one cross-provider synthesis call. Compatible same-provider dialogue retains each turn's own delivery and accent. Effective instructions also participate in audio cache keys and request-size limits.
 
+Automatic Fish casting uses a small trait brief rather than requiring the voice to match a full biography. Narrator means clear, calm storytelling; a sassy male suggests playful, confident male speech. The closest available voice is chosen and saved. Age and accent details do not veto a usable voice; accent preferences still travel separately in delivery instructions. A failed/refused model choice falls back to those same traits, with obvious soundboards and compilations excluded.
+
 ## Custom voices: implementation options
 
 No voice cloning or paid voice creation was performed for this preview. This work explores the options rather than adding a creation button that the current host cannot complete.

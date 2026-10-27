@@ -7744,7 +7744,7 @@ export async function setup(ctx) {
     try{
       const result=await (await api('/spindle',{signal:branchLookup.signal})).json();
       const extension=result.extensions?.find(item=>item.identifier==='choir');
-      if(!disposed){const branch=extension?.metadata?.branch;badge.hidden=!['staging','UI-CLEANUP'].includes(branch);badge.textContent=branch==='UI-CLEANUP'?'UI cleanup':'Staging';badge.title=`Choir ${"1.1.6-staging.46"} · ${branch || 'unknown branch'}`;}
+      if(!disposed){const branch=extension?.metadata?.branch;badge.hidden=!['staging','UI-CLEANUP'].includes(branch);badge.textContent=branch==='UI-CLEANUP'?'UI cleanup':'Staging';badge.title=`Choir ${"1.1.6-staging.47"} · ${branch || 'unknown branch'}`;}
     }catch{/* Keep an unknown branch unlabelled without interrupting playback. */}
     finally{clearTimeout(timeout);}
   })();
