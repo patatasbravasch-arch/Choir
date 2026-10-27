@@ -2660,7 +2660,7 @@ function createSetupWizard(ctx, adapter) {
         number('Prefetch passages','prefetch',0,4,numbers,'0 turns lookahead off. Try 2 for faster playback.');
         number('Concurrent TTS requests','concurrency',1,4,numbers,'Try 2 if your provider permits it.');
         number('Max characters per request','chunk',80,10000,buffering,'Smaller requests can start sooner, but require more calls.');
-        check('Group speech requests',draft.batchSpeech,buffering,value=>{draft.batchSpeech=value;},'Combines compatible passages into fewer calls. Loudness matching, a voice gap, different channel volumes or character speeds keep voices separate.');
+        check('Group speech requests',draft.batchSpeech,buffering,value=>{draft.batchSpeech=value;},'Combines compatible passages into fewer calls. Gemini can use two speakers per call, including the narrator. Loudness matching balances the shared Gemini clip. A voice gap, different channel volumes or character speeds keep voices separate. Requires multi-speaker support on your Lumiverse server.');
         const filtering=section('Text filters',body);
         check('Skip non-story blocks',draft.skipMeta!==false,filtering,value=>{draft.skipMeta=value;},'Filter trackers, recaps and interface panels. LLM and Jev modes can also run a planner check.');
         const skipped=element('textarea');skipped.rows=2;skipped.value=draft.ignoredTags || '';skipped.placeholder='summary, .status-panel, #phone-panel';skipped.oninput=()=>{draft.ignoredTags=skipped.value;};
@@ -3407,7 +3407,7 @@ export async function setup(ctx) {
         <label>Planner output tokens<input data-et="plannerTokens" type="number" min="1024" max="32768" step="1024" value="8192"></label>
         <label>Prefetch speech clips<input data-et="prefetch" type="number" min="0" max="4" value="1"></label>
         <label class="et-check"><input data-et="allowLlmFallback" type="checkbox"> Allow LLM fallback after Jev fails (extra cost)</label>
-        <label class="et-check" title="Balances voices separately. Different characters use separate clips while matching is on; matching off allows shared dialogue clips."><input data-et="normalizeLoudness" type="checkbox" checked> Match passage loudness</label>
+        <label class="et-check" title="Balances speech clips. Grouped Gemini dialogue is balanced as a whole; other providers keep voices separate while matching is on."><input data-et="normalizeLoudness" type="checkbox" checked> Match passage loudness</label>
         <label hidden>Lumiverse API base<input data-et="apiBase" value="/api/v1"></label>
         <label>Freesound API key (Foley)<input data-et="freesoundApiKey" type="password" placeholder="Freesound token"></label>
       </div>
@@ -6397,7 +6397,11 @@ export async function setup(ctx) {
     const provider=nativeProviders.find(item=>item.id===connection?.provider);
     const family=detectProvider(route),limits=speechRequestLimits(connection?.provider,connection?.model);
     const prebuilt=GEMINI_VOICES.some(voice=>voice.id===segment.voice);
-    const maxSpeakers=voiceGapSetting()>0 || snapshot.normalizeLoudness?0:family==='fish_audio' || family==='gemini' && prebuilt || provider?.capabilities.staticVoices?.some(voice=>voice.id===segment.voice)?nativeSpeakerLimit(connection):0;
+    // Gemini's multi-speaker audio is one clip: normalize that clip instead of
+    // undoing grouping. Fish retains its existing per-voice matching.
+    const sharedLoudness=!snapshot.normalizeLoudness || family==='gemini';
+    const compatibleVoice=family==='fish_audio' || family==='gemini' && prebuilt || provider?.capabilities.staticVoices?.some(voice=>voice.id===segment.voice);
+    const maxSpeakers=voiceGapSetting()===0 && sharedLoudness && compatibleVoice?nativeSpeakerLimit(connection):0;
     const parameters={...request.parameters};
     if(maxSpeakers && (['gemini','fish_audio'].includes(family) || connection?.provider==='openrouter_tts')){delete parameters.speech_style;delete parameters.instructions;delete parameters.voice_direction;}
     const level=mixerVolume(1,segment.speaker,mixerState.channels);
@@ -6420,7 +6424,8 @@ export async function setup(ctx) {
     const maxSpeakers=nativeSpeakerLimit(connection);
     const name=connection?.name || 'This connection';
     const reasons=[];
-    if(config.normalizeLoudness)reasons.push('Loudness matching keeps different voices in separate clips so each can be balanced.');
+    if(config.normalizeLoudness && detectProvider(route)==='gemini' && maxSpeakers)reasons.push('Gemini dialogue is loudness-matched as one clip, rather than per character.');
+    else if(config.normalizeLoudness && detectProvider(route)!=='gemini')reasons.push('Loudness matching keeps different voices in separate clips so each can be balanced.');
     if(voiceGapSetting()>0)reasons.push('Gap between voices keeps spoken turns separate. Set the gap to 0 to allow shared dialogue clips.');
     const members=plan?.segments?.filter(segment=>!segment.kind).flatMap(speechMembers).filter(segment=>!speakerExcluded(segment.speaker)) || [];
     if(new Set(members.map(segment=>segment.route || route)).size>1)reasons.push('Different TTS connections use separate calls.');
@@ -6429,7 +6434,7 @@ export async function setup(ctx) {
       if(new Set(voices.map(segment=>mixerVolume(1,segment.speaker,mixerState.channels))).size>1)reasons.push('Different channel volumes keep those voices in separate clips.');
       if(new Set(voices.map(segment=>playbackRateFor(segment.speaker))).size>1)reasons.push('Different character speeds keep those voices in separate clips.');
     }
-    const capability=maxSpeakers?`${name} can combine up to ${maxSpeakers} ${detectProvider(route)==='gemini'?'preset ':''}voices per call.`:`${name}'s Lumiverse relay advertises one voice per call; different assigned voices need separate calls.`;
+    const capability=maxSpeakers?`${name} can combine up to ${maxSpeakers} ${detectProvider(route)==='gemini'?'preset ':''}voices per call.${detectProvider(route)==='gemini'?' The narrator counts as a speaker.':''}`:`${name}'s Lumiverse relay advertises one voice per call; different assigned voices need separate calls.${detectProvider(route)==='gemini'?' Multi-speaker support must be installed on this Lumiverse server for the selected model; updating Choir alone cannot enable it.':''}`;
     const explanation=[...new Set([...reasons,capability])].join(' ');
     node.title=explanation;node.textContent=`Grouping enabled. ${explanation}`;node.hidden=false;
     if(plan?.segments?.length){
@@ -6883,7 +6888,7 @@ export async function setup(ctx) {
         if(await restoreSavedPlan(messageId)){await play();return;}
         throw new Error('Saved sound-effect timing needs updating. Plan and play this reply to place effects between phrases.');
       }
-      if(recording.segments.some(segment=>segment.unison && (JSON.stringify(segment.mixLevels)!==JSON.stringify(unisonLevels(segment)) || segment.mixNormalize!==config.normalizeLoudness) || segment.dialogue && (!config.batchSpeech || config.normalizeLoudness || voiceGapSetting()>0 || segment.turns.some(turn=>speakerExcluded(turn.speaker) || mixerVolume(1,turn.speaker,mixerState.channels)!==mixerVolume(1,segment.turns[0].speaker,mixerState.channels) || playbackRateFor(turn.speaker)!==playbackRateFor(segment.turns[0].speaker))))){
+      if(recording.segments.some(segment=>segment.unison && (JSON.stringify(segment.mixLevels)!==JSON.stringify(unisonLevels(segment)) || segment.mixNormalize!==config.normalizeLoudness) || segment.dialogue && (!config.batchSpeech || config.normalizeLoudness && detectProvider(segment.route)!=='gemini' || voiceGapSetting()>0 || segment.turns.some(turn=>speakerExcluded(turn.speaker) || mixerVolume(1,turn.speaker,mixerState.channels)!==mixerVolume(1,segment.turns[0].speaker,mixerState.channels) || playbackRateFor(turn.speaker)!==playbackRateFor(segment.turns[0].speaker))))){
         if(await restoreSavedPlan(messageId)){await play();return;}
         throw new Error('Speaker controls changed. Plan and play this reply to rebuild its grouped audio.');
       }

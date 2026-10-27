@@ -80,7 +80,7 @@ index afa89e73..606294dc 100644
 +      delete speechConfig.voice_config;
 +      speechConfig.multi_speaker_voice_config = { speaker_voice_configs: [...voices].map(([speaker, voice]) => ({ speaker: alias(speaker), voice_config: { prebuilt_voice_config: { voice_name: voice } } })) };
 +    }
-+    return { contents: [{ role: "user", parts: turns.map((turn: any) => ({ text: turn.text, speech_metadata: { speaker: alias(turn.speaker), ...((turn.style || fallback) ? { style: turn.style || fallback } : {}) } })) }], generationConfig };
++    return { contents: [{ role: "user", parts: turns.map((turn: any) => ({ text: turn.text, speech_metadata: { ...(voices.size > 1 ? { speaker: alias(turn.speaker) } : {}), ...((turn.style || fallback) ? { style: turn.style || fallback } : {}) } })) }], generationConfig };
 +  }
    const part: Record<string, any> = { text: request.text };
    const style = resolveGeminiTtsSpeechStyle(request);

@@ -2308,6 +2308,34 @@ test('OpenRouter Gemini groups only two preset voices per call despite the provi
  }finally{await h.close();}
 });
 
+test('Gemini multi-speaker grouping survives loudness matching and cached replay without extra short calls',async()=>{
+ for(const native of [false,true]){
+  const h=await openRouterGroupingHarness('gemini');try{
+   if(native){
+    h.connections[0].provider='google_tts';h.connections[0].model='gemini-3.8-flash-tts';
+    h.state.providers=[{id:'google_tts',capabilities:{parameters:{speech_style:{type:'string'}},multiSpeaker:{maxSpeakers:2,models:['gemini-3.8-flash-tts']}}}];
+   }
+   h.message.content=Array.from({length:6},(_,i)=>`The bell rang ${i+1} times. "I hear it."`).join(' ');
+   const saved=h.store.get('chat:chat-a');saved.normalizeLoudness=true;h.store.set('chat:chat-a',saved);await h.reload();
+   await h.plan();await h.play();
+   assert.equal(h.synthesis.length,1);assert.equal(h.synthesis[0].parameters.turns.length,12);
+   assert.deepEqual([...new Set(h.synthesis[0].parameters.turns.map(turn=>turn.voice))],['Charon','Puck']);
+   assert.equal(h.synthesis[0].parameters.turns.map(turn=>turn.text).join(' '),h.message.content);
+   assert.match(h.$('groupingStatus').textContent,/1 speech batch/);assert.match(h.$('groupingStatus').textContent,/loudness-matched as one clip/);
+   await h.play();await h.reload();await h.play();assert.equal(h.synthesis.length,1,'replay and reload reuse the shared clip');
+   await toggle(h,'normalizeLoudness',false);await h.play();assert.equal(h.synthesis.length,1,'normalization is a playback setting');
+   await toggle(h,'normalizeLoudness',true);await h.play();assert.equal(h.synthesis.length,1);
+   if(native){
+    delete h.state.providers[0].capabilities.multiSpeaker;await h.reload();
+    assert.match(h.$('groupingStatus').textContent,/support must be installed on this Lumiverse server/);
+    assert.doesNotMatch(h.$('groupingStatus').textContent,/loudness-matched as one clip/);
+    await h.plan();await h.play();assert.equal(h.synthesis.length,8,'six unique narration passages and one repeated character line use seven additional cached requests');
+    assert.ok(h.synthesis.slice(1).every(request=>!request.parameters.turns),'old relays never receive an ignored dialogue payload');
+   }
+  }finally{await h.close();}
+ }
+});
+
 test('an unpatched OpenRouter relay keeps Fish voices model-specific and uses separate calls for different speakers',async()=>{
  const h=await openRouterGroupingHarness('fish_audio',false);try{
   assert.match(h.$('groupingStatus').title,/relay advertises one voice per call/);

@@ -54,9 +54,9 @@ try{
   await page.getByRole('button',{name:'Reset mixer layout',exact:true}).click();await page.waitForFunction(()=>window.fixtureStore.get('ui:mixer')?.quickButtonColumns===0);
   const before=await page.evaluate(()=>window.calls.length);
   await showDrawerControl(page,'batchSpeech');await page.locator('[data-et="batchSpeech"]').check();
-  assert.equal(await page.locator('[data-et="groupingStatus"]').isVisible(),true);assert.match(await page.locator('[data-et="groupingStatus"]').innerText(),/Loudness matching keeps different voices/);
-  await page.evaluate(async()=>{window.cleanup();const config=window.fixtureStore.get('chat:fixture');config.batchSpeech=true;config.normalizeLoudness=false;config.fixed[0].accent='Scottish';config.fixed[2].route='';config.fixed[2].voice='Kore';window.fixtureStore.set('chat:fixture',config);window.cleanup=await window.mountChoir();});
-  await showDrawerControl(page,'normalizeLoudness');await page.locator('[data-et="normalizeLoudness"]').uncheck();await page.waitForFunction(()=>window.fixtureStore.get('settings:global')?.normalizeLoudness===false);
+  assert.equal(await page.locator('[data-et="groupingStatus"]').isVisible(),true);assert.match(await page.locator('[data-et="groupingStatus"]').innerText(),/loudness-matched as one clip/);
+  await page.evaluate(async()=>{window.cleanup();const config=window.fixtureStore.get('chat:fixture');config.batchSpeech=true;config.normalizeLoudness=true;config.fixed[0].accent='Scottish';config.fixed[2].route='';config.fixed[2].voice='Kore';window.fixtureStore.set('chat:fixture',config);window.cleanup=await window.mountChoir();});
+  await showDrawerControl(page,'normalizeLoudness');assert.equal(await page.locator('[data-et="normalizeLoudness"]').isChecked(),true);
   await showDrawerControl(page,'batchSpeech');await page.locator('[data-et="batchSpeech"]').check();await page.waitForFunction(()=>window.fixtureStore.get('settings:global')?.batchSpeech===true);await tab('Playback').click();
   await page.locator('[data-et="latest"]').click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Ready:'));
   await page.locator('[data-et="drawerPlay"]').click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.includes('Playback finished'));

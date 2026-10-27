@@ -494,7 +494,7 @@ export function createSetupWizard(ctx, adapter) {
         number('Prefetch passages','prefetch',0,4,numbers,'0 turns lookahead off. Try 2 for faster playback.');
         number('Concurrent TTS requests','concurrency',1,4,numbers,'Try 2 if your provider permits it.');
         number('Max characters per request','chunk',80,10000,buffering,'Smaller requests can start sooner, but require more calls.');
-        check('Group speech requests',draft.batchSpeech,buffering,value=>{draft.batchSpeech=value;},'Combines compatible passages into fewer calls. Loudness matching, a voice gap, different channel volumes or character speeds keep voices separate.');
+        check('Group speech requests',draft.batchSpeech,buffering,value=>{draft.batchSpeech=value;},'Combines compatible passages into fewer calls. Gemini can use two speakers per call, including the narrator. Loudness matching balances the shared Gemini clip. A voice gap, different channel volumes or character speeds keep voices separate. Requires multi-speaker support on your Lumiverse server.');
         const filtering=section('Text filters',body);
         check('Skip non-story blocks',draft.skipMeta!==false,filtering,value=>{draft.skipMeta=value;},'Filter trackers, recaps and interface panels. LLM and Jev modes can also run a planner check.');
         const skipped=element('textarea');skipped.rows=2;skipped.value=draft.ignoredTags || '';skipped.placeholder='summary, .status-panel, #phone-panel';skipped.oninput=()=>{draft.ignoredTags=skipped.value;};

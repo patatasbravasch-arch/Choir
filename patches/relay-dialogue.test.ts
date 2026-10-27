@@ -5,6 +5,7 @@ import {pathToFileURL} from 'node:url';
 const root=process.env.LUMIVERSE_ROOT || process.cwd();
 const {buildFishAudioBody}=await import(pathToFileURL(path.join(root,'src/tts/providers/fish-audio.ts')).href);
 const {buildGeminiTtsBody}=await import(pathToFileURL(path.join(root,'src/tts/providers/google-tts-shared.ts')).href);
+const {GoogleTtsProvider}=await import(pathToFileURL(path.join(root,'src/tts/providers/google-tts.ts')).href);
 const {OpenRouterTtsProvider}=await import(pathToFileURL(path.join(root,'src/tts/providers/openrouter-tts.ts')).href);
 const turns=[{speaker:'Narrator',voice:'Charon',text:'The gate opened.',style:'Calm'},{speaker:'Alice',voice:'Kore',text:'Hello.',style:'Warm'},{speaker:'Narrator',voice:'Charon',text:'She smiled.'}];
 const request=(model:string,entries=turns)=>({text:entries.map(turn=>turn.text).join('\n'),voice:entries[0].voice,model,parameters:{turns:entries}});
@@ -17,6 +18,29 @@ test('Google sends structured dialogue with two prebuilt voices',()=>{
   const body=buildGeminiTtsBody(request('gemini-3.8-flash-tts'));
   expect(body.contents[0].parts.map((part:any)=>part.speech_metadata.speaker)).toEqual(['Speaker0','Speaker1','Speaker0']);
   expect(body.generationConfig.speech_config.multi_speaker_voice_config.speaker_voice_configs.map((s:any)=>s.voice_config.prebuilt_voice_config.voice_name)).toEqual(['Charon','Kore']);
+});
+
+test('Google keeps changing delivery for one voice in a single request without unconfigured speaker labels',()=>{
+  const entries=[turns[0],{...turns[0],text:'Then a whisper.',style:'Whispering'}];
+  const body=buildGeminiTtsBody(request('gemini-3.8-flash-tts',entries));
+  expect(body.generationConfig.speech_config.voice_config.prebuilt_voice_config.voice_name).toBe('Charon');
+  expect(body.contents[0].parts.map((part:any)=>part.speech_metadata)).toEqual([{style:'Calm'},{style:'Whispering'}]);
+  expect(()=>buildGeminiTtsBody(request('gemini-3.8-flash-tts',[...turns,{speaker:'Third',voice:'Puck',text:'Hello.'}]))).toThrow('at most two');
+});
+
+test('Google sends twelve alternating turns in one HTTP request with per-turn delivery and one WAV',async()=>{
+  const originalFetch=globalThis.fetch,provider=new GoogleTtsProvider();let calls=0,body:any;
+  try{
+    globalThis.fetch=async(_url:any,init:any)=>{calls++;body=JSON.parse(init.body);return Response.json({candidates:[{content:{parts:[{inlineData:{mimeType:'audio/l16;rate=24000',data:Buffer.from([0,0,1,0]).toString('base64')}}]}}]});};
+    const entries=Array.from({length:12},(_,i)=>({...turns[i%2],text:`Turn ${i+1}.`}));
+    const audio=await provider.synthesize('test-key','',request('gemini-3.8-flash-tts',entries));
+    expect(calls).toBe(1);expect(body.contents[0].parts.map((part:any)=>part.text)).toEqual(entries.map(turn=>turn.text));
+    expect(body.contents[0].parts.map((part:any)=>part.speech_metadata.style)).toEqual(entries.map(turn=>turn.style));
+    expect(body.generationConfig.speech_config.voice_config).toBeUndefined();
+    expect(body.generationConfig.speech_config.multi_speaker_voice_config.speaker_voice_configs).toHaveLength(2);
+    expect(provider.capabilities.multiSpeaker.maxSpeakers).toBe(2);expect(audio.contentType).toBe('audio/wav');
+    expect(Buffer.from(audio.audioData.slice(0,4)).toString()).toBe('RIFF');
+  }finally{globalThis.fetch=originalFetch;}
 });
 test('relay rejects unsupported models, custom Gemini voices, conflicts and excessive size',()=>{
   expect(()=>buildFishAudioBody(request('s1'))).toThrow();
