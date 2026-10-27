@@ -1,3 +1,4 @@
+import {showDrawerControl,withDrawerControl} from './fixtures/drawer.mjs';
 import {playbackFixture} from './fixtures/playback.mjs';
 import {createRequire} from 'node:module';
 import {createServer} from 'node:http';
@@ -33,12 +34,12 @@ try{
    window.fixtureStore.set('settings:global',{enableMusic:enabled,enableAmbience:false,enableSfx:false,loopMusic:false,normalizeLoudness:false});
    window.fixtureStore.set('ui:mixer',{master:1,music:1,playbackRate:1,voiceGapMs:0});window.cleanup=await window.mountChoir();
   },music);
-  await page.locator('[data-et="latest"]').click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Ready:'));
+  await withDrawerControl(page,'latest',()=>page.locator('[data-et="latest"]').click());await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Ready:'));
   await page.getByRole('button',{name:'Open Choir voice mixer',exact:true}).click();
  };
  const play=()=>page.locator('[data-choir-action="playback"]').click();
  const finish=()=>page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.includes('Playback finished'));
- const save=async()=>{const pending=page.waitForEvent('download');await page.locator('footer [data-choir-download]').click();const result=await pending;return readFile(await result.path());};
+ const save=async()=>{const pending=page.waitForEvent('download');await page.locator('footer [data-choir-download]').press('Enter');const result=await pending;return readFile(await result.path());};
  const waitForSecond=async()=>{await page.waitForFunction(()=>typeof window.releaseSpeech==='function');await page.waitForFunction(()=>window.audios.some(audio=>!audio.loop && audio.ended));};
  await open(false);await play();await waitForSecond();await page.waitForTimeout(2500);await page.evaluate(()=>{window.holdSpeechText='';window.releaseSpeech();});await finish();
  const delayed=await save();assert.ok(duration(delayed)>2.8 && duration(delayed)<3.7,`silent synthesis wait leaked into ${duration(delayed)}s WAV`);assert.ok(longestSilence(delayed)<0.4);
@@ -55,15 +56,15 @@ try{
  for(let index=0;index<size;index++){const value=music.readInt16LE(44+(start+index)*channels*2)/32768,angle=2*Math.PI*440*index/rate;real+=value*Math.cos(angle);imag+=value*Math.sin(angle);}
  assert.ok(2*Math.hypot(real,imag)/size>0.002,'music missing from the saved speech wait');
  console.log('PASS: music that remains audible during a synthesis wait stays in the WAV at the correct time.');
- await open(true);await page.evaluate(()=>window.holdSpeechText='');await page.locator('[data-et="loopMusic"]').check();await play();await finish();
+ await open(true);await page.evaluate(()=>window.holdSpeechText='');await withDrawerControl(page,'loopMusic',()=>page.locator('[data-et="loopMusic"]').check());await play();await finish();
  await page.evaluate(()=>window.fixtureMessage.content='The hall fell silent. "Welcome." A new story begins.');
- await page.locator('[data-et="latest"]').click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Ready:'));await play();await finish();
+ await withDrawerControl(page,'latest',()=>page.locator('[data-et="latest"]').click());await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Ready:'));await play();await finish();
  assert.ok(toneLevel(await save(),440)>0.002,'carried music must be present on the first play of a cue-free message');
  const saved=await page.evaluate(()=>new Promise((resolve,reject)=>{const request=indexedDB.open('choir-recordings',2);request.onerror=()=>reject(request.error);request.onsuccess=()=>{const db=request.result,rows=db.transaction('recordings').objectStore('recordings').getAll();rows.onsuccess=()=>{resolve(rows.result.map(row=>({content:row.content,carried:row.segments.some(segment=>segment.kind==='music' && segment.carried),musicBytes:row.blobs.find((_,index)=>row.segments[index].kind==='music')?.blob?.size})));db.close();};};}));
  assert.ok(saved.some(row=>row.content.startsWith('The hall') && row.carried && row.musicBytes>0),JSON.stringify(saved));
  const requests=await page.evaluate(()=>window.calls.length);
  await page.evaluate(async()=>{await window.cleanup();window.cleanup=await window.mountChoir();});
- await page.locator('details').filter({has:page.locator('[data-et="messages"]')}).locator('summary').click();
+ await showDrawerControl(page,'messages');
  await page.locator('[data-et="messages"]').getByRole('button',{name:'Replay',exact:true}).click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent==='Replay finished.');
  assert.ok(toneLevel(await save(),440)>0.002,'music carried from a previous message must survive cached Replay after remount');assert.equal(await page.evaluate(()=>window.calls.length),requests);
  console.log('PASS: a cue-free message saves the music carried from the previous reply, restores it on cached Replay after remount, and includes it in the WAV without TTS.');

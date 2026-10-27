@@ -1,3 +1,4 @@
+import {showDrawerControl,withDrawerControl} from './fixtures/drawer.mjs';
 // Deterministic timing regressions. No provider keys or live synthesis needed.
 import {createRequire} from 'node:module';
 import {createServer} from 'node:http';
@@ -45,7 +46,7 @@ try{
     if(options.mode==='companion')await page.evaluate(async o=>{window.started=performance.now();await window.__CHOIR_API__.playParagraph({text:window.fixtureMessage.content,nextText:o.nextText});},options);
     else{
       await page.getByRole('button',{name:'Open Choir voice mixer',exact:true}).click();
-      await page.locator('[data-et="latest"]').click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Ready:'));
+      await withDrawerControl(page,'latest',()=>page.locator('[data-et="latest"]').click());await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Ready:'));
       await page.evaluate(()=>window.started=performance.now());await page.locator('[data-choir-action="playback"]').click();
       await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.includes('Playback finished'),null,{timeout:30000});
     }

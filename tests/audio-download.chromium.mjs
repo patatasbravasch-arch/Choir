@@ -1,3 +1,4 @@
+import {showDrawerControl,withDrawerControl} from './fixtures/drawer.mjs';
 import {playbackFixture} from './fixtures/playback.mjs';
 import {createRequire} from 'node:module';
 import {createServer} from 'node:http';
@@ -16,15 +17,15 @@ try{
  browser=await chromium.launch({headless:true,channel:process.env.CHOIR_BROWSER_CHANNEL || 'chrome',args:['--disable-crash-reporter']});
  const page=await browser.newPage({acceptDownloads:true,viewport:{width:1440,height:1000}});page.on('pageerror',error=>errors.push(error.message));
  await page.goto(`http://127.0.0.1:${server.address().port}`);await page.waitForFunction(()=>window.ready);
- assert.equal(await page.getByRole('heading',{name:'Cast',exact:true}).count(),1);
+ assert.equal(await page.getByRole('heading',{name:'Cast',exact:true,includeHidden:true}).count(),1);
  assert.equal(await page.getByRole('heading',{name:'NPC Cast',exact:true}).count(),0);
  const download=page.locator('footer [data-choir-download]');assert.equal(await download.isVisible(),false);
- await page.locator('[data-et="latest"]').click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Ready:'));
+ await withDrawerControl(page,'latest',()=>page.locator('[data-et="latest"]').click());await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Ready:'));
  await page.getByRole('button',{name:'Open Choir voice mixer',exact:true}).click();
  await page.locator('[data-choir-action="playback"]').click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.includes('Playback finished'));
  const calls=await page.evaluate(()=>window.calls.length);assert.equal(calls,3);
  let windowFilename='Choir - M - fixture - 001.wav';
- const save=async()=>{const pending=page.waitForEvent('download');await download.click();const result=await pending;assert.equal(result.suggestedFilename(),windowFilename);return readFile(await result.path());};
+ const save=async()=>{const pending=page.waitForEvent('download');await download.press('Enter');const result=await pending;assert.equal(result.suggestedFilename(),windowFilename);return readFile(await result.path());};
  const wav=await save();assert.equal(wav.toString('ascii',0,4),'RIFF');assert.equal(wav.toString('ascii',8,12),'WAVE');
  assert.equal(wav.readUInt32LE(4),wav.length-8);assert.equal(wav.readUInt16LE(22),2);assert.equal(wav.readUInt32LE(24),48000);assert.ok(wav.readUInt32LE(40)>=3*48000*4);
  assert.equal(await page.evaluate(()=>window.calls.length),calls);
@@ -45,12 +46,12 @@ try{
  }));
  assert.deepEqual(await save(),wav,'recovering a missing clip index must preserve every sample of the complete WAV');
  assert.equal(await page.evaluate(()=>window.calls.length),calls);
- await page.locator('[data-et="voiceGapMsEntry"]').fill('500');await page.locator('[data-et="voiceGapMsEntry"]').press('Tab');
+ await withDrawerControl(page,'voiceGapMsEntry',()=>page.locator('[data-et="voiceGapMsEntry"]').fill('500'));await page.locator('[data-et="voiceGapMsEntry"]').press('Tab');
  assert.deepEqual(await save(),wav,'changing settings after playback must not alter what was already heard');
  const playAgain=async()=>{const count=await page.evaluate(()=>window.audios.length);await page.locator('[data-choir-action="playback"]').click();await page.waitForFunction(before=>window.audios.length>before,count);await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.includes('Playback finished'));};
  await playAgain();const spaced=await save();assert.ok(spaced.readUInt32LE(40)>wav.readUInt32LE(40)+0.7*48000*4);assert.equal(await page.evaluate(()=>window.calls.length),calls);
- await page.locator('[data-et="voiceGapMsEntry"]').fill('0');await page.locator('[data-et="voiceGapMsEntry"]').press('Tab');
- await page.locator('[data-et="playbackRateEntry"]').fill('2');await page.locator('[data-et="playbackRateEntry"]').press('Tab');
+ await withDrawerControl(page,'voiceGapMsEntry',()=>page.locator('[data-et="voiceGapMsEntry"]').fill('0'));await page.locator('[data-et="voiceGapMsEntry"]').press('Tab');
+ await withDrawerControl(page,'playbackRateEntry',()=>page.locator('[data-et="playbackRateEntry"]').fill('2'));await page.locator('[data-et="playbackRateEntry"]').press('Tab');
  await playAgain();const fast=await save();assert.ok(fast.readUInt32LE(40)<wav.readUInt32LE(40)*0.75,'the download keeps the speed heard');assert.equal(await page.evaluate(()=>window.calls.length),calls);
  // Give each scene channel a distinct tone, then inspect the samples in the
  // downloaded WAV. This proves inclusion/exclusion at the actual output.
@@ -73,12 +74,12 @@ try{
   window.fixtureStore.set('ui:mixer',{master:1,music:1,ambience:1,sfx:1,playbackRate:1,voiceGapMs:0});window.cleanup=await window.mountChoir();
  });
  windowFilename='Choir - M - fixture - 042.wav';
- await page.locator('[data-et="latest"]').click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Ready:'));
+ await withDrawerControl(page,'latest',()=>page.locator('[data-et="latest"]').click());await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Ready:'));
  await page.getByRole('button',{name:'Open Choir voice mixer',exact:true}).click();await playAgain();
  const withScene=spectrum(await save());for(const frequency of [220,440,660,880])assert.ok(withScene[frequency]>0.002,JSON.stringify(withScene));
  assert.equal(await page.evaluate(()=>window.audios.some(audio=>audio.loop && !audio.paused)),true,'continuous music still plays, but the message download is already complete');
  let sceneCalls=await page.evaluate(()=>window.calls.length);
- await page.locator('[data-et="enableMusic"]').uncheck();await page.locator('[data-et="enableAmbience"]').uncheck();await page.locator('[data-et="enableSfx"]').uncheck();
+ await withDrawerControl(page,'enableMusic',()=>page.locator('[data-et="enableMusic"]').uncheck());await withDrawerControl(page,'enableAmbience',()=>page.locator('[data-et="enableAmbience"]').uncheck());await withDrawerControl(page,'enableSfx',()=>page.locator('[data-et="enableSfx"]').uncheck());
  await playAgain();const withoutScene=spectrum(await save());assert.ok(withoutScene[220]>0.01,JSON.stringify(withoutScene));for(const frequency of [440,660,880])assert.ok(withoutScene[frequency]<0.0003,JSON.stringify(withoutScene));assert.equal(await page.evaluate(()=>window.calls.length),sceneCalls);
  await page.evaluate(async()=>{
   await window.cleanup();window.fixtureStore.set('settings:global',{...window.fixtureStore.get('settings:global'),enableMusic:true,enableAmbience:true,enableSfx:true});
@@ -98,7 +99,7 @@ try{
   };
  }));
  await page.evaluate(()=>window.fixtureEvents.get('MESSAGE_EDITED')({messageId:'reply'}));await download.waitFor({state:'hidden'});
- await page.locator('details').filter({has:page.locator('[data-et="messages"]')}).locator('summary').click();
+ await showDrawerControl(page,'messages');
  await page.locator('[data-et="messages"]').getByRole('button',{name:'Replay',exact:true}).click();
  await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent==='Replay finished.');
  const migrated=spectrum(await save());assert.ok(migrated[220]>0.01);for(const frequency of [440,660,880])assert.ok(migrated[frequency]<0.0003,JSON.stringify(migrated));assert.equal(await page.evaluate(()=>window.calls.length),sceneCalls);
@@ -116,7 +117,7 @@ try{
   });
   window.fixtureStore.set('ui:mixer',{...window.fixtureStore.get('ui:mixer'),music:1});window.cleanup=await window.mountChoir();
  });
- await page.locator('[data-et="latest"]').click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Ready:'));
+ await withDrawerControl(page,'latest',()=>page.locator('[data-et="latest"]').click());await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Ready:'));
  await page.getByRole('button',{name:'Open Choir voice mixer',exact:true}).click();await playAgain();
  await page.waitForFunction(()=>typeof window.releaseMusicSelection==='function');
  const beforeLateMusic=await save();await page.evaluate(()=>window.releaseMusicSelection());await page.waitForFunction(()=>window.audios.some(audio=>audio.loop && !audio.paused));
@@ -124,7 +125,7 @@ try{
  sceneCalls=await page.evaluate(()=>window.calls.length);
  console.log('PASS: late continuous-music loading preserves the completed played-audio download byte for byte.');
  // Verify that the active chat can add multiple Fish IDs without using Set default.
- const policy=page.locator('[data-et="npcPolicyRoot"]');await page.locator('details').filter({has:policy}).locator('summary').click();await policy.locator('select').first().selectOption('preferred');
+ await showDrawerControl(page,'npcPolicyRoot');const policy=page.locator('[data-et="npcPolicyRoot"]');await policy.locator('select').first().selectOption('preferred');
  await policy.getByRole('combobox',{name:'Casting connection',exact:true}).selectOption('native:c');
  for(const id of ['1'.repeat(32),'2'.repeat(32)]){
   await policy.getByRole('button',{name:'Paste Fish voice ID for Preferred voices',exact:true}).click();

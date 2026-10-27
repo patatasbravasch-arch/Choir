@@ -1,3 +1,4 @@
+import {showDrawerControl,withDrawerControl} from './fixtures/drawer.mjs';
 // Isolated regressions for partial replay, stable retention, stale tabs and casting.
 import {playbackFixture} from './fixtures/playback.mjs';
 import {createRequire} from 'node:module';
@@ -15,7 +16,7 @@ const server=createServer(async(request,response)=>{
 await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));let browser;
 const until=async predicate=>{const end=Date.now()+12000;while(!await predicate()){if(Date.now()>end)throw new Error('Timed out waiting for recording state');await new Promise(resolve=>setTimeout(resolve,25));}};
 const status=page=>page.locator('[data-et="status"]').textContent();
-const openDetails=async(page,name)=>{const details=page.locator('details').filter({has:page.locator(`[data-et="${name}"]`)});if(await details.getAttribute('open')===null)await details.locator('summary').click();};
+const openDetails=(page,name)=>showDrawerControl(page,name);
 const mount=async(context,namespace)=>{
  const page=await context.newPage();page.on('pageerror',error=>errors.push(error.message));
  await page.goto(`http://127.0.0.1:${server.address().port}`);await page.waitForFunction(()=>window.ready);
@@ -30,13 +31,14 @@ const mount=async(context,namespace)=>{
  await page.getByRole('button',{name:'Open Choir voice mixer',exact:true}).click();return page;
 };
 const summary=page=>page.evaluate(async()=>{const row=await window.recordingRead();if(!row)return null;const value=row.value;return {retention:value.retention,createdAt:value.createdAt,expiresAt:value.expiresAt,fullMessage:value.fullMessage,clips:value.blobs?.map(Boolean),mixBytes:value.playedAudio?.blob?.size || 0,mixComplete:value.playedAudio?.complete};});
-const plan=async page=>{await page.locator('[data-et="latest"]').click();await page.waitForFunction(()=>/^Ready:|Saved attribution/.test(document.querySelector('[data-et="status"]').textContent));};
+const plan=async page=>{await withDrawerControl(page,'latest',()=>page.locator('[data-et="latest"]').click());await page.waitForFunction(()=>/^Ready:|Saved attribution/.test(document.querySelector('[data-et="status"]').textContent));};
 const play=async page=>{await page.locator('[data-choir-action="playback"]').click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.includes('Playback finished'));};
 const record=async page=>{await plan(page);await play(page);};
 const replay=async page=>{await openDetails(page,'messages');await page.locator('[data-et="messages"]').getByRole('button',{name:'Replay',exact:true}).click();};
 const finishReplay=page=>page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent==='Replay finished.');
-const retention=async(page,value)=>{await openDetails(page,'retention');await page.locator('[data-et="retention"]').selectOption(value);await page.waitForFunction(()=>document.querySelector('[data-et="saveState"]').textContent==='Saved automatically');};
-const download=async page=>{const pending=page.waitForEvent('download');await page.locator('footer [data-choir-download]').click();const file=await pending;return readFile(await file.path());};
+const retention=async(page,value)=>{await openDetails(page,'retention');await withDrawerControl(page,'retention',()=>page.locator('[data-et="retention"]').selectOption(value));await page.waitForFunction(()=>document.querySelector('[data-et="saveState"]').textContent==='Saved automatically');};
+// Keyboard activation also works when the freely positioned mixer overlaps the fixture footer.
+const download=async page=>{const pending=page.waitForEvent('download');void pending.catch(()=>{});try{await page.locator('footer [data-choir-download]').press('Enter');const file=await pending;return readFile(await file.path());}catch(error){error.message+=`\nChoir status: ${await status(page)}\nRecording: ${JSON.stringify(await summary(page))}`;throw error;}};
 const seconds=wav=>wav.readUInt32LE(40)/(wav.readUInt16LE(22)*2*wav.readUInt32LE(24));
 try{
  browser=await chromium.launch({headless:true,channel:process.env.CHOIR_BROWSER_CHANNEL || 'chrome',args:['--disable-crash-reporter']});
@@ -48,7 +50,7 @@ try{
  }
  {
   const context=await browser.newContext({acceptDownloads:true,viewport:{width:1440,height:1000}}),page=await mount(context);
-  await plan(page);await page.locator('[data-choir-action="playback"]').click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Playing 1/'));await page.locator('[data-et="stop"]').click();
+  await plan(page);await page.locator('[data-choir-action="playback"]').click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Playing 1/'));await withDrawerControl(page,'stop',()=>page.locator('[data-et="stop"]').click());
   await until(async()=>Boolean(await summary(page)));assert.ok((await summary(page)).clips.filter(Boolean).length<3);
   await replay(page);await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.includes('Some speech is missing'));assert.equal((await summary(page)).mixBytes,0);
   await page.locator('footer [data-choir-download]').waitFor({state:'hidden'});
@@ -77,14 +79,14 @@ try{
   await replay(a);await a.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Replaying '));
   if(action==='shorter'){await retention(b,'1');await until(async()=>!await summary(b));await retention(b,'forever');}
   else if(action==='session'){await retention(b,'session');await until(async()=>!await summary(b));}
-  else{await openDetails(b,'messages');if(action==='clear')await b.locator('[data-et="deleteChatAudio"]').click();else await b.locator('[data-et="messages"]').getByRole('button',{name:'Delete audio',exact:true}).click();await until(async()=>!await summary(b));}
+  else{await openDetails(b,'messages');if(action==='clear')await withDrawerControl(b,'deleteChatAudio',()=>b.locator('[data-et="deleteChatAudio"]').click());else await b.locator('[data-et="messages"]').getByRole('button',{name:'Delete audio',exact:true}).click();await until(async()=>!await summary(b));}
   await until(async()=>/^Replay finished\.|.*deleted or expired/.test(await status(a)));
   assert.equal(await summary(a),null,`${action}: stale Replay must not recreate the disk record`);
   console.log(`PASS: ${action} in a second tab cannot be undone by a completing stale Replay.`);await context.close();
  }
  {
   const context=await browser.newContext({acceptDownloads:true,viewport:{width:1440,height:1000}}),page=await mount(context);await plan(page);
-  await page.locator('[data-choir-action="playback"]').click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Playing 1/'));await page.locator('[data-et="stop"]').click();await play(page);
+  await page.locator('[data-choir-action="playback"]').click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Playing 1/'));await withDrawerControl(page,'stop',()=>page.locator('[data-et="stop"]').click());await play(page);
   assert.match(await status(page),/This playback was resumed/);assert.equal((await summary(page)).mixBytes,0);
   await page.locator('footer [data-choir-download]').waitFor({state:'hidden'});
   const calls=await page.evaluate(()=>window.calls.length);await replay(page);await finishReplay(page);const wav=await download(page);assert.ok(seconds(wav)>=3 && seconds(wav)<4.5);assert.equal(await page.evaluate(()=>window.calls.length),calls);

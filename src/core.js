@@ -537,6 +537,7 @@ export function validateCastConfig(config) {
       names.add(key);own.add(key);
     }
     for(const field of ['pronunciation','accent'])if(actor[field] !== undefined && (typeof actor[field]!=='string' || actor[field].length>300))throw new Error(`Invalid ${field} preference.`);
+    if(actor.deliveryMode!==undefined && !['auto','base','off'].includes(actor.deliveryMode))throw new Error('Invalid character delivery mode.');
     if(actor.sayAs!==undefined && (typeof actor.sayAs!=='string' || actor.sayAs.length>120 || /[<>\[\]\r\n]/u.test(actor.sayAs)))throw new Error('Say name as must be plain pronunciation spelling, up to 120 characters.');
     if(actor.sayAsName!==undefined && (typeof actor.sayAsName!=='string' || actor.sayAsName.length>100 || /[<>\r\n]/u.test(actor.sayAsName)))throw new Error('Name spelling to pronounce must be plain text, up to 100 characters.');
     if(actor.excluded !== undefined && typeof actor.excluded!=='boolean')throw new Error('Invalid character exclusion.');
@@ -890,7 +891,7 @@ export function castImport(raw) {
     if(!actor || typeof actor.speaker!=='string' || typeof actor.voice!=='string' || typeof actor.style!=='string')throw new Error('Invalid imported cast row.');
     if(actor.sayAs!==undefined && (typeof actor.sayAs!=='string' || actor.sayAs.length>120 || /[<>\[\]\r\n]/u.test(actor.sayAs)))throw new Error('Invalid imported name pronunciation.');
     if(actor.sayAsName!==undefined && (typeof actor.sayAsName!=='string' || actor.sayAsName.length>100 || /[<>\r\n]/u.test(actor.sayAsName)))throw new Error('Invalid imported name pronunciation target.');
-    return Object.fromEntries(['speaker','voice','style','route','gender','aliases','pronunciation','sayAs','sayAsName','accent','excluded'].filter(key=>actor[key]!==undefined).map(key=>[key,structuredClone(actor[key])]));
+    return Object.fromEntries(['speaker','voice','style','route','gender','aliases','pronunciation','sayAs','sayAsName','accent','deliveryMode','excluded'].filter(key=>actor[key]!==undefined).map(key=>[key,structuredClone(actor[key])]));
   };
   return {...routing,fixed:raw.fixed.map(clean),casts:Object.fromEntries(Object.entries(raw.casts).map(([route,actors])=>{
     if(!Array.isArray(actors) || actors.length>500 || !/^native:[\w.-]+$/.test(route))throw new Error('Invalid imported cast provider.');

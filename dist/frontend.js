@@ -538,6 +538,7 @@ function validateCastConfig(config) {
       names.add(key);own.add(key);
     }
     for(const field of ['pronunciation','accent'])if(actor[field] !== undefined && (typeof actor[field]!=='string' || actor[field].length>300))throw new Error(`Invalid ${field} preference.`);
+    if(actor.deliveryMode!==undefined && !['auto','base','off'].includes(actor.deliveryMode))throw new Error('Invalid character delivery mode.');
     if(actor.sayAs!==undefined && (typeof actor.sayAs!=='string' || actor.sayAs.length>120 || /[<>\[\]\r\n]/u.test(actor.sayAs)))throw new Error('Say name as must be plain pronunciation spelling, up to 120 characters.');
     if(actor.sayAsName!==undefined && (typeof actor.sayAsName!=='string' || actor.sayAsName.length>100 || /[<>\r\n]/u.test(actor.sayAsName)))throw new Error('Name spelling to pronounce must be plain text, up to 100 characters.');
     if(actor.excluded !== undefined && typeof actor.excluded!=='boolean')throw new Error('Invalid character exclusion.');
@@ -891,7 +892,7 @@ function castImport(raw) {
     if(!actor || typeof actor.speaker!=='string' || typeof actor.voice!=='string' || typeof actor.style!=='string')throw new Error('Invalid imported cast row.');
     if(actor.sayAs!==undefined && (typeof actor.sayAs!=='string' || actor.sayAs.length>120 || /[<>\[\]\r\n]/u.test(actor.sayAs)))throw new Error('Invalid imported name pronunciation.');
     if(actor.sayAsName!==undefined && (typeof actor.sayAsName!=='string' || actor.sayAsName.length>100 || /[<>\r\n]/u.test(actor.sayAsName)))throw new Error('Invalid imported name pronunciation target.');
-    return Object.fromEntries(['speaker','voice','style','route','gender','aliases','pronunciation','sayAs','sayAsName','accent','excluded'].filter(key=>actor[key]!==undefined).map(key=>[key,structuredClone(actor[key])]));
+    return Object.fromEntries(['speaker','voice','style','route','gender','aliases','pronunciation','sayAs','sayAsName','accent','deliveryMode','excluded'].filter(key=>actor[key]!==undefined).map(key=>[key,structuredClone(actor[key])]));
   };
   return {...routing,fixed:raw.fixed.map(clean),casts:Object.fromEntries(Object.entries(raw.casts).map(([route,actors])=>{
     if(!Array.isArray(actors) || actors.length>500 || !/^native:[\w.-]+$/.test(route))throw new Error('Invalid imported cast provider.');
@@ -2581,6 +2582,103 @@ function playedAudioFilename(character,chatId,messageIndex){
   return `Choir - ${initials} - ${chat} - ${String(messageIndex+1).padStart(3,'0')}.wav`;
 }
 
+// Arrange existing controls without changing their listeners or saved settings.
+function createDrawerNavigation(root) {
+  const host = root.querySelector('.ensemble-tts'), document = root.ownerDocument;
+  const navigation = document.createElement('nav');
+  navigation.className = 'et-task-tabs'; navigation.setAttribute('role', 'tablist'); navigation.setAttribute('aria-label', 'Choir tasks');
+  const panels = new Map(), buttons = new Map();
+  for (const [key, title, hint] of [
+    ['play','Play','Play the latest reply, adjust sound and follow the story.'],
+    ['cast','Cast','Choose a voice, accent and delivery for each character.'],
+    ['recordings','Recordings','Replay or download saved messages, and manage their storage.'],
+    ['settings','Settings','Set up connections, planning and your mixer.']
+  ]) {
+    const button = document.createElement('button'), panel = document.createElement('section'), intro = document.createElement('p');
+    button.type = 'button'; button.textContent = title; button.id = `choir-tab-${key}`; button.dataset.choirTab = key;
+    button.setAttribute('role', 'tab'); button.setAttribute('aria-controls', `choir-panel-${key}`);
+    panel.id = `choir-panel-${key}`; panel.className = 'et-task-panel'; panel.dataset.choirPanel = key;
+    panel.setAttribute('role', 'tabpanel'); panel.setAttribute('aria-labelledby', button.id); panel.tabIndex = 0;
+    intro.className = 'et-hint'; intro.textContent = hint; panel.append(intro);
+    for (const fragment of [...host.querySelectorAll(`[data-choir-page="${key}"]`)]) panel.append(...fragment.childNodes), fragment.remove();
+    panels.set(key, panel); buttons.set(key, button); navigation.append(button); host.append(panel);
+  }
+  host.querySelector('[data-et="feedback"]').after(navigation);
+  const select = (key, focus = false) => {
+    if (!panels.has(key)) return;
+    for (const [id, panel] of panels) { panel.hidden = id !== key; buttons.get(id).setAttribute('aria-selected', String(id === key)); buttons.get(id).tabIndex = id === key ? 0 : -1; }
+    if (focus) buttons.get(key).focus();
+  };
+  for (const [key, button] of buttons) {
+    button.onclick = () => select(key);
+    button.onkeydown = event => {
+      const keys = [...buttons.keys()], index = keys.indexOf(key);
+      const next = event.key === 'ArrowRight' ? (index + 1) % keys.length : event.key === 'ArrowLeft' ? (index + keys.length - 1) % keys.length : event.key === 'Home' ? 0 : event.key === 'End' ? keys.length - 1 : -1;
+      if (next >= 0) { event.preventDefault(); select(keys[next], true); }
+    };
+  }
+  const move = (name, key) => { const node = host.querySelector(`[data-et="${name}"]`); if (node) panels.get(key).append(node); };
+  const playActions = document.createElement('div'); playActions.className = 'et-row';
+  const play = document.createElement('button'); play.type = 'button'; play.dataset.et = 'drawerPlay'; play.textContent = 'Play latest reply'; play.className = 'et-btn-primary'; play.disabled = true; playActions.append(play);
+  for (const name of ['latest', 'showMixer']) playActions.append(host.querySelector(`[data-et="${name}"]`));
+  panels.get('play').querySelector('.et-hint').after(playActions);
+  playActions.after(host.querySelector('[data-et="latestNotice"]'));
+  const settingsActions = document.createElement('div'); settingsActions.className = 'et-row';
+  for (const name of ['setupWizard', 'customizeMixer']) settingsActions.append(host.querySelector(`[data-et="${name}"]`));
+  panels.get('settings').querySelector('.et-hint').after(settingsActions);
+  settingsActions.after(host.querySelector('[data-et="mixerLayout"]'));
+  const recordings = host.querySelector('[data-et="messages"]').closest('details');
+  recordings.querySelector('summary').remove(); panels.get('recordings').append(...recordings.childNodes); recordings.remove();
+  const retention = host.querySelector('[data-et="retention"]').closest('label'); panels.get('recordings').querySelector('.et-hint').after(retention);
+  move('planDetails', 'play');
+  select('play');
+  return {select};
+}
+
+// Provider adapters keep acting instructions out of the spoken transcript.
+function characterDeliveryMode(actor, narrator = false) {
+  return ['auto', 'base', 'off'].includes(actor?.deliveryMode) ? actor.deliveryMode : narrator ? 'base' : 'auto';
+}
+
+const deliveryText = value => String(value || '').replace(/[\[\]<>]/g, ' ').replace(/\s+/g, ' ').trim();
+const S1_CUES = new Set(['happy','sad','angry','excited','calm','nervous','confident','surprised','satisfied','delighted','scared','worried','upset','frustrated','depressed','empathetic','embarrassed','disgusted','moved','proud','relaxed','grateful','curious','sarcastic','whispering','shouting']);
+
+function voiceDelivery({segment, actor, narrator = false, family, connection = {}, supported = {}, styleParam, useStyle = true}) {
+  const mode = characterDeliveryMode(actor, narrator), base = deliveryText(actor?.style);
+  const acting = useStyle && mode !== 'off' ? mode === 'base' ? base || (narrator ? 'Steady, neutral narration' : '') : deliveryText(segment.style) || base : '';
+  const parameters = {};
+  const supports = key => supported[key] && (!supported[key].models || supported[key].models.includes(connection.model));
+  if (actor?.accent && supports('accent')) {
+    const allowed = supported.accent.enum || supported.accent.options;
+    if (Array.isArray(allowed) && !allowed.some(value => (value.id ?? value) === actor.accent)) throw new Error(`Accent ${actor.accent} is not supported by ${connection.name || 'this connection'}.`);
+    parameters.accent = actor.accent;
+  }
+  const instructions = [acting, actor?.pronunciation, actor?.accent && !supports('accent') ? `Accent: ${actor.accent}` : ''].filter(Boolean).join('. ');
+  const openRouter = connection.provider === 'openrouter_tts';
+  let parameter;
+  if (family === 'gemini') parameter = supports('speech_style') || /gemini-3\.8-flash(?:-lite)?-tts/.test(connection.model || '') ? 'speech_style' : supports('instructions') ? 'instructions' : undefined;
+  else if (family === 'fish_audio') parameter = openRouter ? 'instructions' : supports('voice_direction') ? 'voice_direction' : undefined;
+  else parameter = styleParam && supports(styleParam) ? styleParam : ['instructions', 'instruct', 'prompt'].find(supports);
+  // Empty explicitly overrides the relay's conversational Gemini default.
+  if (parameter && (instructions || ['gemini','fish_audio'].includes(family))) parameters[parameter] = instructions;
+  let text = segment.text;
+  if (family === 'fish_audio' && !parameter && instructions) {
+    const s1 = /(?:^|\/)s1$/.test(connection.model || '');
+    const cues = s1 ? [...new Set(acting.split(/[.,;]+/).map(cue=>cue.trim().toLowerCase()).filter(cue=>S1_CUES.has(cue)))].slice(0,3).map(cue=>`(${cue})`).join('') : `[${deliveryText(instructions)}]`;
+    text = cues ? `${cues} ${text}` : text;
+  }
+  // Older Google relays accept the direction as a natural-language prompt.
+  // New Gemini uses metadata and never receives this prompt wrapper.
+  const modernGemini = /gemini-3\.8-flash(?:-lite)?-tts/.test(connection.model || '');
+  if (family === 'gemini' && !modernGemini && !openRouter && instructions) text = `Read the text below verbatim. Delivery: ${instructions}\n\nText:\n${text}`;
+  return {text, style: ['gemini','fish_audio'].includes(family) ? instructions : acting, parameters};
+}
+
+function normalizeMixerColumns(value) {
+  const number = Number(value);
+  return Number.isInteger(number) && number >= 1 && number <= 7 ? number : 0;
+}
+
 
 const CHOIR_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 12a4.16 4.16 0 0 1-5.62 3.89 3.78 3.78 0 0 1-2.38-3.39 3.42 3.42 0 0 1 2.34-3.38l3.79-1.42a2.89 2.89 0 0 0 1.87-2.7 2 2 0 1 0-4 0v14a2 2 0 1 1-4 0"/><path d="M20 2v4"/><path d="M22 4h-4"/></svg>`;
 const ICON_PLAY = `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="currentColor" stroke="none" style="vertical-align:-2px"><polygon points="6 3 20 12 6 21 6 3"/></svg>`;
@@ -2795,8 +2893,8 @@ export async function setup(ctx) {
   .ensemble-tts .et-tuning-max-entry input{appearance:textfield;-moz-appearance:textfield;box-sizing:border-box;width:100%;min-width:0;height:100%;margin:0;padding:0;border:0;border-radius:0;background:transparent;box-shadow:none;color:inherit;font:12px system-ui,sans-serif;text-align:right;outline:none}
   .ensemble-tts .et-tuning-max-entry input::-webkit-inner-spin-button,.ensemble-tts .et-tuning-max-entry input::-webkit-outer-spin-button{appearance:none;margin:0}
   .ensemble-tts .et-tuning-max-entry span{flex-shrink:0;font-size:11px;color:var(--cm-muted)}
-    .choir-mixer .cm-auto-plan{display:flex;flex-wrap:wrap;gap:3px;padding:4px 6px;border-bottom:1px solid var(--cm-line);flex-shrink:0}
-    .choir-mixer .cm-auto-plan button{flex:1 0 auto;min-height:24px;padding:3px 4px;border:1px solid var(--cm-line);border-radius:5px;font-size:10px;color:var(--cm-muted);background:var(--cm-fill);white-space:nowrap}
+    .choir-mixer .cm-auto-plan{display:grid;grid-template-columns:repeat(auto-fit,minmax(max(64px,calc((100% - (var(--cm-columns,3) - 1)*3px)/var(--cm-columns,3))),1fr));gap:3px;padding:4px 6px;border-bottom:1px solid var(--cm-line);flex-shrink:0}
+    .choir-mixer .cm-auto-plan button{min-width:0;min-height:30px;padding:4px;border:1px solid var(--cm-line);border-radius:5px;font-size:10px;color:var(--cm-muted);background:var(--cm-fill);white-space:normal;overflow-wrap:anywhere}
     .choir-mixer .cm-auto-plan button[aria-pressed="true"]{background:var(--lumiverse-success-015,color-mix(in srgb,var(--cm-success) 15%,transparent));border-color:var(--lumiverse-success-050,color-mix(in srgb,var(--cm-success) 50%,transparent));color:color-mix(in srgb,var(--cm-success) 65%,var(--cm-text))}
     .choir-mixer .cm-percent{font-size:10px;text-align:right;font-variant-numeric:tabular-nums;color:var(--cm-muted)}
     .choir-mixer .cm-levels,.choir-mixer .cm-levels-body{display:flex;flex-direction:column;min-height:0}
@@ -2854,6 +2952,19 @@ export async function setup(ctx) {
     @media(pointer:coarse),(max-width:600px){.choir-mixer{max-height:calc(100dvh - 24px)}.choir-mixer .cm-header{padding:7px 12px}.choir-mixer .cm-player{padding:6px 12px}.choir-mixer .cm-now{margin-bottom:4px}.choir-mixer .cm-master,.choir-mixer .cm-tuning{padding:6px 12px}.choir-mixer .cm-auto-plan{gap:3px;padding:6px}.choir-mixer .cm-auto-plan button{padding:4px 3px}.choir-mixer .cm-channels-title{padding:8px 12px}.choir-mixer .cm-volume{grid-template-columns:minmax(0,1fr)}.choir-mixer .cm-volume>input[type="range"]{display:none}.choir-mixer .cm-volume-steps{grid-template-columns:44px minmax(0,1fr) 44px}.choir-mixer .cm-volume-steps>button{display:inline-flex}.choir-mixer .cm-volume-entry{height:44px}.choir-mixer .cm-volume-entry input{font-size:16px}.choir-mixer .cm-channel-head{gap:5px}.choir-mixer .cm-toggle{width:44px;height:44px}.choir-mixer .cm-toggle svg{width:19px;height:19px}}
     @media(pointer:coarse),(max-width:600px){.choir-mixer .cm-speed-options button{min-height:44px}}
     @media(max-height:480px){.choir-mixer .cm-header{padding:4px 10px}.choir-mixer .cm-body{overflow:auto;overscroll-behavior:contain}.choir-mixer .cm-player{padding:4px 10px}.choir-mixer .cm-caption{display:none}.choir-mixer .cm-transport{margin-bottom:0}.choir-mixer .cm-master,.choir-mixer .cm-tuning{padding:4px 10px}.choir-mixer .cm-auto-plan{padding:4px 8px}.choir-mixer .cm-levels{flex-shrink:0}.choir-mixer .cm-levels-body{overflow:visible}}
+    .ensemble-tts .et-task-tabs{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:3px;margin:16px 0 4px;padding:3px;background:var(--lumiverse-fill-subtle,#ffffff05);border:1px solid var(--lumiverse-border,#ffffff18);border-radius:10px}
+    .ensemble-tts .et-task-tabs button{min-width:0;min-height:42px;padding:8px 3px;border:0;background:transparent;border-radius:7px;font-size:.86em;color:inherit}
+    .ensemble-tts .et-task-tabs button[aria-selected="true"]{background:var(--lumiverse-primary-020,#c4b5fd26);color:var(--lumiverse-primary-text,#d8ccff);font-weight:700;box-shadow:inset 0 -2px var(--lumiverse-primary,#c4b5fd)}
+    .ensemble-tts .et-task-tabs button:focus-visible{outline:2px solid var(--lumiverse-primary,#c4b5fd);outline-offset:2px}
+    .ensemble-tts .et-task-panel{min-width:0;padding:2px 0 12px}
+    .ensemble-tts .et-task-panel[hidden]{display:none!important}
+    .ensemble-tts .et-task-panel>.et-hint{margin:10px 0 14px;line-height:1.5}
+    .ensemble-tts .et-task-panel h3{font-size:1em}
+    .ensemble-tts .et-task-panel>label{display:flex;flex-direction:column;gap:6px;margin:12px 0}
+    .ensemble-tts .et-task-panel>.et-row{margin:12px 0}
+    .ensemble-tts .et-task-panel>.et-subhead{margin-top:22px;padding-top:14px;border-top:1px solid var(--lumiverse-border,#ffffff18)}
+    .ensemble-tts .et-header .et-toolbar:has(button:not([hidden]):not(:disabled)){margin-top:8px}
+    .ensemble-tts .et-toolbar:has(>[data-et="stop"]:disabled):has(>[data-et="save"][hidden]){display:none}
   ${ABYSSAL_THEME_CSS}`);
   root.innerHTML = `<div class="ensemble-tts">
     <div class="et-header">
@@ -2879,7 +2990,7 @@ export async function setup(ctx) {
       <div class="et-status" data-et="sfxStatus" role="status" aria-live="polite" hidden></div>
       <small class="et-credit" data-et="musicCredit" hidden></small>
     </div>
-    <div class="et-section-header">
+    <section data-choir-page="cast"><div class="et-section-header">
       <h3>Cast</h3>
       <div class="et-btn-group"><button data-et="captureDefaults" class="et-btn-subtle" disabled>Set default</button><button data-et="applyDefaults" class="et-btn-subtle" disabled>Apply default</button><button data-et="add" class="et-btn-subtle">+ Add character</button></div>
     </div>
@@ -2887,9 +2998,9 @@ export async function setup(ctx) {
 
     <div data-et="npcs"></div>
     <details data-et="otherCast" hidden><summary>Other characters (<span data-et="otherCastCount">0</span>)</summary><p style="font-size:.85em;opacity:.75">Not used in the current reply. Their voices and settings stay saved; they appear above again when used.</p><div data-et="otherCastRows"></div></details>
-    <details><summary>Automatic casting</summary><p style="font-size:.85em">Voice selection for characters discovered in the story.</p><div data-et="npcPolicyRoot" class="et-npc-policy"></div></details>
+    <h4 class="et-subhead">Automatic casting</h4><p class="et-hint">Voice selection for characters discovered in the story.</p><div data-et="npcPolicyRoot" class="et-npc-policy"></div>
     <p data-et="defaultStatus" role="status" aria-live="polite" style="font-size:.85em;opacity:.8"></p>
-
+    </section><section data-choir-page="settings">
     <div class="et-section-header">
       <h3>Speech & Planner</h3>
       <div class="et-row" style="margin:0">
@@ -2918,7 +3029,7 @@ export async function setup(ctx) {
       <label class="et-check" title="Combine compatible passages into fewer TTS calls; grouped clips share one level."><input data-et="batchSpeech" type="checkbox"> Group speech requests</label>
       <small data-et="groupingStatus" role="status" style="opacity:.75" hidden></small>
     </div>
-    <h4 class="et-subhead">Sound</h4>
+    </section><section data-choir-page="play"><h4 class="et-subhead">Sound</h4>
     <div class="et-row">
       <label class="et-check" title="Foley cues from Freesound (key in Advanced Settings)"><input data-et="enableSfx" type="checkbox" checked> Sound effects</label>
       <label class="et-check" title="Ambient background sound from Freesound"><input data-et="enableAmbience" type="checkbox" checked> Ambience</label>
@@ -2945,7 +3056,7 @@ export async function setup(ctx) {
       <label class="et-check" hidden><input data-et="useStyle" type="checkbox" checked> Delivery styles</label>
       <label class="et-check" hidden><input data-et="useFastClassifier" type="checkbox"> Fast Attribution (0ms instant for narration & 1-on-1 dialogue)</label>
     </div>
-    <details>
+    </section><section data-choir-page="settings"><details>
       <summary>Skip tags and blocks</summary>
       <p class="et-hint">Automatic filtering skips interface panels. Add tags, classes or IDs below to exclude other blocks from speech across all chats.</p>
       <label>Custom skip rules<textarea data-et="ignoredTags" rows="2" placeholder="summary, .status-panel, #phone-panel" aria-label="Skip tags and blocks"></textarea></label>
@@ -2956,8 +3067,8 @@ export async function setup(ctx) {
       <pre data-et="readingPreview" role="status" hidden style="white-space:pre-wrap;overflow-wrap:anywhere;max-height:240px;overflow:auto;font:inherit;font-size:.85em"></pre>
     </details>
 
-    <details>
-      <summary>Advanced Settings</summary>
+    <section>
+      <h4 class="et-subhead">Performance &amp; storage</h4>
       <div class="et-grid" style="margin-top:10px">
         <label title="Changes existing saved audio in this chat and the default for new recordings. Other chats keep their saved deadlines.">Audio retention<select data-et="retention"><option value="session">This session only</option><option value="1">1 day</option><option value="7">7 days</option><option value="30">30 days</option><option value="forever">Indefinitely</option></select></label>
         <label>Concurrent TTS requests<select data-et="concurrency"><option value="1">1 (sequential)</option><option value="2">2</option><option value="3">3</option><option value="4">4</option></select></label>
@@ -2978,8 +3089,7 @@ export async function setup(ctx) {
         <label class="et-check"><input data-et="showAutoPlanAction" type="checkbox"> Show Auto-plan in chat toolbar</label>
       </div>
       <label data-et="extraVoicesWrap" style="margin-top:10px"><span data-et="extraVoicesLabel">Additional voices & community models (ID | description)</span><textarea data-et="extraVoices" rows="2" placeholder="voice_id | description (e.g. Fish Audio community model ID or Gemini voice)"></textarea></label>
-    </details>
-
+    </section></section>
     <details data-et="planDetails" hidden><summary data-et="planSummary">Speech plan</summary>
     <div data-et="preview"></div>
     <details>
@@ -2998,6 +3108,7 @@ export async function setup(ctx) {
     </details>
   </div>`;
   const $ = name => root.querySelector(`[data-et="${name}"]`);
+  const drawerNavigation=createDrawerNavigation(root);
   for(const button of root.querySelectorAll('button'))button.type='button';
   const pending = new Map();
   let audioNamespace,audioNamespaceError;
@@ -3310,6 +3421,7 @@ export async function setup(ctx) {
     const mixerState={master:1,sfx:1,ambience:1,music:1,levelsCollapsed:true,channelTab:'',channels:{},x:20,y:80,enabled:saved?(saved.enabled??true):Boolean(config?.enableMixer),abyssalTheme:false,playbackRate:PLAYBACK_RATE_LIMITS.fallback,voiceGapMs:VOICE_GAP_LIMITS.fallback,...structuredClone(saved||{})};
     mixerState.layout=Object.fromEntries(Object.entries(mixerLayoutDefaults).map(([key,value])=>[key,typeof mixerState.layout?.[key]==='boolean'?mixerState.layout[key]:value]));
     mixerState.quickButtonOrder=[...new Set([...(Array.isArray(mixerState.quickButtonOrder)?mixerState.quickButtonOrder:[]),...quickButtonKeys])].filter(key=>quickButtonKeys.includes(key));
+    mixerState.quickButtonColumns=normalizeMixerColumns(mixerState.quickButtonColumns);
     // Global speed and gap are mixer state, saved in ui:mixer beside the channel levels, so they work with or without a chat open.
     mixerState.speedSliderMax=normalizeSpeedSliderMax(mixerState.speedSliderMax);mixerState.playbackRate=normalizePlaybackRate(mixerState.playbackRate);mixerState.voiceGapMs=normalizeVoiceGap(mixerState.voiceGapMs);
     // Solo is no longer exposed; old solo preferences must not silently mute other voices.
@@ -3464,6 +3576,7 @@ export async function setup(ctx) {
   });
   const playbackTuning=document.createElement('div');playbackTuning.className='cm-playback-tuning';playbackTuning.append(speedOptions,speedMixerRow,gapMixerRow);
   const mixerPlay=document.createElement('button');mixerPlay.type='button';mixerPlay.dataset.choirAction='playback';
+  $('drawerPlay').onclick=()=>mixerPlay.click();
   mixerPlay.onclick=()=>{if(voiceGapHold){voiceGapHold.paused?voiceGapHold.resume():voiceGapHold.pause();pauseBeds(voiceGapHold.paused);updateTransport();return;}if(currentAudio){if(currentAudio.paused){currentAudio.play().then(updateTransport).catch(e=>status(e.message,true));pauseBeds(false);}else{currentAudio.pause();pauseBeds(true);updateTransport();}}else if(!busy && !controller){mixerPlay.disabled=true;status('Loading playback…');run(async()=>{const latest=latestReply();if(!latest)throw new Error('No assistant reply in the active chat.');if(plan && planSource?.chatId===chatId && planSource.messageId===latest.id && sameSpeech(planSource.content,ctx.messages.getContent(latest.id)))await play({resume:true});else await playMessage(latest.id);});}};
   const mixerPlanLatest=document.createElement('button');mixerPlanLatest.type='button';mixerPlanLatest.dataset.choirAction='plan-latest';mixerPlanLatest.innerHTML=ICON_PLAN;mixerPlanLatest.title='Plan latest reply without starting audio';mixerPlanLatest.setAttribute('aria-label','Plan latest reply');mixerPlanLatest.onclick=()=>run(planLatest);
   const mixerNext=document.createElement('button');mixerNext.type='button';mixerNext.innerHTML=ICON_NEXT;mixerNext.title='Next spoken block';mixerNext.setAttribute('aria-label','Next spoken block');mixerNext.disabled=true;mixerNext.onclick=()=>advancePlayback?.();
@@ -3491,26 +3604,31 @@ export async function setup(ctx) {
   autoPlanRow.append(mixerAutoPlan,mixerAutoPlay,mixerSfx,mixerAmbience,mixerMusic,mixerFollow,mixerMessages);
   const mixerQuickButtons=new Map(quickButtonKeys.map((key,index)=>[key,[mixerAutoPlan,mixerAutoPlay,mixerSfx,mixerAmbience,mixerMusic,mixerFollow,mixerMessages][index]]));
   const customizePanel=$('mixerLayoutOptions'),layoutPanel=$('mixerLayout');layoutPanel.id=`choir-mixer-layout-${randomUuid()}`;$('customizeMixer').setAttribute('aria-controls',layoutPanel.id);
-  const showMixerLayout=open=>{layoutPanel.hidden=!open;$('customizeMixer').setAttribute('aria-expanded',String(open));if(open)refreshMixerLayoutEditor();};
+  const showMixerLayout=open=>{layoutPanel.hidden=!open;$('customizeMixer').setAttribute('aria-expanded',String(open));if(open){drawerNavigation.select('settings');refreshMixerLayoutEditor();}};
   $('customizeMixer').onclick=()=>showMixerLayout(layoutPanel.hidden);
   $('closeMixerLayout').onclick=()=>{showMixerLayout(false);$('customizeMixer').focus();};
   layoutPanel.addEventListener('keydown',event=>{if(event.key==='Escape'){event.preventDefault();showMixerLayout(false);$('customizeMixer').focus();}});
   const layoutChecks=new Map(),quickLayoutRows=new Map();
   const layoutHint=document.createElement('p');layoutHint.textContent='Choose what appears. Hiding a control keeps its setting. Playback and Master stay available.';customizePanel.append(layoutHint);
+  const previewMixer=document.createElement('button');previewMixer.type='button';previewMixer.textContent='Preview mixer';previewMixer.onclick=()=>{if(mixerState.collapsed || !config?.enableMixer)$('showMixer').click();};customizePanel.append(previewMixer);
   const layoutCheck=(key,label,parent)=>{
     const row=document.createElement('div');row.className='cm-customize-row';const field=document.createElement('label'),check=document.createElement('input');check.type='checkbox';check.checked=mixerState.layout[key];check.setAttribute('aria-label',`Show ${label}`);check.dataset.choirLayout=key;
     check.onchange=()=>{mixerState.layout[key]=check.checked;applyMixerLayout();void persistMixer();};field.append(check,document.createTextNode(label));row.append(field);parent.append(row);layoutChecks.set(key,check);return row;
   };
   for(const [key,label] of [['speedPresets','speed presets'],['speedSlider','global speed slider'],['gapSlider','gap between voices'],['voiceSpeeds','individual voice speeds'],['channelLevels','Channel levels']])layoutCheck(key,label,customizePanel);
   const quickHeading=document.createElement('p');quickHeading.textContent='Quick buttons · use the arrows to change their order.';const quickLayoutList=document.createElement('div');customizePanel.append(quickHeading,quickLayoutList);
+  const columnsLabel=document.createElement('label'),columnsSelect=document.createElement('select');columnsLabel.textContent='Buttons per row';columnsSelect.dataset.choirMixerColumns='';columnsSelect.setAttribute('aria-label','Mixer buttons per row');option(columnsSelect,'0','Automatic (up to 3)');for(let number=1;number<=7;number++)option(columnsSelect,String(number),String(number));columnsLabel.append(columnsSelect);customizePanel.insertBefore(columnsLabel,quickLayoutList);
+  const columnsHint=document.createElement('small');columnsHint.textContent='Applies to visible quick buttons. Narrow screens wrap earlier to keep buttons readable.';customizePanel.insertBefore(columnsHint,quickLayoutList);
+  columnsSelect.onchange=()=>{mixerState.quickButtonColumns=normalizeMixerColumns(columnsSelect.value);applyMixerLayout();void persistMixer();};
   const quickLabels={'auto-plan':'Auto-plan','auto-play':'Auto-play',sfx:'SFX',ambience:'Ambience',music:'Music',follow:'Follow narration','message-controls':'Message controls'};
   for(const key of quickButtonKeys){
     const row=layoutCheck(key,quickLabels[key],quickLayoutList),up=document.createElement('button'),down=document.createElement('button');up.type=down.type='button';up.textContent='↑';down.textContent='↓';up.setAttribute('aria-label',`Move ${quickLabels[key]} earlier`);down.setAttribute('aria-label',`Move ${quickLabels[key]} later`);
     const move=offset=>{const order=mixerState.quickButtonOrder,index=order.indexOf(key),next=index+offset;if(next<0 || next>=order.length)return;[order[index],order[next]]=[order[next],order[index]];refreshMixerLayoutEditor();applyMixerLayout();void persistMixer();(offset<0?up:down).disabled?layoutChecks.get(key).focus():(offset<0?up:down).focus();};up.onclick=()=>move(-1);down.onclick=()=>move(1);row.append(up,down);quickLayoutRows.set(key,{row,up,down});
   }
-  const resetMixerLayout=document.createElement('button');resetMixerLayout.type='button';resetMixerLayout.className='cm-reset-layout';resetMixerLayout.textContent='Reset mixer layout';resetMixerLayout.onclick=()=>{mixerState.layout={...mixerLayoutDefaults};mixerState.quickButtonOrder=[...quickButtonKeys];refreshMixerLayoutEditor();applyMixerLayout();void persistMixer();};customizePanel.append(resetMixerLayout);
-  function refreshMixerLayoutEditor(){for(const [key,check] of layoutChecks)check.checked=mixerState.layout[key];mixerState.quickButtonOrder.forEach((key,index)=>{const item=quickLayoutRows.get(key);item.up.disabled=index===0;item.down.disabled=index===quickButtonKeys.length-1;quickLayoutList.append(item.row);});}
+  const resetMixerLayout=document.createElement('button');resetMixerLayout.type='button';resetMixerLayout.className='cm-reset-layout';resetMixerLayout.textContent='Reset mixer layout';resetMixerLayout.onclick=()=>{mixerState.layout={...mixerLayoutDefaults};mixerState.quickButtonOrder=[...quickButtonKeys];mixerState.quickButtonColumns=0;refreshMixerLayoutEditor();applyMixerLayout();void persistMixer();};customizePanel.append(resetMixerLayout);
+  function refreshMixerLayoutEditor(){columnsSelect.value=String(mixerState.quickButtonColumns);for(const [key,check] of layoutChecks)check.checked=mixerState.layout[key];mixerState.quickButtonOrder.forEach((key,index)=>{const item=quickLayoutRows.get(key);item.up.disabled=index===0;item.down.disabled=index===quickButtonKeys.length-1;quickLayoutList.append(item.row);});}
   function applyMixerLayout(){
+    autoPlanRow.style.setProperty('--cm-columns',String(mixerState.quickButtonColumns || 3));
     speedOptions.hidden=!mixerState.layout.speedPresets;speedMixerRow.hidden=!mixerState.layout.speedSlider;gapMixerRow.hidden=!mixerState.layout.gapSlider;
     levels.hidden=!mixerState.layout.channelLevels;
     for(const key of mixerState.quickButtonOrder){const button=mixerQuickButtons.get(key);button.hidden=!mixerState.layout[key];autoPlanRow.append(button);}
@@ -3677,7 +3795,7 @@ export async function setup(ctx) {
     $('showMixer').textContent=expanded?'Close mixer':'Open mixer';
     $('showMixer').setAttribute('aria-expanded',String(expanded));
     mixer.dataset.collapsed=String(collapsed);mixerBody.hidden=collapsed;mixerTitle.hidden=collapsed;
-    mixer.style.width=collapsed?'44px':'280px';mixer.style.padding='0';mixer.style.borderRadius=collapsed?'50%':'12px';
+    mixer.style.width=collapsed?'44px':`${Math.max(280,(mixerState.quickButtonColumns || 3)*68+16)}px`;mixer.style.padding='0';mixer.style.borderRadius=collapsed?'50%':'12px';
     mixer.style.borderWidth=collapsed?'0':'1px';
     collapse.innerHTML=collapsed?ICON_SOUND:ICON_CLOSE;
     collapse.setAttribute('aria-label',collapsed?'Open Choir voice mixer':'Collapse Choir voice mixer');
@@ -3809,6 +3927,7 @@ export async function setup(ctx) {
   function updateTransport(){
     const latest=latestReply(),paused=voiceGapHold?voiceGapHold.paused:(!currentAudio || currentAudio.paused),label=currentAudio?(paused?'Resume Choir audio':'Pause Choir audio'):'Play latest reply';
     mixerPlay.innerHTML=(paused?ICON_TRANSPORT_PLAY:ICON_TRANSPORT_PAUSE).replace(/<circle[^>]*\/>/,'');mixerPlay.title=label;mixerPlay.setAttribute('aria-label',label);mixerPlay.disabled=currentAudio?!audioReady:busy || Boolean(controller) || !chatId || !latest;
+    $('drawerPlay').textContent=currentAudio?(paused?'Resume playback':'Pause playback'):'Play latest reply';$('drawerPlay').disabled=mixerPlay.disabled;
     mixerPlanLatest.disabled=busy || Boolean(controller) || !chatId || !latest;
     mixerStop.disabled=!controller && !currentAudio && !paragraphPrefetchControllers.size && !autoReplyQueue.size && !beds.ambience && !beds.music;
     $('stop').disabled=mixerStop.disabled;
@@ -3966,7 +4085,7 @@ export async function setup(ctx) {
   const GLOBAL_SETTINGS_KEY='settings:global';
   const CAPTURED_DEFAULTS_KEY='settings:captured-defaults';
   const preferenceFields=['planner','decisionConnection','connection','connectionMode','enableMixer','styleParam','apiBase','chunk','batchSpeech','plannerTokens','retention','concurrency','prefetch','normalizeLoudness','skipMeta','allowLlmFallback','sectionButtons','extraVoices','extraVoiceRoutes','useStyle','auto','autoPlan','showAutoPlanAction','ignoredTags','fishVoiceSource','plannerMode','useFastClassifier','useJev','jevEndpoint','enableSfx','enableAmbience','enableMusic','loopMusic','freesoundApiKey','readAlong','followNarration'];
-  const defaultVoiceFields=['voice','route','gender','style','accent','excluded'];
+  const defaultVoiceFields=['voice','route','gender','style','accent','deliveryMode','excluded'];
   let capturedDefaults=null,defaultOperation=false,defaultsRevision=0;
   let closeDefaultEditor;
   unsubs.push(()=>closeDefaultEditor?.());
@@ -3989,7 +4108,7 @@ export async function setup(ctx) {
     // in a stale tab is not an intentional edit of another tab's newer value.
     for(const actor of [...(value.fixed || []),...Object.values(value.casts || {}).flat()]){
       const speaker=actor.speaker.trim(),aliases=(actor.aliases || []).join(',').split(',').map(alias=>alias.trim()).filter((alias,index,list)=>alias && normalizeName(alias)!==normalizeName(speaker) && list.findIndex(other=>normalizeName(other)===normalizeName(alias))===index);
-      Object.assign(actor,{speaker,voice:actor.voice || '',route:actor.route || '',gender:actor.gender || 'auto',style:(actor.style || '').trim(),aliases,pronunciation:(actor.pronunciation || '').trim(),sayAs:namePronunciation(actor),sayAsName:actor.sayAsName || '',accent:(actor.accent || '').trim(),excluded:Boolean(actor.excluded)});
+      Object.assign(actor,{speaker,voice:actor.voice || '',route:actor.route || '',gender:actor.gender || 'auto',style:(actor.style || '').trim(),deliveryMode:characterDeliveryMode(actor,normalizeName(speaker)==='narrator'),aliases,pronunciation:(actor.pronunciation || '').trim(),sayAs:namePronunciation(actor),sayAsName:actor.sayAsName || '',accent:(actor.accent || '').trim(),excluded:Boolean(actor.excluded)});
     }
     return value;
   }
@@ -4795,7 +4914,7 @@ export async function setup(ctx) {
         const connectionId=selectedRoute.startsWith('native:')?selectedRoute.slice(7):config.connection;
         const conn=nativeConnections.find(c=>c.id===connectionId) || nativeConnections[0];
         if(!conn)throw new Error('TTS connection not available for audition.');
-        const textToSend=detectProvider(selectedRoute)==='fish_audio' && conn.provider!=='openrouter_tts' ? `[cheerful] ${previewRequest.segment.text}` : previewRequest.segment.text;
+        const textToSend=previewRequest.text;
         const blob=await nativeSpeech(conn,{voice:selectedVoice,text:textToSend,parameters:previewRequest.parameters},ctrl.signal,name.value || 'Voice');
         if(token!==revision || ctrl.signal.aborted)return;
         await playBlob(blob,ctrl.signal,name.value || 'Voice',0,$('normalizeLoudness').checked);
@@ -4832,7 +4951,9 @@ export async function setup(ctx) {
     pronunciation.addEventListener('input',promoteNameMapping);pronunciation.addEventListener('change',promoteNameMapping);
     sayAs.addEventListener('input',updatePronunciationHint);sayAsName.addEventListener('change',updatePronunciationHint);
     for(const node of [name,aliases])node.addEventListener('input',()=>{refreshPronunciationTargets();updatePronunciationHint();});updatePronunciationHint();
-    const accent=document.createElement('input');accent.value=actor.accent || '';accent.maxLength=300;accent.placeholder='Used only when the provider supports accent or instructions';
+    const accent=document.createElement('input');accent.value=actor.accent || '';accent.maxLength=300;accent.placeholder='e.g. Irish, light Dublin accent';
+    const deliveryMode=document.createElement('select');deliveryMode.dataset.choirDeliveryMode='';option(deliveryMode,'auto','Automatic acting');option(deliveryMode,'base','Base style only');option(deliveryMode,'off','No tone directions');deliveryMode.value=characterDeliveryMode(actor,normalizeName(actor.speaker)==='narrator');
+    deliveryMode.title='Base style only ignores planner emotions. Accents and pronunciation remain active in every mode. Narrator defaults to steady narration.';
     const excluded=document.createElement('input');excluded.type='checkbox';excluded.checked=Boolean(actor.excluded);
 
     const updateCardProviderControls=()=>{
@@ -4872,15 +4993,18 @@ export async function setup(ctx) {
     voiceSearchRow.append(voiceSearchInput,searchCommBtn,voiceIdBtn,auditionRowBtn);
     voiceWrap.append(voiceSearchRow,voice,voiceIdEditor);
 
-    for (const [label,node] of [['TTS connection',route],['Voice gender filter',gender],['Voice',voiceWrap],['Base delivery style',style],['Aliases (comma separated)',aliases],['Name spelling to pronounce',sayAsName],['Say name as',sayAs],['Speaking instruction',pronunciation],['Accent preference',accent]]) {
+    for (const [label,node] of [['TTS connection',route],['Voice gender filter',gender],['Voice',voiceWrap],['Delivery',deliveryMode],['Base delivery style',style],['Accent preference',accent],['Aliases (comma separated)',aliases],['Name spelling to pronounce',sayAsName],['Say name as',sayAs],['Speaking instruction',pronunciation]]) {
       if(node!==route)(node===voiceWrap?voice:node).dataset.choirPersist='';
       const wrap=document.createElement('label');wrap.textContent=label;wrap.append(node);editor.append(wrap);
       if(node===route)wrap.hidden=single;
       if(node===sayAs || node===sayAsName)wrap.hidden=reserved;
       if(node===pronunciation)wrap.title='Used only when the speech provider supports instructions. Use Say name as for name pronunciation.';
-      if(node===gender || node===style)wrap.hidden=true;
+      if(node===gender)wrap.hidden=true;
+      if(node===accent)wrap.title='Requested on every passage. The model and selected voice determine how convincingly it can produce the accent. Fish S1 uses the voice’s recorded accent.';
       if(node===voiceWrap)wrap.style.cssText='grid-column:1 / -1;margin-top:2px';
     }
+    const deliveryHint=document.createElement('small');deliveryHint.className='et-hint';deliveryHint.style.gridColumn='1 / -1';deliveryHint.textContent=normalizeName(actor.speaker)==='narrator'?'Base style only keeps narration steady and ignores planner emotions. Choose Automatic acting to let the narrator act.':'Automatic acting combines the base style with each line’s planner direction. Base style only keeps delivery consistent.';editor.append(deliveryHint);
+    const accentHint=document.createElement('small');accentHint.className='et-hint';accentHint.style.gridColumn='1 / -1';accentHint.textContent='Accents are requested on every passage, including voice previews. Audition the result: the model and selected voice determine the accent. Fish S1 needs a voice recorded with that accent.';editor.append(accentHint);
     const speedSection=document.createElement('div');speedSection.className='et-tuning et-character-speed';
     const speedHeading=document.createElement('span');speedHeading.className='et-tuning-title';speedHeading.textContent='Voice speed';
     const speedSlot=document.createElement('div');speedSlot.className='et-tuning-slot';
@@ -4903,7 +5027,7 @@ export async function setup(ctx) {
     container.append(row);
     paintSpeakerSpeeds();
     updateCardProviderControls();
-    return {row,voiceChoice:()=>[name.value.trim(),voice.value],setExcluded:value=>{excluded.checked=value;},read:()=>({speaker:name.value.trim(),voice:single?actor.voice || '':voice.value,route:single?actor.route || '':route.value,gender:gender.value,style:style.value.trim(),aliases:aliases.value.split(',').map(a=>a.trim()).filter((a,i,list)=>a && normalizeName(a)!==normalizeName(name.value) && list.findIndex(b=>normalizeName(b)===normalizeName(a))===i),pronunciation:pronunciation.value.trim(),sayAs:sayAs.value.trim(),sayAsName:sayAsName.value,accent:accent.value.trim(),excluded:excluded.checked})};
+    return {row,voiceChoice:()=>[name.value.trim(),voice.value],setExcluded:value=>{excluded.checked=value;},read:()=>({speaker:name.value.trim(),voice:single?actor.voice || '':voice.value,route:single?actor.route || '':route.value,gender:gender.value,style:style.value.trim(),deliveryMode:deliveryMode.value,aliases:aliases.value.split(',').map(a=>a.trim()).filter((a,i,list)=>a && normalizeName(a)!==normalizeName(name.value) && list.findIndex(b=>normalizeName(b)===normalizeName(a))===i),pronunciation:pronunciation.value.trim(),sayAs:sayAs.value.trim(),sayAsName:sayAsName.value,accent:accent.value.trim(),excluded:excluded.checked})};
   }
   let closePolicyLibrary,castVisibilitySnapshot;
   unsubs.push(()=>closePolicyLibrary?.());
@@ -5851,26 +5975,23 @@ export async function setup(ctx) {
   }
   function synthesisSettings(segment,snapshot){
     if(segment.turns?.length>1){
+      if(!segment.dialogue){const single=synthesisSettings({...segment,turns:undefined},snapshot);return {...single,segment:{...single.segment,turns:segment.turns.map(turn=>synthesisSettings(turn,snapshot).segment)}};}
       const requests=segment.turns.map(turn=>synthesisSettings(turn,snapshot)),first=requests[0];
       const turns=requests.map(request=>request.segment);
-      return {segment:{...segment,text:turns.map(turn=>turn.text).join('\n'),turns},connection:first.connection,parameters:{...first.parameters,
-        ...(segment.dialogue && first.connection?{turns:turns.map(({speaker,voice,text,style})=>({speaker,voice,text,style})),voice_direction:''}:{})}};
+      if(requests.some(request=>request.connection?.id!==first.connection?.id))throw new Error('Different TTS connections must use separate speech requests.');
+      const parameters={...first.parameters};
+      if(segment.dialogue && first.connection){parameters.turns=turns.map(({speaker,voice,text,style})=>({speaker,voice,text,style}));for(const key of ['voice_direction','speech_style','instructions'])if(Object.hasOwn(parameters,key))parameters[key]='';}
+      return {segment:{...segment,text:turns.map(turn=>turn.text).join('\n'),turns},text:requests.map(request=>request.text).join('\n'),connection:first.connection,parameters:{...first.parameters,
+        ...parameters}};
     }
     const route=segment.route || scope(snapshot),actor=actorFor(segment,snapshot);
     const connection=nativeConnections.find(c=>`native:${c.id}`===route);
     const supported=nativeProviders.find(provider=>provider.id===connection?.provider)?.capabilities?.parameters || {};
-    const family=detectProvider(route),openRouterStyle=connection?.provider==='openrouter_tts' && ['fish_audio','gemini'].includes(family);
-    const styleParam=snapshot.styleParam && supported[snapshot.styleParam]?snapshot.styleParam:openRouterStyle?'instructions':route!==scope(snapshot)?['instructions','instruct','prompt'].find(p=>supported[p]):undefined;
-    const parameters={};
-    if(actor?.accent && supported.accent){
-      const allowed=supported.accent.enum || supported.accent.options;
-      if(Array.isArray(allowed) && !allowed.includes(actor.accent))throw new Error(`Accent ${actor.accent} is not supported by ${connection.name}. Supported accents: ${allowed.join(', ')}.`);
-      parameters.accent=actor.accent;
-    }
+    const family=detectProvider(route);
     const legacyMapping=actor && namePronunciation({speaker:actor.speaker,sayAsName:actor.sayAsName,pronunciation:actor.pronunciation});
-    const instructions=[snapshot.useStyle?segment.style:'',legacyMapping?'':actor?.pronunciation,actor?.accent && !supported.accent?`Accent: ${actor.accent}`:''].filter(Boolean).join('. ');
-    if(styleParam && instructions)parameters[styleParam]=instructions;
-    return {segment:{...segment,text:respellNames(segment.text,pronunciationActors(snapshot)),route,style:openRouterStyle?instructions:family==='fish_audio' && snapshot.useStyle?segment.style:''},connection,parameters};
+    const spoken={...segment,text:respellNames(segment.text,pronunciationActors(snapshot))};
+    const delivery=voiceDelivery({segment:spoken,actor:legacyMapping?{...actor,pronunciation:''}:actor,narrator:normalizeName(segment.speaker)==='narrator',family,connection,supported,styleParam:snapshot.styleParam,useStyle:snapshot.useStyle!==false});
+    return {segment:{...spoken,route,style:delivery.style},text:delivery.text,connection,parameters:delivery.parameters};
   }
   function unisonLevels(segment){return speechMembers(segment).map(member=>[member.speaker,mixerVolume(1,member.speaker,mixerState.channels),speakerExcluded(member.speaker)]);}
   function cacheKey(segment,snapshot){
@@ -5898,7 +6019,7 @@ export async function setup(ctx) {
     const prebuilt=GEMINI_VOICES.some(voice=>voice.id===segment.voice);
     const maxSpeakers=voiceGapSetting()>0?0:family==='fish_audio' || family==='gemini' && prebuilt || provider?.capabilities.staticVoices?.some(voice=>voice.id===segment.voice)?nativeSpeakerLimit(connection):0;
     const parameters={...request.parameters};
-    if(maxSpeakers && (family==='gemini' || connection?.provider==='openrouter_tts')){delete parameters.speech_style;delete parameters.instructions;}
+    if(maxSpeakers && (['gemini','fish_audio'].includes(family) || connection?.provider==='openrouter_tts')){delete parameters.speech_style;delete parameters.instructions;delete parameters.voice_direction;}
     const level=mixerVolume(1,segment.speaker,mixerState.channels);
     return {...limits,...speechTextOptions(snapshot),maxSpeakers,group:JSON.stringify([parameters,level,maxSpeakers,playbackRateFor(segment.speaker)]),
       measure:turns=>{
@@ -5936,13 +6057,13 @@ export async function setup(ctx) {
       if(segment.kind)return {maxChars:MAX_SPEECH_CHARS};
       const connection=nativeConnections.find(item=>`native:${item.id}`===route);
       const limits=speechRequestLimits(connection?.provider,connection?.model);
+      const request=synthesisSettings(segment,snapshot),prefix=request.text.slice(0,Math.max(0,request.text.length-request.segment.text.length));
       if(limits.maxBytes){
-        const request=synthesisSettings(segment,snapshot);
-        const delivery=[segment.style,...Object.values(request.parameters)].filter(value=>typeof value==='string').join('\n');
+        const delivery=[prefix,...Object.values(request.parameters)].filter(value=>typeof value==='string').join('\n');
         limits.maxBytes-=new TextEncoder().encode(delivery || '').length;
         if(limits.maxBytes<80)throw new Error('Shorten the Gemini delivery instructions to leave room for speech text.');
       }
-      if(detectProvider(route)==='fish_audio' && snapshot.useStyle && segment.style && !segment.text.startsWith('['))limits.maxChars-=segment.style.trim().length+(segment.style.trim().startsWith('[')?1:3);
+      limits.maxChars-=prefix.length+(detectProvider(route)==='fish_audio' && request.parameters.voice_direction?request.parameters.voice_direction.length+3:0);
       return {...limits,...speechTextOptions(snapshot)};
     });
   }
@@ -6014,9 +6135,7 @@ export async function setup(ctx) {
     const request=synthesisSettings(segment,snapshot),route=segment.route || scope(snapshot);
     const connection=request.connection;
     if(!connection)throw new Error(`TTS connection for ${segment.speaker} is no longer available. Choose another connection and plan again.`);
-    const text=detectProvider(route)==='fish_audio' && connection.provider!=='openrouter_tts' && snapshot.useStyle && segment.style && !request.segment.text.startsWith('[')
-      ? (segment.style.trim().startsWith('[')?`${segment.style.trim()} ${request.segment.text}`:`[${segment.style.trim()}] ${request.segment.text}`):request.segment.text;
-    return nativeSpeech(connection,{voice:segment.voice,text,parameters:request.parameters},signal,segment.speaker);
+    return nativeSpeech(connection,{voice:segment.voice,text:request.text,parameters:request.parameters},signal,segment.speaker);
   }
   async function synthesizeUnisonBlob(segment,snapshot,signal,loadMember){
     const Context=globalThis.AudioContext || globalThis.webkitAudioContext;
@@ -7280,7 +7399,7 @@ export async function setup(ctx) {
     try{
       const result=await (await api('/spindle',{signal:branchLookup.signal})).json();
       const extension=result.extensions?.find(item=>item.identifier==='choir');
-      if(!disposed)badge.hidden=extension?.metadata?.branch!=='staging';
+      if(!disposed){const branch=extension?.metadata?.branch;badge.hidden=!['staging','UI-CLEANUP'].includes(branch);badge.textContent=branch==='UI-CLEANUP'?'UI cleanup':'Staging';badge.title=`Choir ${"1.1.6-staging.41"} · ${branch || 'unknown branch'}`;}
     }catch{/* Keep an unknown branch unlabelled without interrupting playback. */}
     finally{clearTimeout(timeout);}
   })();

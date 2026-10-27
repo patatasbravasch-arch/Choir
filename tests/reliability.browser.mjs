@@ -1446,7 +1446,7 @@ test('one cast channel tab includes every character on desktop and mobile and re
    h.$('showMixer').click();await h.plan();document.querySelector('[aria-label="Channel levels"]').click();
    const tabs=()=>[...document.querySelectorAll('.cm-channel-tab')],tab=name=>tabs().find(item=>item.textContent===name),visible=()=>[...document.querySelectorAll('.cm-channel')].filter(row=>!row.hidden);
    assert.deepEqual(tabs().map(item=>item.textContent),['Cast','Scene audio']);assert.deepEqual(visible().map(row=>row.dataset.speaker),['Narrator','Mira','Guard']);
-   const panel=document.querySelector('[role="tabpanel"]');assert.equal(panel.getAttribute('aria-labelledby'),tab('Cast').id);
+   const panel=document.querySelector('[data-choir-mixer] [role="tabpanel"]');assert.equal(panel.getAttribute('aria-labelledby'),tab('Cast').id);
    const percent=document.querySelector('[aria-label="Mira volume percent"]');percent.value='42';percent.dispatchEvent(new h.dom.window.Event('input'));document.querySelector('[aria-label="Mira silent"]').click();
    await until(()=>h.store.get('ui:mixer')?.channels?.Mira?.mute);await h.reload();assert.deepEqual(visible().map(row=>row.dataset.speaker),['Narrator','Mira','Guard']);
    tab('Scene audio').click();assert.deepEqual(visible().map(row=>row.dataset.speaker),['SFX','Ambience','Music']);

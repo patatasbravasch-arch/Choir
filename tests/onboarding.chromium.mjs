@@ -1,3 +1,4 @@
+import {showDrawerControl,withDrawerControl} from './fixtures/drawer.mjs';
 // Real Chrome check for the setup wizard, name respelling and reading controls.
 // Providers are local fixtures; no API keys or paid provider requests are used.
 import {createRequire} from 'node:module';
@@ -93,15 +94,15 @@ try{
   assert.equal(await page.evaluate(()=>window.fixtureStore.get('settings:global').ignoredTags),'.tracker');assert.equal(await page.evaluate(()=>window.calls.length),0);
   assert.equal(await page.evaluate(()=>window.fixtureStore.get('settings:global').prefetch),2);assert.equal(await page.evaluate(()=>window.fixtureStore.get('settings:global').concurrency),2);
   assert.equal(await page.evaluate(()=>window.fixtureStore.get('settings:global').retention),'7');assert.equal(await page.evaluate(()=>window.fixtureStore.get('settings:captured-defaults').leadVoices[0].gender),'female');
-  await page.getByRole('button',{name:'Edit Eliza',exact:true}).click();const spelling=page.locator('[data-et="fixed"] [data-choir-say-as]').nth(2);await spelling.fill('Eh-Lee-Zah');
+  await withDrawerControl(page,'fixed',()=>page.getByRole('button',{name:'Edit Eliza',exact:true}).click());const spelling=page.locator('[data-et="fixed"] [data-choir-say-as]').nth(2);await spelling.fill('Eh-Lee-Zah');
   await page.waitForFunction(()=>document.querySelector('[data-et="saveState"]').textContent==='Saved automatically');
   await page.getByRole('button',{name:'Test pronunciation of Eliza',exact:true}).click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent==='Audition finished.');
   assert.match(await page.evaluate(()=>window.calls[0].text),/Eh-Lee-Zah opened the door/);
   if(process.env.CHOIR_PRONUNCIATION_SCREENSHOT)await page.locator('main').screenshot({path:process.env.CHOIR_PRONUNCIATION_SCREENSHOT});
-  await page.getByText('Skip tags and blocks',{exact:true}).click();await page.getByRole('button',{name:'Preview text to read',exact:true}).click();
+  await showDrawerControl(page,'previewReading');await page.getByRole('button',{name:'Preview text to read',exact:true}).click();
   assert.doesNotMatch(await page.locator('[data-et="readingPreview"]').textContent(),/Hidden tracker/);
   const original=await page.locator('[data-component="MessageContent"]').innerHTML();
-  await page.locator('[data-et="latest"]').click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Ready:'));
+  await withDrawerControl(page,'latest',()=>page.locator('[data-et="latest"]').click());await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Ready:'));
   await page.evaluate(()=>{window.highlightLog=[];const tick=()=>{const text=[...(CSS.highlights.get('choir-speaking') || [])].map(String).join('|');if(text!==window.highlightLog.at(-1))window.highlightLog.push(text);window.highlightFrame=requestAnimationFrame(tick);};tick();});
   await page.getByRole('button',{name:'Open Choir voice mixer',exact:true}).click();await page.locator('[data-choir-action="playback"]').click();
   await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.includes('Playback finished'));
@@ -111,7 +112,7 @@ try{
   const rich=await browser.newPage({viewport:{width:440,height:900}});rich.on('pageerror',error=>errors.push(error.message));
   await rich.goto('http://127.0.0.1:'+server.address().port+'/?richter');await rich.waitForFunction(()=>window.ready);
   await rich.getByRole('button',{name:'Skip for now',exact:true}).click();
-  await rich.getByRole('button',{name:'Edit Richter Vane (Callsign: Grim)',exact:true}).click();
+  await withDrawerControl(rich,'fixed',()=>rich.getByRole('button',{name:'Edit Richter Vane (Callsign: Grim)',exact:true}).click());
   const richRow=rich.locator('[data-et="fixed"] .et-card').nth(2);
   await richRow.locator('[data-choir-say-as]').fill('Rish-ter');await richRow.getByLabel('Name spelling to pronounce',{exact:true}).selectOption('Richter');
   await rich.waitForFunction(()=>document.querySelector('[data-et="saveState"]').textContent==='Saved automatically');
@@ -121,7 +122,7 @@ try{
   assert.match(await rich.evaluate(()=>window.calls[0].text),/Rish-ter opened the door/);
   assert.match(await richRow.locator('[data-choir-pronunciation-hint]').textContent(),/“Richter” as “Rish-ter”/);
   if(process.env.CHOIR_RICHTER_SCREENSHOT)await richRow.screenshot({path:process.env.CHOIR_RICHTER_SCREENSHOT});
-  await rich.locator('[data-et="latest"]').click();await rich.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Ready:'));
+  await withDrawerControl(rich,'latest',()=>rich.locator('[data-et="latest"]').click());await rich.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Ready:'));
   await rich.getByRole('button',{name:'Open Choir voice mixer',exact:true}).click();await rich.locator('[data-choir-action="playback"]').click();
   await rich.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.includes('Playback finished'));
   const richSpeech=await rich.evaluate(()=>window.calls.slice(1));assert.equal(richSpeech.length,3);assert.ok(richSpeech.some(input=>input.text.includes('Rish-ter Vane')));assert.ok(richSpeech.some(input=>input.text.includes('Hello, Rish-ter.')));
@@ -139,7 +140,7 @@ try{
   assert.equal(await compact.evaluate(node=>node.scrollWidth<=node.clientWidth+1 && [...node.querySelectorAll('input,select,textarea')].every(field=>field.getBoundingClientRect().right<=320)),true);
   const footer=await compact.locator('.cs-actions').boundingBox();assert.ok(footer.y>=0 && footer.y+footer.height<=700,JSON.stringify(footer));
   if(process.env.CHOIR_WIZARD_MOBILE_SCREENSHOT)await compact.screenshot({path:process.env.CHOIR_WIZARD_MOBILE_SCREENSHOT});
-  await mobile.keyboard.press('Escape');await mobile.waitForFunction(()=>window.fixtureStore.get('onboarding:state')?.deferred);await mobile.locator('[data-et="setupWizard"]').click();await compact.waitFor();await compact.getByRole('button',{name:'Skip for now',exact:true}).click();
+  await mobile.keyboard.press('Escape');await mobile.waitForFunction(()=>window.fixtureStore.get('onboarding:state')?.deferred);await withDrawerControl(mobile,'setupWizard',()=>mobile.locator('[data-et="setupWizard"]').click());await compact.waitFor();await compact.getByRole('button',{name:'Skip for now',exact:true}).click();
   await mobile.evaluate(()=>window.cleanup());await mobile.close();assert.deepEqual(errors,[]);
   console.log('PASS: Chrome setup, 12 offline Fish/Freesound illustrations on desktop and 320px mobile, keyboard picture enlargement, voice gender, saved buffering/retention settings, reading settings, actual-name audition, Richter alias pronunciation, respelled narration/dialogue, original text highlights, and expanded 320px modal layout. No external provider requests.');
 }finally{await browser?.close();await new Promise(resolve=>server.close(resolve));}

@@ -1,3 +1,4 @@
+import {showDrawerControl,withDrawerControl} from './fixtures/drawer.mjs';
 // Synthetic Lumiverse swipe bars and local audio; no external provider requests.
 import {createRequire} from 'node:module';
 import {createServer} from 'node:http';
@@ -27,8 +28,8 @@ try{
   await page.goto(`http://127.0.0.1:${server.address().port}/?${variant}`);await page.waitForFunction(()=>window.ready);
   const actions=page.locator('[data-choir-message-controls]'),download=actions.locator('[data-choir-download]'),play=actions.getByRole('button',{name:'Play or stop Choir audio for this message',exact:true});
   assert.equal(await actions.isVisible(),false);assert.equal(await download.isVisible(),false);
-  await page.getByRole('button',{name:'Customize mixer',exact:true}).click();await page.getByRole('checkbox',{name:'Show Message controls',exact:true}).check();
-  await page.getByRole('checkbox',{name:'Show Follow narration',exact:true}).check();await page.locator('[data-et="closeMixerLayout"]').click();await page.getByRole('button',{name:'Open Choir voice mixer',exact:true}).click();
+  await withDrawerControl(page,'customizeMixer',()=>page.getByRole('button',{name:'Customize mixer',exact:true}).click());await page.getByRole('checkbox',{name:'Show Message controls',exact:true}).check();
+  await page.getByRole('checkbox',{name:'Show Follow narration',exact:true}).check();await withDrawerControl(page,'closeMixerLayout',()=>page.locator('[data-et="closeMixerLayout"]').click());await page.getByRole('button',{name:'Open Choir voice mixer',exact:true}).click();
   const quick=page.getByRole('button',{name:'Show message play controls',exact:true});await quick.click();
   await page.waitForFunction(()=>window.fixtureStore.get('chat:fixture')?.sectionButtons===true);assert.equal(await quick.getAttribute('aria-pressed'),'true');
   assert.equal(await play.isVisible(),true);assert.equal(await download.isVisible(),false);assert.equal(await page.evaluate(()=>window.calls.length+window.plans),0);
@@ -53,7 +54,7 @@ try{
   if(variant==='bubble' && !mobile){
    await page.evaluate(()=>new Promise((resolve,reject)=>{const request=indexedDB.open('choir-recordings',2);request.onerror=()=>reject(request.error);request.onsuccess=()=>{const db=request.result,tx=db.transaction('recordings','readwrite'),cursor=tx.objectStore('recordings').openCursor();cursor.onsuccess=()=>{const item=cursor.result;if(item){item.update({...item.value,expiresAt:Date.now()-1});item.continue();}};tx.oncomplete=()=>{db.close();document.dispatchEvent(new Event('visibilitychange'));resolve();};};}));await download.waitFor({state:'hidden'});
   }else{
-   await page.getByText('Recent messages & saved audio',{exact:true}).click();await page.getByRole('button',{name:'Delete audio',exact:true}).click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.includes('Saved audio deleted'));await download.waitFor({state:'hidden'});
+   await showDrawerControl(page,'messages');await page.getByRole('button',{name:'Delete audio',exact:true}).click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.includes('Saved audio deleted'));await download.waitFor({state:'hidden'});
   }
   await page.evaluate(()=>window.cleanup());await page.close();console.log(`PASS: ${variant}, ${mobile?'320px touch':'desktop'}: optional Messages switch, swipe-row icons, bounded sections, complete-only download, reload, swipe replacement, cached replay and retention/deletion.`);
  }

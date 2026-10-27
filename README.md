@@ -274,6 +274,8 @@ If the environment prevents spawning test workers, use `node --test --test-isola
 
 `npm test` validates core parsing, Jev integration, sound effect, ambience and music cue validation, music ranking, and cast validation. `npm run test:ui` executes browser-environment DOM, mixer, and companion bridge integration tests.
 
+The `UI-CLEANUP` preview reorganizes the drawer into Play, Cast, Recordings and Settings, adds mixer button rows and restores per-character accent/delivery routing. See [usage, tone routing and custom voice options](docs/ui-cleanup.md). `npm run test:cleanup:chromium` checks desktop/mobile task navigation, mixer rows and mixed Fish/Gemini requests with synthetic audio.
+
 With Playwright and Chromium installed, `npm run test:fluidity:chromium` measures transitions at 0.75–4× with deterministic synthesis delays, checks configured gaps/concurrency, and injects slow decoding to catch loudness work at handoff. It uses synthetic audio and makes no live provider calls.
 
 `npm run test:retention:chromium` checks physical recording deletion, replay deadlines and session-only conversion in an isolated browser using synthetic audio. It leaves unexpired, indefinite and other-installation fixtures intact and never accesses your Lumiverse browser data.

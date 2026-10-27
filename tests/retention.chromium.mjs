@@ -1,3 +1,4 @@
+import {showDrawerControl,withDrawerControl} from './fixtures/drawer.mjs';
 import {playbackFixture} from './fixtures/playback.mjs';
 import {createRequire} from 'node:module';
 import {createServer} from 'node:http';
@@ -24,23 +25,23 @@ try{
    transaction.oncomplete=()=>{db.close();resolve(rows);};transaction.onerror=()=>{db.close();reject(transaction.error);};
   };});
  });
- await page.locator('[data-et="latest"]').click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Ready:'));
+ await withDrawerControl(page,'latest',()=>page.locator('[data-et="latest"]').click());await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Ready:'));
  await page.getByRole('button',{name:'Open Choir voice mixer',exact:true}).click();
  const play=async()=>{await page.locator('[data-choir-action="playback"]').click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.includes('Playback finished'));};
  await play();let rows=await page.evaluate(()=>window.retentionRows());assert.equal(rows.length,1);assert.ok(rows[0].speechBytes>0 && rows[0].mixBytes>0);
  const key=rows[0].key;
- await page.locator('details').filter({has:page.locator('[data-et="retention"]')}).locator('summary').click();
- await page.locator('[data-et="retention"]').selectOption('1');
+ await showDrawerControl(page,'retention');
+ await withDrawerControl(page,'retention',()=>page.locator('[data-et="retention"]').selectOption('1'));
  await until(()=>page.evaluate(async key=>(await window.retentionRows()).find(row=>row.key===key)?.retention==='1',key));
  const before=(await page.evaluate(()=>window.retentionRows())).find(row=>row.key===key),calls=await page.evaluate(()=>window.calls.length);
- await page.locator('details').filter({has:page.locator('[data-et="messages"]')}).locator('summary').click();
+ await showDrawerControl(page,'messages');
  const replay=async()=>{await page.locator('[data-et="messages"]').getByRole('button',{name:'Replay',exact:true}).click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent==='Replay finished.');};
  await replay();rows=await page.evaluate(()=>window.retentionRows());assert.equal(rows[0].expiresAt,before.expiresAt);assert.equal(rows[0].retention,'1');assert.equal(await page.evaluate(()=>window.calls.length),calls);
  // Begin Replay in the same event turn as a settings edit, before autosave.
  await page.evaluate(()=>{const select=document.querySelector('[data-et="retention"]');select.value='7';select.dispatchEvent(new Event('change'));[...document.querySelector('[data-et="messages"]').querySelectorAll('button')].find(button=>button.textContent==='Replay').click();});
  await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent==='Replay finished.');
  rows=await page.evaluate(()=>window.retentionRows());assert.equal(rows[0].retention,'7');assert.equal(rows[0].expiresAt,before.createdAt+7*86400000);assert.equal(await page.evaluate(()=>window.calls.length),calls);
- await page.locator('[data-et="retention"]').selectOption('1');await until(()=>page.evaluate(async key=>(await window.retentionRows()).find(row=>row.key===key)?.retention==='1',key));
+ await withDrawerControl(page,'retention',()=>page.locator('[data-et="retention"]').selectOption('1'));await until(()=>page.evaluate(async key=>(await window.retentionRows()).find(row=>row.key===key)?.retention==='1',key));
  await page.evaluate(async key=>new Promise((resolve,reject)=>{const request=indexedDB.open('choir-recordings',2);request.onsuccess=()=>{
   const db=request.result,transaction=db.transaction('recordings','readwrite'),store=transaction.objectStore('recordings'),get=store.get(key),identity=JSON.parse(key);
   get.onsuccess=()=>{const value=get.result;for(const [id,retention,expiresAt,namespace] of [['future','7',value.expiresAt+86400000,identity[0]],['forever','forever',null,identity[0]],['foreign','1',value.expiresAt-1,'another-installation']])store.put({...value,retention,expiresAt},JSON.stringify([namespace,identity[1],id]));};
@@ -52,11 +53,11 @@ try{
  assert.ok(rows.every(row=>row.speechBytes>0 && row.mixBytes>0));
  console.log('PASS: Chrome physically deletes the expired speech, passage and played-mix record on return to Choir; Replay preserves the deadline; unexpired, indefinite and other-installation records remain.');
  await page.evaluate(()=>Date.now=window.originalNow);await play();
- await page.locator('[data-et="retention"]').selectOption('session');await until(()=>page.evaluate(async key=>!(await window.retentionRows()).some(row=>row.key===key),key));
+ await withDrawerControl(page,'retention',()=>page.locator('[data-et="retention"]').selectOption('session'));await until(()=>page.evaluate(async key=>!(await window.retentionRows()).some(row=>row.key===key),key));
  const sessionCalls=await page.evaluate(()=>window.calls.length);await replay();assert.equal(await page.evaluate(()=>window.calls.length),sessionCalls);
  assert.equal((await page.evaluate(()=>window.retentionRows())).some(row=>row.key===key),false);
  await page.evaluate(async()=>{await window.cleanup();window.cleanup=await window.mountChoir();});
- await page.locator('details').filter({has:page.locator('[data-et="messages"]')}).locator('summary').click();
+ await showDrawerControl(page,'messages');
  await page.locator('[data-et="messages"]').getByRole('button',{name:'Replay',exact:true}).click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.includes('No saved audio'));
  console.log('PASS: session-only conversion removes the Chrome disk copy immediately, permits replay without synthesis during the session, and leaves no replayable copy after Choir remounts.');
  assert.deepEqual(errors,[]);
