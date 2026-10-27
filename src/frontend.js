@@ -1,4 +1,4 @@
-import { characterCardRoleDiscovery, namePronunciation, namePronunciationTarget, namePronunciations, respellNames, mergeSettingsChanges } from './core.js';
+import { characterCardRoleDiscovery, namePronunciation, namePronunciationTarget, namePronunciations, respellNames, mergeSettingsChanges, reconcileCastDuplicates } from './core.js';
 import { createSetupWizard, saveSetupSettings } from './setup.js';
 import { ABYSSAL_THEME_CSS } from './abyssal-theme.js';
 import { randomUuid, sha256Hex, GEMINI_VOICES, OPENAI_VOICES, additionalVoices, apiErrorMessage, MAX_SPEECH_CHARS, MAX_CHANNEL_VOLUME, speechProviderFamily, speechRequestLimits, normalizeName, normalizeVoiceCatalogue, characterCardRoles, validateCardRoles, reconcileCardCast, unisonSpeakers, speechSourceUnits, mixUnisonAudio, speechDownloadWav, transcriptFromMessage, readableText, readAlongIndex, locatePassages, spokenLength, validateCastConfig, validatePlan, npcCastActor, parsePlanJson, speechBatches, groupedSpeechBatches, audioBytes, fastClassifyPlan, resolvePlannerMode, attributionPlan, restoreAttribution, passageKey, mixerVolume, loudnessGain, castExport, castImport, applySoundCues, cueOffset, sfxCueOffset, transcriptLines, withoutLines } from './core.js';
@@ -1450,7 +1450,7 @@ export async function setup(ctx) {
     }
     if(value.npcPolicy?.route==='gemini')value.npcPolicy.route='';
     for(const id in value.extraVoiceRoutes)value.extraVoiceRoutes[id]=value.extraVoiceRoutes[id].filter(route=>route!=='gemini');
-    return value;
+    return reconcileCastDuplicates(value);
   }
   function chatSettingsSnapshot(settings){
     const value=normalizeSavedSettings(withoutSecrets(settings));
@@ -1749,7 +1749,7 @@ export async function setup(ctx) {
     const write=()=>withSettingsLock(async()=>{
       let preferences,retentionChanged=false;
       const latestChat=await ctx.settings.get(settingsKey(targetChat));
-      const merged=latestChat?mergeSettingsChanges(chatSettingsSnapshot({...defaults(),...latestChat}),chatBaseline,snapshot):snapshot;
+      const merged=reconcileCastDuplicates(latestChat?mergeSettingsChanges(chatSettingsSnapshot({...defaults(),...latestChat}),chatBaseline,snapshot):snapshot);
       replaceBaseline(snapshot,merged);
       if(inherit){
         const latest=await ctx.settings.get(GLOBAL_SETTINGS_KEY);
@@ -1777,11 +1777,17 @@ export async function setup(ctx) {
   }
   function scheduleSettingsSave(){
     if(disposed || !chatId || !config)return false;
-    const candidate=capture();
+    const candidate=capture();let castConflict=false;
     try{
+      const names=new Set();
+      for(const actor of [...candidate.fixed,...(candidate.casts[scope(candidate)] || [])]){
+        const key=normalizeName(actor.speaker);
+        if(key && names.has(key)){castConflict=true;throw new Error(`A character named ${actor.speaker} is already in Cast. Choose a different name or remove the extra entry.`);}
+        if(key)names.add(key);
+      }
       validateNumericSettings(candidate);
       for(const name of ['chunk','plannerTokens','prefetch'])if(!$(name).value.trim())throw new Error('Enter a value for '+$(name).parentElement.firstChild.textContent.trim()+'.');
-    }catch(error){++settingsEdit;pendingSettings=null;clearTimeout(autosaveTimer);autosaveTimer=null;saveState('Not saved · check Advanced Settings',true);status(error.message,true);return false;}
+    }catch(error){++settingsEdit;pendingSettings=null;clearTimeout(autosaveTimer);autosaveTimer=null;saveState(castConflict?'Not saved · duplicate character name':'Not saved · check Advanced Settings',true);status(error.message,true);return false;}
     if(candidate.ignoredTags!==config.ignoredTags){stop(false);clearPlan();paragraphCues.clear();renderMessages();}
     if(JSON.stringify(namePronunciations(pronunciationActors(candidate)))!==JSON.stringify(namePronunciations(pronunciationActors(config))))stop(false);
     $('readingPreview').hidden=true;
@@ -2100,14 +2106,20 @@ export async function setup(ctx) {
     const heading=document.createElement('strong'),edit=document.createElement('button');edit.type='button';edit.className='et-btn-subtle';edit.dataset.choirEdit='';
     const editor=document.createElement('div');editor.className='et-grid et-cast-editor';editor.dataset.choirCastEditor='';editor.id=`choir-cast-editor-${++castEditorId}`;editor.hidden=!open;edit.setAttribute('aria-controls',editor.id);
     const name=document.createElement('input');name.value=actor.speaker;name.disabled=reserved;name.style.display='none';name.dataset.choirPersist='';editor.prepend(name);
-    const refreshHeading=()=>{const speaker=name.value.trim() || 'Character';heading.textContent=speaker;edit.textContent=editor.hidden?'Edit':'←';edit.setAttribute('aria-label',editor.hidden?`Edit ${speaker}`:`Close ${speaker} editor`);edit.setAttribute('aria-expanded',String(!editor.hidden));};
+    let removeButton;
+    const refreshHeading=()=>{const speaker=name.value.trim() || 'Character';heading.textContent=speaker;edit.textContent=editor.hidden?'Edit':'←';edit.setAttribute('aria-label',editor.hidden?`Edit ${speaker}`:`Close ${speaker} editor`);edit.setAttribute('aria-expanded',String(!editor.hidden));if(removeButton){removeButton.title=`Remove ${speaker}`;if(editor.hidden)removeButton.innerHTML=ICON_CLOSE;else removeButton.textContent='Remove';}};
     if(!required){
-      const delBtn=document.createElement('button');delBtn.type='button';delBtn.className='et-btn-subtle';delBtn.title='Remove character';delBtn.setAttribute('aria-label','Remove character');delBtn.innerHTML=ICON_CLOSE;
-      delBtn.style.cssText='padding:1px 5px;line-height:1;border-radius:4px;cursor:pointer;opacity:0.65;margin-right:6px';
-      delBtn.onmouseenter=()=>{delBtn.style.opacity='1';delBtn.style.color='#ef7878';};
-      delBtn.onmouseleave=()=>{delBtn.style.opacity='0.65';delBtn.style.color='inherit';};
-      delBtn.onclick=(e)=>{e.preventDefault();e.stopPropagation();row.remove();scheduleSettingsSave();renderMixer();};
-      header.append(delBtn);
+      removeButton=document.createElement('button');removeButton.type='button';removeButton.className='et-btn-subtle et-btn-danger';removeButton.dataset.choirRemove='';removeButton.setAttribute('aria-label','Remove character');
+      removeButton.onclick=e=>{
+        e.preventDefault();e.stopPropagation();stop(false);config=capture();
+        const speaker=name.value.trim(),key=normalizeName(speaker),next=row.nextElementSibling || row.previousElementSibling;
+        // Card discovery must respect a deliberate removal on the next reload.
+        config.removedCardCast=[...new Set([...(config.removedCardCast || []),speaker,...aliases.value.split(',').map(alias=>alias.trim()).filter(Boolean)])];
+        config.casts=Object.fromEntries(Object.entries(config.casts).map(([route,actors])=>[route,actors.filter(actor=>normalizeName(actor.speaker)!==key)]));
+        config.singleVoices=Object.fromEntries(Object.entries(config.singleVoices || {}).map(([route,choices])=>[route,Object.fromEntries(Object.entries(choices).filter(([name])=>normalizeName(name)!==key))]));
+        drawerNavigation.closeCast();row.remove();scheduleSettingsSave();clearPlan();refreshDefaultControls();
+        (next?.querySelector('[data-choir-edit]') || $('add')).focus();status(`Removed ${speaker}.`);
+      };
     }
     name.addEventListener('input',refreshHeading);edit.onclick=()=>{if(!editor.hidden){drawerNavigation.closeCast();return;}editor.hidden=false;drawerNavigation.openCast(row,()=>{editor.hidden=true;refreshHeading();updateCastVisibility(true);});refreshHeading();};refreshHeading();
     edit.style.marginLeft='auto';
@@ -2135,7 +2147,7 @@ export async function setup(ctx) {
         input.focus();input.select();
       };
     }
-    header.append(heading,edit);row.append(header,editor);
+    header.append(heading,edit);if(removeButton)header.append(removeButton);row.append(header,editor);
     const voice=document.createElement('select');
     const route=document.createElement('select');route.dataset.choirRoute='';
     option(route,'','Use chat default');
@@ -2380,9 +2392,6 @@ export async function setup(ctx) {
       const test=document.createElement('button');test.type='button';test.className='et-btn-subtle';test.textContent='Test pronunciation';test.dataset.choirPronunciationTest='';test.setAttribute('aria-label',`Test pronunciation of ${actor.speaker}`);
       test.onclick=()=>audition(`${namePronunciationTarget({speaker:name.value,sayAsName:sayAsName.value})} opened the door.`);tools.append(pronunciationHint,document.createElement('br'),test);secondary.append(tools);
     }
-    if(!required){
-      const remove=document.createElement('button');remove.type='button';remove.textContent='Remove character';remove.className='et-btn-danger et-link-row';remove.onclick=()=>{drawerNavigation.closeCast();row.remove();scheduleSettingsSave();renderMixer();};secondary.append(remove);
-    }
     container.append(row);if(open){editor.hidden=true;edit.click();}
     paintSpeakerSpeeds();
     updateCardProviderControls();
@@ -2416,6 +2425,7 @@ export async function setup(ctx) {
   }
   function renderCast() {
     drawerNavigation.closeCast();
+    config=reconcileCastDuplicates(config);
     $('fixed').replaceChildren();$('npcs').replaceChildren();$('otherCastRows').replaceChildren();
     closePolicyLibrary?.();
     const policyRoot=$('npcPolicyRoot');policyRoot.replaceChildren();
@@ -2693,6 +2703,7 @@ export async function setup(ctx) {
     const preferences={...preferenceSnapshot(preset?.preferences || await ctx.settings.get('settings:defaults')),...preferenceSnapshot(saved),...preferenceSnapshot(globalSaved)};
     if(disposed || version!==loadVersion)return;
     const legacyCast=!saved && !capturedDefaults && Array.isArray(globalSaved?.fixed)?globalSaved:null;
+    const repairDuplicates=saved && reconcileCastDuplicates(saved)!==saved;
     config=normalizeSavedSettings({...defaults(),...Object.fromEntries(preferenceFields.filter(name=>preferences && Object.hasOwn(preferences,name)).map(name=>[name,preferences[name]])),...(legacyCast || {}),...(saved || {}),...preferences});
     config.plannerMode=resolvePlannerMode(preferences);
     config.useFastClassifier=config.plannerMode==='heuristic';config.useJev=config.plannerMode==='jev';
@@ -2715,7 +2726,7 @@ export async function setup(ctx) {
     if(version!==loadVersion || disposed)return;
     await refreshLeadNames(Boolean(saved));
     if(version!==loadVersion || disposed)return;
-    if(repairCast)await persistConfig(id,config);
+    if(repairCast || repairDuplicates)await persistConfig(id,config);
     const previous=id?await ctx.settings.get(`activeplan:${id}`):null;
     if(version!==loadVersion || disposed)return;
     if(previous)await restoreSavedPlan(previous);
@@ -2833,7 +2844,7 @@ export async function setup(ctx) {
       if(existing)existing.aliases=[...new Set([...existing.aliases,role.name,...(role.aliases || [])])].filter(name=>normalizeName(name)!==normalizeName(existing.name)).slice(0,30);
       else roles.push({...role,aliases:[...(role.aliases || [])]});
     }
-    const npcNames=new Set((config?.cardCastNPCs || []).map(normalizeName));
+    const npcNames=new Set([...(config?.cardCastNPCs || []),...(config?.removedCardCast || [])].map(normalizeName));
     return validateCardRoles(roles).filter(role=>![role.name,...(role.aliases || [])].some(name=>npcNames.has(normalizeName(name))));
   }
   function expandCardRoles(value,roles,character){
@@ -4265,7 +4276,7 @@ export async function setup(ctx) {
     preview.textContent=latest?transcriptFromMessage(ctx.messages.getContent(latest.id),$('ignoredTags').value) || 'No readable story text remains.':'Open a chat with an assistant reply to preview reading.';
     preview.hidden=false;
   };
-  $('add').onclick=()=>{castRows.push(makeRow({speaker:`Character ${castRows.length}`,voice:'',style:''},$('fixed'),false,true));scheduleSettingsSave();renderMixer();};
+  $('add').onclick=()=>{const names=new Set([...castRows,...npcRows].filter(entry=>root.contains(entry.row)).map(entry=>normalizeName(entry.read().speaker)));let index=1;while(names.has(normalizeName(`Character ${index}`)))index++;castRows.push(makeRow({speaker:`Character ${index}`,voice:'',style:''},$('fixed'),false,true));scheduleSettingsSave();renderMixer();};
         const doSearchVoices = () => {
     const query = $('voiceSearchQuery')?.value?.trim() || '';
     openVoiceLibraryModal({

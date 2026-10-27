@@ -122,6 +122,32 @@ function normalizeName(value) {
   return String(value || '').normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
+// One identity per visible cast. Keep the first saved assignment (including its
+// route and voice); provider-specific NPC lists remain separate from each other.
+// Match canonical names only: two people sharing an alias must not be merged.
+function reconcileCastDuplicates(value) {
+  if(!Array.isArray(value?.fixed))return value;
+  let changed=false;
+  const unique=actors=>{
+    const result=[],positions=new Map();
+    for(const actor of actors){
+      const key=normalizeName(actor.speaker);
+      if(!key || !positions.has(key)){if(key)positions.set(key,result.length);result.push(actor);continue;}
+      changed=true;
+      const index=positions.get(key),first=result[index];
+      const aliases=[...new Map([...(first.aliases || []),...(actor.aliases || [])].filter(alias=>normalizeName(alias)!==key).map(alias=>[normalizeName(alias),alias])).values()].slice(0,30);
+      if(aliases.length)result[index]={...first,aliases};
+    }
+    return result;
+  };
+  const fixed=unique(value.fixed),names=new Set(fixed.map(actor=>normalizeName(actor.speaker)).filter(Boolean));
+  const casts=Object.fromEntries(Object.entries(value.casts || {}).map(([route,actors])=>[route,unique(actors.filter(actor=>{
+    if(!names.has(normalizeName(actor.speaker)))return true;
+    changed=true;return false;
+  }))]));
+  return changed?{...value,fixed,casts}:value;
+}
+
 const escapePattern = value => value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
 
 // Preserve older free-form instructions. Only unambiguous name mappings and
@@ -2210,7 +2236,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
   (async () => {
     const input = message.input || {};
     if (message.action === 'ping') {
-      send({result:{version:"1.1.6-staging.44",ready:true,decisionsAvailable:typeof spindle.decisions?.evaluate==='function'}});return;
+      send({result:{version:"1.1.6-staging.45",ready:true,decisionsAvailable:typeof spindle.decisions?.evaluate==='function'}});return;
     }
     if(message.action==='cardCast'){
       const card=input.card;

@@ -8,6 +8,67 @@ import {validatePlan,speechSourceUnits,transcriptFromMessage} from '../src/core.
 import {speechPanel} from './fixtures/speech-panel.mjs';
 import {phoneWidget} from './fixtures/phone-widget.mjs';
 
+test('saved exact-name cast duplicates are repaired across fixed and provider lists without changing the first voice',async()=>{
+ for(const mode of ['one','several']){
+  const h=await harness();try{
+   const saved=h.store.get('chat:chat-a');saved.connectionMode=mode;
+   saved.fixed.push({...saved.fixed[2],voice:'g',route:'native:a',aliases:['Mira Smith']});
+   saved.casts['native:a'].push({speaker:'Mira',voice:'g',style:''},{speaker:'Guard',voice:'new',style:''});
+   saved.casts['native:b']=[{speaker:'Mira',voice:'g',style:''},{speaker:'Other',voice:'m',style:''}];
+   h.store.set('chat:chat-a',saved);await h.reload();
+   const clean=h.store.get('chat:chat-a');
+   assert.deepEqual(clean.fixed.map(actor=>actor.speaker),['Narrator','You','Mira']);
+   assert.equal(clean.fixed[2].voice,'m');assert.equal(clean.fixed[2].route,'native:b');assert.equal(clean.fixed[2].accent,'Irish');
+   assert.deepEqual(clean.fixed[2].aliases,['Captain','Mira Smith']);
+   assert.deepEqual(clean.casts['native:a'].map(actor=>actor.speaker),['Guard']);assert.equal(clean.casts['native:a'][0].voice,'g');
+   assert.deepEqual(clean.casts['native:b'].map(actor=>actor.speaker),['Other']);
+   const rows=[...h.root.querySelectorAll('.et-cast-row')];assert.equal(rows.filter(row=>row.querySelector('strong').textContent==='Mira').length,1);
+   for(const name of ['Narrator','You'])assert.equal(rows.find(row=>row.querySelector('strong').textContent===name).querySelector('[data-choir-remove]'),null);
+   await h.reload();assert.equal(h.store.get('chat:chat-a').fixed[2].voice,'m');assert.equal(h.synthesis.length,0);
+  }finally{await h.close();}
+ }
+});
+
+test('visible cast removal persists for card characters without opening pronunciation settings',async()=>{
+ const h=await harness();try{
+  h.state.character={name:'Mira',description:'# Mira\nA captain.'};await h.reload();
+  const row=[...h.root.querySelectorAll('.et-cast-row')].find(row=>row.querySelector('strong').textContent==='Mira');
+  row.querySelector('[data-choir-edit]').click();const remove=row.querySelector('[data-choir-remove]');
+  assert.equal(remove.textContent,'Remove');assert.equal(row.querySelector('[data-choir-pronunciation-page]').hidden,true);
+  remove.click();await until(()=>h.$('saveState').textContent==='Saved automatically');
+  assert.equal(h.store.get('chat:chat-a').fixed.some(actor=>actor.speaker==='Mira'),false);
+  await h.reload();assert.equal(h.store.get('chat:chat-a').fixed.some(actor=>actor.speaker==='Mira'),false);
+  assert.equal([...h.root.querySelectorAll('.et-cast-header strong')].some(node=>node.textContent==='Mira'),false);
+  assert.equal(h.requests.filter(request=>['plan','cardCast'].includes(request.action)).length,0);
+ }finally{await h.close();}
+});
+
+test('removing a planned NPC clears remembered copies and voice choices on every provider',async()=>{
+ const h=await harness();try{
+  const saved=h.store.get('chat:chat-a');saved.casts['native:b']=[{speaker:'Guard',voice:'m',style:''}];
+  saved.singleVoices={'native:a':{Guard:'g',Narrator:'n'},'native:b':{Guard:'m',Mira:'m'}};h.store.set('chat:chat-a',saved);await h.reload();await h.plan();
+  const row=[...h.root.querySelectorAll('.et-cast-row')].find(row=>row.querySelector('strong').textContent==='Guard');row.querySelector('[data-choir-remove]').click();
+  await until(()=>h.$('saveState').textContent==='Saved automatically');
+  const clean=h.store.get('chat:chat-a');
+  assert.ok(Object.values(clean.casts).every(actors=>actors.every(actor=>actor.speaker!=='Guard')));
+  assert.ok(Object.values(clean.singleVoices).every(choices=>!Object.hasOwn(choices,'Guard')));
+  await h.reload();assert.ok(Object.values(h.store.get('chat:chat-a').casts).every(actors=>actors.every(actor=>actor.speaker!=='Guard')));
+  assert.equal([...h.root.querySelectorAll('.et-cast-header strong')].some(node=>node.textContent==='Guard'),false);
+ }finally{await h.close();}
+});
+
+test('renaming a cast entry to an existing name is not saved and Add character chooses an unused name',async()=>{
+ const h=await harness();try{
+  const row=[...h.root.querySelectorAll('.et-cast-row')].find(row=>row.querySelector('strong').textContent==='Mira'),name=row.querySelector('[data-choir-voice-page] input');
+  name.value='You';name.dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));
+  assert.match(h.$('saveState').textContent,/duplicate character name/);assert.equal(h.store.get('chat:chat-a').fixed[2].speaker,'Mira');
+  name.value='Mira';name.dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));await until(()=>h.$('saveState').textContent==='Saved automatically');
+  const saved=h.store.get('chat:chat-a');saved.fixed.push({speaker:'Character 1',voice:'g',style:''});h.store.set('chat:chat-a',saved);await h.reload();h.$('add').click();
+  await until(()=>h.$('saveState').textContent==='Saved automatically');
+  assert.equal(h.store.get('chat:chat-a').fixed.at(-1).speaker,'Character 2');
+ }finally{await h.close();}
+});
+
 function mockMixRecorder(){
  const original=globalThis.MediaRecorder;
  globalThis.MediaRecorder=class{

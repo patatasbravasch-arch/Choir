@@ -1,6 +1,6 @@
 # Choir drawer
 
-Version: **1.1.6-staging.43**. Branch: **lunch-test**.
+Version: **1.1.6-staging.45**. Branch: **lunch-test**.
 
 ## Using the drawer
 
@@ -12,6 +12,8 @@ Version: **1.1.6-staging.43**. Branch: **lunch-test**.
 | Setup | Setup wizard, connections, planner and auto-plan/auto-play. Advanced settings holds buffering, filtering and cast import/export. |
 
 Play/pause/resume, Plan latest and Open mixer stay available above every tab. A download icon appears there when the latest reply has a complete saved playback. Errors and Stop remain accessible. Tabs support arrow keys, Home and End.
+
+**Cast removal:** optional characters have a remove icon beside Edit. Opening their editor shows the full **Remove** label beside the audition control. Narrator and persona cannot be removed. Removal clears remembered copies and voice choices on every connection and stops card discovery from immediately recreating the row. Exact-name duplicates are repaired on load/save, retaining the first saved voice, connection and preferences; different names and shared aliases do not trigger a merge. New names that collide with another cast entry are not saved.
 
 **Sound → Customize mixer** controls visibility, quick-button order and **Buttons per row** (Automatic or 1–7). Follow narration, Message controls and Channel levels remain optional. Hidden controls keep their settings. Reset mixer layout preserves audio levels, limits, speeds and gaps. **Volume limits** sets ceilings for Master (1–100%) and Voices, Music, Ambience and Sound effects (1–300%). Lowering a ceiling immediately clamps higher levels and slider/number maxima. Preferences persist on this device, separately from chat casting. These controls add no polling or audio-processing loop.
 

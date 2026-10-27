@@ -122,6 +122,32 @@ function normalizeName(value) {
   return String(value || '').normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
+// One identity per visible cast. Keep the first saved assignment (including its
+// route and voice); provider-specific NPC lists remain separate from each other.
+// Match canonical names only: two people sharing an alias must not be merged.
+function reconcileCastDuplicates(value) {
+  if(!Array.isArray(value?.fixed))return value;
+  let changed=false;
+  const unique=actors=>{
+    const result=[],positions=new Map();
+    for(const actor of actors){
+      const key=normalizeName(actor.speaker);
+      if(!key || !positions.has(key)){if(key)positions.set(key,result.length);result.push(actor);continue;}
+      changed=true;
+      const index=positions.get(key),first=result[index];
+      const aliases=[...new Map([...(first.aliases || []),...(actor.aliases || [])].filter(alias=>normalizeName(alias)!==key).map(alias=>[normalizeName(alias),alias])).values()].slice(0,30);
+      if(aliases.length)result[index]={...first,aliases};
+    }
+    return result;
+  };
+  const fixed=unique(value.fixed),names=new Set(fixed.map(actor=>normalizeName(actor.speaker)).filter(Boolean));
+  const casts=Object.fromEntries(Object.entries(value.casts || {}).map(([route,actors])=>[route,unique(actors.filter(actor=>{
+    if(!names.has(normalizeName(actor.speaker)))return true;
+    changed=true;return false;
+  }))]));
+  return changed?{...value,fixed,casts}:value;
+}
+
 const escapePattern = value => value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
 
 // Preserve older free-form instructions. Only unambiguous name mappings and
@@ -2789,8 +2815,8 @@ const DRAWER_UI_CSS=`
 .ensemble-tts .et-current-message{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px;margin-bottom:8px}.ensemble-tts .et-current-message>span{flex:1}.ensemble-tts .et-current-message .et-btn-group{gap:5px;flex-wrap:wrap;order:2}.ensemble-tts .et-current-message button{font-size:12px;padding:5px 8px}.ensemble-tts [data-et="latestNotice"]{font-size:11px;opacity:.65;margin:0;order:1}
 .ensemble-tts .et-task-tabs{margin:0 0 10px;padding:0;background:none;border:0;border-bottom:1px solid #8884;border-radius:0;gap:0}.ensemble-tts .et-task-tabs button{border-radius:0;min-height:40px;font-size:13px;padding:8px 4px}.ensemble-tts .et-task-tabs button[aria-selected="true"]{background:none;color:inherit;box-shadow:inset 0 -2px var(--lumiverse-primary,#c4b5fd)}
 .ensemble-tts .et-task-panel{padding:0;min-width:0}.ensemble-tts .et-status{padding:6px 0;background:none;font-size:12px;margin:4px 0;overflow-wrap:anywhere}.ensemble-tts .et-section-header{margin:4px 0 8px;gap:8px}.ensemble-tts .et-section-header h3{margin:0}
-.ensemble-tts .et-cast-row{padding:6px 0;margin:0;border:0;border-bottom:1px solid #8883;background:none;border-radius:0}.ensemble-tts .et-cast-header{display:grid;grid-template-columns:minmax(70px,.8fr) minmax(0,1.2fr) auto;gap:8px;min-height:34px}.ensemble-tts .et-cast-header strong{position:static;transform:none;text-align:left;max-width:none;overflow-wrap:anywhere;white-space:normal;font-size:13px;grid-column:1;grid-row:1}.ensemble-tts .et-cast-header>[aria-label="Remove character"]{display:none}.ensemble-tts .et-cast-summary{font-size:11px;opacity:.75;overflow-wrap:anywhere;min-width:0;grid-column:2;grid-row:1}.ensemble-tts .et-cast-header>[data-choir-edit]{grid-column:3;grid-row:1;margin:0!important;min-height:32px}
-.ensemble-tts [data-editing="true"]>:not(:has(.et-focused-cast)),.ensemble-tts [data-editing="true"] .et-cast-row:not(.et-focused-cast),.ensemble-tts [data-editing="true"] [data-et="otherCast"]>summary{display:none!important}.ensemble-tts .et-cast-header>.et-cast-audition{display:none}.ensemble-tts .et-focused-cast{border:0;padding:0}.ensemble-tts .et-focused-cast .et-cast-header{display:flex;gap:8px;margin-bottom:10px}.ensemble-tts .et-focused-cast .et-cast-header strong{flex:1;order:1}.ensemble-tts .et-focused-cast .et-cast-header>[data-choir-edit]{order:0}.ensemble-tts .et-focused-cast .et-cast-summary{display:none}.ensemble-tts .et-focused-cast [data-choir-preview]{display:inline-flex;order:2}
+.ensemble-tts .et-cast-row{padding:6px 0;margin:0;border:0;border-bottom:1px solid #8883;background:none;border-radius:0}.ensemble-tts .et-cast-header{display:grid;grid-template-columns:minmax(70px,.8fr) minmax(0,1.2fr) auto auto;gap:8px;min-height:34px}.ensemble-tts .et-cast-header strong{position:static;transform:none;text-align:left;max-width:none;overflow-wrap:anywhere;white-space:normal;font-size:13px;grid-column:1;grid-row:1}.ensemble-tts .et-cast-header>[data-choir-remove]{display:inline-flex;opacity:1;align-items:center;justify-content:center;grid-column:4;grid-row:1;min-height:32px;padding:4px 8px}.ensemble-tts .et-cast-summary{font-size:11px;opacity:.75;overflow-wrap:anywhere;min-width:0;grid-column:2;grid-row:1}.ensemble-tts .et-cast-header>[data-choir-edit]{grid-column:3;grid-row:1;margin:0!important;min-height:32px}
+.ensemble-tts [data-editing="true"]>:not(:has(.et-focused-cast)),.ensemble-tts [data-editing="true"] .et-cast-row:not(.et-focused-cast),.ensemble-tts [data-editing="true"] [data-et="otherCast"]>summary{display:none!important}.ensemble-tts .et-cast-header>.et-cast-audition{display:none}.ensemble-tts .et-focused-cast{border:0;padding:0}.ensemble-tts .et-focused-cast .et-cast-header{display:flex;gap:8px;margin-bottom:10px}.ensemble-tts .et-focused-cast .et-cast-header strong{flex:1;order:1}.ensemble-tts .et-focused-cast .et-cast-header>[data-choir-edit]{order:0}.ensemble-tts .et-focused-cast .et-cast-summary{display:none}.ensemble-tts .et-focused-cast [data-choir-preview]{display:inline-flex;order:2}.ensemble-tts .et-focused-cast [data-choir-remove]{order:3}
 .ensemble-tts .et-cast-editor{display:block;border:0;padding:0;margin:0}.ensemble-tts .et-cast-editor>label{margin:8px 0;min-width:0}.ensemble-tts .et-edit-pair{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:8px 0}.ensemble-tts .et-edit-pair>label{min-width:0}.ensemble-tts .et-inline-field{display:grid!important;grid-template-columns:80px minmax(0,1fr);align-items:center;gap:8px!important}.ensemble-tts .et-cast-editor label{font-size:12px}.ensemble-tts .et-cast-editor .et-hint{font-size:11px;opacity:.7}
 .ensemble-tts [data-choir-voice-page]>label,.ensemble-tts [data-choir-pronunciation-page]>label{margin:8px 0}.ensemble-tts [data-choir-voice-page] select{width:100%;text-overflow:ellipsis}.ensemble-tts [data-choir-voice-page] label>div{min-width:0}.ensemble-tts [data-choir-voice-page] label>div>button{font-size:11px;margin-top:5px}.ensemble-tts .et-setup-actions{margin:0 0 10px}.ensemble-tts .et-section-header>.et-row{gap:4px}.ensemble-tts .et-check-grid .et-inline-field{grid-column:1 / -1}.ensemble-tts [data-et="mixerLayoutOptions"]>.et-inline-field{grid-template-columns:minmax(100px,1fr) minmax(80px,1fr)}
 .ensemble-tts input,.ensemble-tts select{padding:6px 8px;min-height:34px;min-width:0}.ensemble-tts button{min-height:34px;font-size:12px;padding:5px 9px}.ensemble-tts .et-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.ensemble-tts .et-task-panel>.et-subhead{margin-top:14px;padding-top:12px}
@@ -2800,8 +2826,8 @@ const DRAWER_UI_CSS=`
 .ensemble-tts .et-volume-limits{display:grid;gap:6px}.ensemble-tts .et-volume-limits label{display:flex;align-items:center;gap:6px;font-size:12px}.ensemble-tts .et-volume-limits label>span:first-child{flex:1}.ensemble-tts .et-volume-limits input{width:76px}
 .ensemble-tts .et-default-actions{display:flex;gap:6px;flex-wrap:wrap;margin:12px 0}.ensemble-tts [data-et="otherCast"]{border:0;padding:0;margin:6px 0}.ensemble-tts [data-et="otherCast"] summary{padding:8px 0;font-size:12px}.ensemble-tts .et-message{padding:10px 0;margin:0;border:0;border-bottom:1px solid #8883;border-radius:0;background:none}.ensemble-tts .et-message>span{flex:1;min-width:120px}.ensemble-tts .et-message .et-btn-group{flex-wrap:wrap}.ensemble-tts .et-message small{display:block;font-size:11px;opacity:.7}
 .ensemble-tts .et-tuning-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.ensemble-tts .et-tuning{padding:8px 0;border:0;background:none}.ensemble-tts .et-tuning-hint{display:none}.ensemble-tts .et-tuning-title{font-size:12px}.ensemble-tts .et-character-speed{margin-top:8px}
-@media(max-width:400px){.ensemble-tts .et-grid:has([data-et="connection"]){grid-template-columns:1fr}.ensemble-tts .et-current-message>.et-btn-group{width:100%}.ensemble-tts .et-cast-header{grid-template-columns:minmax(60px,.8fr) minmax(0,1.2fr) auto}.ensemble-tts .et-inline-field{grid-template-columns:72px minmax(0,1fr)}}
-@media(pointer:coarse),(max-width:600px){.ensemble-tts button,.ensemble-tts .et-task-tabs button,.ensemble-tts .cm-customize-row button,.ensemble-tts .et-pagebar button,.ensemble-tts .et-cast-header>[data-choir-edit]{min-height:44px;min-width:44px}.ensemble-tts .et-check-grid label,.ensemble-tts .cm-customize-row label{min-height:44px;font-size:13px}.ensemble-tts input:not([type="checkbox"]),.ensemble-tts select{font-size:16px;min-height:44px}.ensemble-tts .cm-customize-quick{grid-template-columns:1fr}}
+@media(max-width:400px){.ensemble-tts .et-grid:has([data-et="connection"]){grid-template-columns:1fr}.ensemble-tts .et-current-message>.et-btn-group{width:100%}.ensemble-tts .et-cast-header{grid-template-columns:minmax(60px,.8fr) minmax(0,1.2fr) auto auto}.ensemble-tts .et-inline-field{grid-template-columns:72px minmax(0,1fr)}}
+@media(pointer:coarse),(max-width:600px){.ensemble-tts button,.ensemble-tts .et-task-tabs button,.ensemble-tts .cm-customize-row button,.ensemble-tts .et-pagebar button,.ensemble-tts .et-cast-header>[data-choir-edit],.ensemble-tts .et-cast-header>[data-choir-remove]{min-height:44px;min-width:44px}.ensemble-tts .et-check-grid label,.ensemble-tts .cm-customize-row label{min-height:44px;font-size:13px}.ensemble-tts input:not([type="checkbox"]),.ensemble-tts select{font-size:16px;min-height:44px}.ensemble-tts .cm-customize-quick{grid-template-columns:1fr}}
 `;
 
 // Provider adapters keep acting instructions out of the spoken transcript.
@@ -4298,7 +4324,7 @@ export async function setup(ctx) {
     }
     if(value.npcPolicy?.route==='gemini')value.npcPolicy.route='';
     for(const id in value.extraVoiceRoutes)value.extraVoiceRoutes[id]=value.extraVoiceRoutes[id].filter(route=>route!=='gemini');
-    return value;
+    return reconcileCastDuplicates(value);
   }
   function chatSettingsSnapshot(settings){
     const value=normalizeSavedSettings(withoutSecrets(settings));
@@ -4597,7 +4623,7 @@ export async function setup(ctx) {
     const write=()=>withSettingsLock(async()=>{
       let preferences,retentionChanged=false;
       const latestChat=await ctx.settings.get(settingsKey(targetChat));
-      const merged=latestChat?mergeSettingsChanges(chatSettingsSnapshot({...defaults(),...latestChat}),chatBaseline,snapshot):snapshot;
+      const merged=reconcileCastDuplicates(latestChat?mergeSettingsChanges(chatSettingsSnapshot({...defaults(),...latestChat}),chatBaseline,snapshot):snapshot);
       replaceBaseline(snapshot,merged);
       if(inherit){
         const latest=await ctx.settings.get(GLOBAL_SETTINGS_KEY);
@@ -4625,11 +4651,17 @@ export async function setup(ctx) {
   }
   function scheduleSettingsSave(){
     if(disposed || !chatId || !config)return false;
-    const candidate=capture();
+    const candidate=capture();let castConflict=false;
     try{
+      const names=new Set();
+      for(const actor of [...candidate.fixed,...(candidate.casts[scope(candidate)] || [])]){
+        const key=normalizeName(actor.speaker);
+        if(key && names.has(key)){castConflict=true;throw new Error(`A character named ${actor.speaker} is already in Cast. Choose a different name or remove the extra entry.`);}
+        if(key)names.add(key);
+      }
       validateNumericSettings(candidate);
       for(const name of ['chunk','plannerTokens','prefetch'])if(!$(name).value.trim())throw new Error('Enter a value for '+$(name).parentElement.firstChild.textContent.trim()+'.');
-    }catch(error){++settingsEdit;pendingSettings=null;clearTimeout(autosaveTimer);autosaveTimer=null;saveState('Not saved · check Advanced Settings',true);status(error.message,true);return false;}
+    }catch(error){++settingsEdit;pendingSettings=null;clearTimeout(autosaveTimer);autosaveTimer=null;saveState(castConflict?'Not saved · duplicate character name':'Not saved · check Advanced Settings',true);status(error.message,true);return false;}
     if(candidate.ignoredTags!==config.ignoredTags){stop(false);clearPlan();paragraphCues.clear();renderMessages();}
     if(JSON.stringify(namePronunciations(pronunciationActors(candidate)))!==JSON.stringify(namePronunciations(pronunciationActors(config))))stop(false);
     $('readingPreview').hidden=true;
@@ -4948,14 +4980,20 @@ export async function setup(ctx) {
     const heading=document.createElement('strong'),edit=document.createElement('button');edit.type='button';edit.className='et-btn-subtle';edit.dataset.choirEdit='';
     const editor=document.createElement('div');editor.className='et-grid et-cast-editor';editor.dataset.choirCastEditor='';editor.id=`choir-cast-editor-${++castEditorId}`;editor.hidden=!open;edit.setAttribute('aria-controls',editor.id);
     const name=document.createElement('input');name.value=actor.speaker;name.disabled=reserved;name.style.display='none';name.dataset.choirPersist='';editor.prepend(name);
-    const refreshHeading=()=>{const speaker=name.value.trim() || 'Character';heading.textContent=speaker;edit.textContent=editor.hidden?'Edit':'←';edit.setAttribute('aria-label',editor.hidden?`Edit ${speaker}`:`Close ${speaker} editor`);edit.setAttribute('aria-expanded',String(!editor.hidden));};
+    let removeButton;
+    const refreshHeading=()=>{const speaker=name.value.trim() || 'Character';heading.textContent=speaker;edit.textContent=editor.hidden?'Edit':'←';edit.setAttribute('aria-label',editor.hidden?`Edit ${speaker}`:`Close ${speaker} editor`);edit.setAttribute('aria-expanded',String(!editor.hidden));if(removeButton){removeButton.title=`Remove ${speaker}`;if(editor.hidden)removeButton.innerHTML=ICON_CLOSE;else removeButton.textContent='Remove';}};
     if(!required){
-      const delBtn=document.createElement('button');delBtn.type='button';delBtn.className='et-btn-subtle';delBtn.title='Remove character';delBtn.setAttribute('aria-label','Remove character');delBtn.innerHTML=ICON_CLOSE;
-      delBtn.style.cssText='padding:1px 5px;line-height:1;border-radius:4px;cursor:pointer;opacity:0.65;margin-right:6px';
-      delBtn.onmouseenter=()=>{delBtn.style.opacity='1';delBtn.style.color='#ef7878';};
-      delBtn.onmouseleave=()=>{delBtn.style.opacity='0.65';delBtn.style.color='inherit';};
-      delBtn.onclick=(e)=>{e.preventDefault();e.stopPropagation();row.remove();scheduleSettingsSave();renderMixer();};
-      header.append(delBtn);
+      removeButton=document.createElement('button');removeButton.type='button';removeButton.className='et-btn-subtle et-btn-danger';removeButton.dataset.choirRemove='';removeButton.setAttribute('aria-label','Remove character');
+      removeButton.onclick=e=>{
+        e.preventDefault();e.stopPropagation();stop(false);config=capture();
+        const speaker=name.value.trim(),key=normalizeName(speaker),next=row.nextElementSibling || row.previousElementSibling;
+        // Card discovery must respect a deliberate removal on the next reload.
+        config.removedCardCast=[...new Set([...(config.removedCardCast || []),speaker,...aliases.value.split(',').map(alias=>alias.trim()).filter(Boolean)])];
+        config.casts=Object.fromEntries(Object.entries(config.casts).map(([route,actors])=>[route,actors.filter(actor=>normalizeName(actor.speaker)!==key)]));
+        config.singleVoices=Object.fromEntries(Object.entries(config.singleVoices || {}).map(([route,choices])=>[route,Object.fromEntries(Object.entries(choices).filter(([name])=>normalizeName(name)!==key))]));
+        drawerNavigation.closeCast();row.remove();scheduleSettingsSave();clearPlan();refreshDefaultControls();
+        (next?.querySelector('[data-choir-edit]') || $('add')).focus();status(`Removed ${speaker}.`);
+      };
     }
     name.addEventListener('input',refreshHeading);edit.onclick=()=>{if(!editor.hidden){drawerNavigation.closeCast();return;}editor.hidden=false;drawerNavigation.openCast(row,()=>{editor.hidden=true;refreshHeading();updateCastVisibility(true);});refreshHeading();};refreshHeading();
     edit.style.marginLeft='auto';
@@ -4983,7 +5021,7 @@ export async function setup(ctx) {
         input.focus();input.select();
       };
     }
-    header.append(heading,edit);row.append(header,editor);
+    header.append(heading,edit);if(removeButton)header.append(removeButton);row.append(header,editor);
     const voice=document.createElement('select');
     const route=document.createElement('select');route.dataset.choirRoute='';
     option(route,'','Use chat default');
@@ -5228,9 +5266,6 @@ export async function setup(ctx) {
       const test=document.createElement('button');test.type='button';test.className='et-btn-subtle';test.textContent='Test pronunciation';test.dataset.choirPronunciationTest='';test.setAttribute('aria-label',`Test pronunciation of ${actor.speaker}`);
       test.onclick=()=>audition(`${namePronunciationTarget({speaker:name.value,sayAsName:sayAsName.value})} opened the door.`);tools.append(pronunciationHint,document.createElement('br'),test);secondary.append(tools);
     }
-    if(!required){
-      const remove=document.createElement('button');remove.type='button';remove.textContent='Remove character';remove.className='et-btn-danger et-link-row';remove.onclick=()=>{drawerNavigation.closeCast();row.remove();scheduleSettingsSave();renderMixer();};secondary.append(remove);
-    }
     container.append(row);if(open){editor.hidden=true;edit.click();}
     paintSpeakerSpeeds();
     updateCardProviderControls();
@@ -5264,6 +5299,7 @@ export async function setup(ctx) {
   }
   function renderCast() {
     drawerNavigation.closeCast();
+    config=reconcileCastDuplicates(config);
     $('fixed').replaceChildren();$('npcs').replaceChildren();$('otherCastRows').replaceChildren();
     closePolicyLibrary?.();
     const policyRoot=$('npcPolicyRoot');policyRoot.replaceChildren();
@@ -5541,6 +5577,7 @@ export async function setup(ctx) {
     const preferences={...preferenceSnapshot(preset?.preferences || await ctx.settings.get('settings:defaults')),...preferenceSnapshot(saved),...preferenceSnapshot(globalSaved)};
     if(disposed || version!==loadVersion)return;
     const legacyCast=!saved && !capturedDefaults && Array.isArray(globalSaved?.fixed)?globalSaved:null;
+    const repairDuplicates=saved && reconcileCastDuplicates(saved)!==saved;
     config=normalizeSavedSettings({...defaults(),...Object.fromEntries(preferenceFields.filter(name=>preferences && Object.hasOwn(preferences,name)).map(name=>[name,preferences[name]])),...(legacyCast || {}),...(saved || {}),...preferences});
     config.plannerMode=resolvePlannerMode(preferences);
     config.useFastClassifier=config.plannerMode==='heuristic';config.useJev=config.plannerMode==='jev';
@@ -5563,7 +5600,7 @@ export async function setup(ctx) {
     if(version!==loadVersion || disposed)return;
     await refreshLeadNames(Boolean(saved));
     if(version!==loadVersion || disposed)return;
-    if(repairCast)await persistConfig(id,config);
+    if(repairCast || repairDuplicates)await persistConfig(id,config);
     const previous=id?await ctx.settings.get(`activeplan:${id}`):null;
     if(version!==loadVersion || disposed)return;
     if(previous)await restoreSavedPlan(previous);
@@ -5681,7 +5718,7 @@ export async function setup(ctx) {
       if(existing)existing.aliases=[...new Set([...existing.aliases,role.name,...(role.aliases || [])])].filter(name=>normalizeName(name)!==normalizeName(existing.name)).slice(0,30);
       else roles.push({...role,aliases:[...(role.aliases || [])]});
     }
-    const npcNames=new Set((config?.cardCastNPCs || []).map(normalizeName));
+    const npcNames=new Set([...(config?.cardCastNPCs || []),...(config?.removedCardCast || [])].map(normalizeName));
     return validateCardRoles(roles).filter(role=>![role.name,...(role.aliases || [])].some(name=>npcNames.has(normalizeName(name))));
   }
   function expandCardRoles(value,roles,character){
@@ -7113,7 +7150,7 @@ export async function setup(ctx) {
     preview.textContent=latest?transcriptFromMessage(ctx.messages.getContent(latest.id),$('ignoredTags').value) || 'No readable story text remains.':'Open a chat with an assistant reply to preview reading.';
     preview.hidden=false;
   };
-  $('add').onclick=()=>{castRows.push(makeRow({speaker:`Character ${castRows.length}`,voice:'',style:''},$('fixed'),false,true));scheduleSettingsSave();renderMixer();};
+  $('add').onclick=()=>{const names=new Set([...castRows,...npcRows].filter(entry=>root.contains(entry.row)).map(entry=>normalizeName(entry.read().speaker)));let index=1;while(names.has(normalizeName(`Character ${index}`)))index++;castRows.push(makeRow({speaker:`Character ${index}`,voice:'',style:''},$('fixed'),false,true));scheduleSettingsSave();renderMixer();};
         const doSearchVoices = () => {
     const query = $('voiceSearchQuery')?.value?.trim() || '';
     openVoiceLibraryModal({
@@ -7642,7 +7679,7 @@ export async function setup(ctx) {
     try{
       const result=await (await api('/spindle',{signal:branchLookup.signal})).json();
       const extension=result.extensions?.find(item=>item.identifier==='choir');
-      if(!disposed){const branch=extension?.metadata?.branch;badge.hidden=!['staging','UI-CLEANUP'].includes(branch);badge.textContent=branch==='UI-CLEANUP'?'UI cleanup':'Staging';badge.title=`Choir ${"1.1.6-staging.44"} · ${branch || 'unknown branch'}`;}
+      if(!disposed){const branch=extension?.metadata?.branch;badge.hidden=!['staging','UI-CLEANUP'].includes(branch);badge.textContent=branch==='UI-CLEANUP'?'UI cleanup':'Staging';badge.title=`Choir ${"1.1.6-staging.45"} · ${branch || 'unknown branch'}`;}
     }catch{/* Keep an unknown branch unlabelled without interrupting playback. */}
     finally{clearTimeout(timeout);}
   })();
