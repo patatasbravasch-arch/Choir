@@ -1,15 +1,50 @@
 # First-time setup
 
 Choir opens a five-step native Spindle modal on first enablement for the current
-Lumiverse user: Welcome, Connections, TTS & Voices, Optional Features, Review.
-The host supplies the backdrop, focus trap, close button, Escape handling, theme,
-and viewport bounds via `ctx.ui.showModal()`.
+Lumiverse user: Welcome, Connections, Voices, Playback, Review.
+The host supplies the modal frame, backdrop, theme and viewport bounds through
+`ctx.ui.showModal()`. The wizard keeps its navigation and Skip action visible;
+host support determines other dismissal behavior.
 
 **Set up Choir** in the Choir drawer/settings opens it manually, even
 after completion or skipping. Only one instance is allowed, including during
 asynchronous startup and saving. Closing or **Skip for now** remembers deferral
 and discards the configuration draft. Extension teardown discards the draft
 without marking a new installation as skipped.
+
+## Setup flow
+
+- **Welcome** uses Choir's embedded icon and explains the three setup tasks,
+  what will be saved, and whether existing preferences were found.
+- **Connections** separates the speech provider from speaker detection. Select
+  the default TTS connection and either one route for the cast or per-character
+  routes here. Refresh reloads connections and their voice catalogues. The Fish
+  Audio illustrated guide stays available without crowding the form.
+- **Voices** shows one role editor at a time: Narrator, Persona, or Main character.
+  The role buttons summarize saved voice choices. Each editor has voice and gender
+  preference, route when applicable, accent, delivery mode, base style, a provider
+  voice-ID option, and an explicit audition. New-speaker casting stays separate
+  below the role editor. Missing role choices bring that role into view.
+- **Playback** starts with mixer/message controls, loudness, device-local audio
+  retention, highlighting/follow, automation, and soundscape toggles. Freesound
+  credentials and the cue LLM appear only when their sound features need them.
+  **More playback settings** opens buffering, request limits and text filters in
+  a focused view. **Back to playback** returns without losing draft choices.
+- **Review** groups connections, individual voice defaults, and playback
+  preferences in editable rows. Assigned/configured does not imply a successful
+  test. Optional planner and narrator checks can be run here before saving.
+
+The progress navigation and Back/Skip/Next actions remain outside the scrolling
+form. Narrow and touch layouts keep editable text at 16px and controls at least
+44px tall. Guides enlarge inside their own picture area rather than widening
+the modal. The embedded SVG icon and guide pictures require no network request.
+
+Accents and delivery use the same per-character settings as Cast. Narrator starts
+with **Base style only**, unless an existing choice overrides it. Accent results
+depend on the selected voice and provider; the wizard does not create or clone
+voices. Changing an auditioned narrator's accent, base style or delivery clears
+its test status. After saving, **Test final playback** uses the first enabled,
+explicitly assigned role, so disabling narration does not create a dead-end test.
 
 ## Persistence and compatibility
 
@@ -82,8 +117,8 @@ make no paid synthesis, planning, or voice-design requests. **Test planner
 connection**, each **Test … voice**, and **Test final playback** are explicit
 actions and may incur provider charges. Tests are cancellable, results are
 invalidated by choice changes, and successful speech feedback requires both
-synthesis and playback. Ready in Review indicates configured prerequisites;
-untested connections are labelled separately.
+synthesis and playback. Review labels configured choices separately from test
+results; an untested connection is never labelled as a passed test.
 
 Sound effects and ambience require Freesound and an LLM for cues; music needs an
 LLM but no Freesound key. Automatic NPC casting requires Jev or LLM.

@@ -4,14 +4,16 @@
 
 # Choir
 
-[![Version](https://img.shields.io/badge/version-1.1.6--staging.42-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/lunch-test)
+[![Version](https://img.shields.io/badge/version-1.1.6--staging.43-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/lunch-test)
 [![Platform](https://img.shields.io/badge/platform-Lumiverse%20Spindle-purple.svg)](https://docs.lumiverse.chat/)
-[![Tests](https://img.shields.io/badge/tests-564%20tests-blue.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-567%20tests-blue.svg)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 An installable Lumiverse Spindle extension for multi-voice narration, dialogue attribution, sound effects, ambience and background music.
 
 </div>
+
+Version **1.1.6-staging.43** refreshes first-time setup: a compact progress bar, visible navigation actions, separate speech/planner choices, and a focused editor for each voice. Accents and delivery modes can be set and auditioned during setup. Playback puts audio retention and everyday controls first; buffering and text filters have a secondary page. Review groups editable choices and distinguishes configuration from successful tests. The embedded Choir icon and illustrated guides work offline. Existing chat casts and first-install/skip behavior are preserved. See [setup guide](ONBOARDING.md).
 
 Version **1.1.6-staging.42** brings the refined drawer to `lunch-test`: **Cast / Sound / Saved / Setup**, compact character rows and focused voice/pronunciation pages. **Sound → Customize mixer → Volume limits** sets persistent ceilings for Master, Voices, Music, Ambience and SFX. **Saved → Download all** exports complete played mixes as individual WAVs in one ZIP (256 MB maximum), skipping partial, expired or changed recordings. The setup wizard still opens on first install and remains available from Setup. See [drawer usage](docs/ui-cleanup.md).
 

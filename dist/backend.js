@@ -2210,7 +2210,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
   (async () => {
     const input = message.input || {};
     if (message.action === 'ping') {
-      send({result:{version:"1.1.6-staging.42",ready:true,decisionsAvailable:typeof spindle.decisions?.evaluate==='function'}});return;
+      send({result:{version:"1.1.6-staging.43",ready:true,decisionsAvailable:typeof spindle.decisions?.evaluate==='function'}});return;
     }
     if(message.action==='cardCast'){
       const card=input.card;

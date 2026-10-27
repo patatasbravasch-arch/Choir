@@ -1,6 +1,6 @@
 # Choir drawer
 
-Version: **1.1.6-staging.42**. Branch: **lunch-test**.
+Version: **1.1.6-staging.43**. Branch: **lunch-test**.
 
 ## Using the drawer
 
@@ -17,7 +17,7 @@ Play/pause/resume, Plan latest and Open mixer stay available above every tab. A 
 
 **Saved → Download all** creates one ZIP containing a separate WAV for each complete saved playback in the current chat, including recordings older than the recent-message list. It reuses recorded mixes without new speech synthesis. Partial, expired, deleted or edited recordings are skipped. Each WAV retains the sounds, speed and mixer levels heard during that playback and uses `Choir - initials - chat ID - 001.wav` naming. The ZIP is limited to 256 MB; individual WAVs retain their 128 MB limit. Existing recordings without a mixed playback need one complete replay first.
 
-**Setup → Set up Choir** reopens the existing wizard. It also opens automatically on a fresh installation; completed or deliberately skipped setup does not reopen on every load. No additional collapse layers are used for ordinary settings. Only absent characters, large plan/JSON views and secondary tasks leave the main page.
+**Setup → Set up Choir** reopens the redesigned five-step wizard. Voices are edited one role at a time, with accents and delivery available during setup. Playback starts with everyday controls and retention; More playback settings holds request limits and text filters. Review separates configured choices from passed tests. See [setup guide](../ONBOARDING.md). It also opens automatically on a fresh installation; completed or deliberately skipped setup does not reopen on every load. No additional collapse layers are used for ordinary settings. Only absent characters, large plan/JSON views and secondary tasks leave the main page.
 
 ## Accents and delivery
 

@@ -3451,9 +3451,11 @@ test('cast and planner edits autosave without Save and survive reload without re
  const h=await harness();try{
   await h.plan();const edit=(node,value)=>{node.value=value;node.dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));};
   const row=h.$('fixed').children[2];edit(row.querySelector('[data-choir-voice]'),'new');
-  const fields=row.querySelectorAll('input');edit(fields[2],'Softer delivery');edit(fields[3],'Captain, Lady Mira');edit(fields[4],'mee-rah');edit(fields[5],'French');
+  const field=label=>[...row.querySelectorAll('label')].find(node=>node.firstChild?.textContent===label)?.querySelector('input');
+  edit(field('Base style'),'Softer delivery');edit(field('Aliases (comma separated)'),'Captain, Lady Mira');edit(field('Say name as'),'mee-rah');edit(field('Accent'),'French');
   edit(h.$('planner'),'planner');h.$('normalizeLoudness').checked=false;h.$('normalizeLoudness').dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));
   await until(()=>h.$('saveState').textContent==='Saved automatically');assert.equal(h.store.get('chat:chat-a').fixed[2].voice,'new');
+  const saved=h.store.get('chat:chat-a').fixed[2];assert.equal(saved.style,'Softer delivery');assert.deepEqual(saved.aliases,['Captain','Lady Mira']);assert.equal(saved.sayAs,'mee-rah');assert.equal(saved.accent,'French');
   await h.reload();assert.equal(h.$('planner').value,'planner');assert.equal(h.$('normalizeLoudness').checked,false);assert.equal(h.$('fixed').querySelectorAll('[data-choir-voice]')[2].value,'new');
   await h.play();assert.equal(h.synthesis.find(v=>v.text.includes('Hello')).voice,'new');assert.equal(h.requests.filter(v=>v.action==='plan').length,1);
  }finally{await h.close();}

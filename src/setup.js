@@ -1,8 +1,9 @@
 // Onboarding owns a draft only. All provider, voice and storage operations are
 // supplied by Choir's frontend so the wizard cannot diverge from playback.
 import { SETUP_GUIDES } from './setup-guides.js';
+import { SETUP_CSS, SETUP_LOGO } from './setup-ui.js';
 export const ONBOARDING_KEY = 'onboarding:state';
-export const SETUP_STEPS = ['Welcome', 'Connections', 'TTS & Voices', 'Optional Features', 'Review'];
+export const SETUP_STEPS = ['Welcome', 'Connections', 'Voices', 'Playback', 'Review'];
 
 export function shouldOpenSetup(state) {
   return !state?.completed && !state?.deferred;
@@ -102,64 +103,7 @@ export async function saveSetupSettings(settings, writes, completedState) {
 
 export function createSetupWizard(ctx, adapter) {
   let active = null, opening = false, disposed = false, saving = false;
-  const removeStyle = ctx.dom.addStyle(`
-    .choir-setup{font:inherit;line-height:1.5;color:var(--lumiverse-text,inherit);min-width:0;display:flex;flex-direction:column;max-height:min(700px,calc(100dvh - 150px))}
-    .choir-setup [data-setup-body]{min-height:0;overflow:auto;padding-right:4px}
-    .choir-setup .cs-progress,.choir-setup .cs-actions,.choir-setup .cs-feedback{flex-shrink:0}
-    .choir-setup *{box-sizing:border-box}
-    .choir-setup [hidden]{display:none!important}
-    .choir-setup h2{font-size:1.35em;margin:0 0 10px;letter-spacing:-.02em}
-    .choir-setup h3{font-size:1em;margin:0 0 8px}
-    .choir-setup p{margin:8px 0 16px}
-    .choir-setup small,.choir-setup .cs-hint{color:var(--lumiverse-text-muted,inherit);font-size:.88em}
-    .choir-setup small{display:block;margin-top:6px}
-    .choir-setup .cs-progress{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:6px;margin:0 0 24px;padding:0;list-style:none}
-    .choir-setup .cs-progress button{width:100%;padding:9px 4px;font-size:.8em;display:grid;justify-items:center;gap:5px;background:transparent}
-    .choir-setup .cs-progress span{display:grid;place-items:center;width:28px;height:28px;border:1px solid var(--lumiverse-border,#8886);border-radius:50%}
-    .choir-setup .cs-progress [aria-current="step"]{color:var(--lumiverse-primary,inherit);border-color:var(--lumiverse-primary,#888)}
-    .choir-setup .cs-progress [aria-current="step"] span{background:var(--lumiverse-primary-010,#8882);border-color:currentColor}
-    .choir-setup .cs-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
-    .choir-setup .cs-card{background:var(--lumiverse-fill-subtle,#8881);border:1px solid var(--lumiverse-border,#8884);border-radius:12px;padding:16px;margin:0 0 14px;min-width:0}
-    .choir-setup .cs-guide{margin:12px 0 18px;font-size:.92em}
-    .choir-setup .cs-guide summary{cursor:pointer;font-weight:600}
-    .choir-setup .cs-guide ol{padding-left:22px;margin:12px 0;list-style:decimal}
-    .choir-setup .cs-guide li{display:list-item;list-style:decimal;margin:8px 0;overflow-wrap:anywhere}
-    .choir-setup .cs-guide a{color:var(--lumiverse-primary,inherit);text-decoration:underline;text-underline-offset:3px}
-    .choir-setup .cs-guide-steps{display:grid;gap:16px}
-    .choir-setup .cs-guide-steps>li{margin:0;padding:12px;border:1px solid var(--lumiverse-border,#8884);border-radius:10px;min-width:0}
-    .choir-setup .cs-guide-steps h4{font-size:1em;margin:0 0 8px}
-    .choir-setup .cs-guide-steps p{margin:8px 0}
-    .choir-setup .cs-guide figure{margin:12px 0 0;min-width:0}
-    .choir-setup .cs-guide-picture{overflow:auto;max-height:440px;border-radius:8px}
-    .choir-setup .cs-guide-picture img{display:block;width:100%;max-width:360px;height:auto;margin:auto}
-    .choir-setup .cs-guide-picture.cs-picture-large img{width:720px;max-width:none;margin:0}
-    .choir-setup .cs-guide figcaption{font-size:.8em;color:var(--lumiverse-text-muted,inherit);margin:6px 0}
-    .choir-setup .cs-guide .cs-picture-toggle{font-size:.82em;padding:5px 10px;min-height:36px}
-    .choir-setup .cs-guide-links{display:flex;flex-wrap:wrap;gap:8px 14px;margin:8px 0}
-    .choir-setup .cs-guide .cs-guide-help{padding-left:20px;list-style:disc}
-    .choir-setup .cs-guide .cs-guide-help li{list-style:disc}
-    .choir-setup label{display:flex;flex-direction:column;gap:6px;margin:8px 0;font-size:.92em;min-width:0}
-    .choir-setup input,.choir-setup select,.choir-setup textarea{font:inherit;width:100%;min-width:0;min-height:42px;padding:8px 10px;border:1px solid var(--lumiverse-border,#8886);border-radius:8px;background:var(--lumiverse-bg-elevated,transparent);color:inherit}
-    .choir-setup option{background:var(--lumiverse-bg,Canvas);color:var(--lumiverse-text,CanvasText)}
-    .choir-setup button{font:inherit;min-height:42px;padding:8px 14px;border:1px solid var(--lumiverse-border,#8886);border-radius:8px;background:var(--lumiverse-fill,#8881);color:inherit;cursor:pointer}
-    .choir-setup button:hover:enabled{background:var(--lumiverse-fill-hover,#8882);border-color:var(--lumiverse-primary,#888)}
-    .choir-setup button:disabled{opacity:.5;cursor:default}
-    .choir-setup :focus-visible{outline:2px solid var(--lumiverse-primary,currentColor);outline-offset:3px}
-    .choir-setup .cs-primary{background:var(--lumiverse-primary-010,#8883);border-color:var(--lumiverse-primary,#888);font-weight:600}
-    .choir-setup .cs-check{flex-direction:row;align-items:center;gap:10px}
-    .choir-setup .cs-check input{width:18px;min-height:18px;flex-shrink:0;accent-color:var(--lumiverse-primary)}
-    .choir-setup .cs-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:14px 0 0;margin-top:12px;border-top:1px solid var(--lumiverse-border,#8884)}
-    .choir-setup .cs-actions .cs-primary{margin-left:auto}
-    .choir-setup .cs-feedback{white-space:pre-line;overflow-wrap:anywhere;min-height:1.5em}
-    .choir-setup .cs-error{color:var(--lumiverse-danger,#c05252)}
-    .choir-setup .cs-review{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
-    .choir-setup .cs-review small{display:block;overflow-wrap:anywhere}
-    .choir-setup .cs-status{border:1px solid var(--lumiverse-border,#8885);border-radius:20px;padding:3px 10px;white-space:nowrap;font-size:.8em}
-    .choir-setup .cs-mark{font-size:2.1em;color:var(--lumiverse-primary,inherit);margin-bottom:10px}
-    @media(max-width:560px){.choir-setup .cs-grid{grid-template-columns:1fr}.choir-setup .cs-progress button{font-size:.68em;padding:6px 1px}.choir-setup .cs-card{padding:12px}.choir-setup .cs-review{flex-wrap:wrap}.choir-setup input,.choir-setup select,.choir-setup textarea{font-size:16px}.choir-setup .cs-actions{gap:6px}.choir-setup .cs-actions button{flex:1;padding:8px 6px;font-size:.9em;white-space:nowrap}.choir-setup .cs-actions .cs-primary{margin-left:0}}
-    @media(max-width:400px){.choir-setup .cs-progress b{display:none}.choir-setup .cs-progress button{padding:6px 2px;gap:0}}
-    @media(prefers-reduced-motion:reduce){.choir-setup *{scroll-behavior:auto}}
-  `);
+  const removeStyle = ctx.dom.addStyle(SETUP_CSS);
   const report = error => adapter.report(error.message);
   async function open(automatic = false) {
     if (disposed || opening || active || saving) return;
@@ -179,25 +123,26 @@ export function createSetupWizard(ctx, adapter) {
     finally { opening = false; }
   }
   function mount(snapshot, previousState) {
-    const modal = ctx.ui.showModal({title:'Set up Choir', width:760, maxHeight:820, persistent:true});
+    const modal = ctx.ui.showModal({title:'Set up Choir', width:800, maxHeight:820, persistent:true});
     const doc = modal.root.ownerDocument;
     const shell = doc.createElement('div');shell.className='choir-setup';shell.dataset.choirSetup='';modal.root.append(shell);
     const draft = setupDraft(snapshot.config, snapshot.preset, snapshot.existing);
-    let connections = snapshot.connections, step = 0, visited = 0, busy = false, closed = false, completed = false, ctrl = null, renderId = 0, cancellable = false;
+    let connections = snapshot.connections, step = 0, visited = 0, busy = false, closed = false, completed = false, ctrl = null, renderId = 0, cancellable = false, activeRole = 0, playbackDetails = false;
     const tests = new Map();
     const element = (tag,text,parent) => {const node=doc.createElement(tag);if(text)node.textContent=text;parent?.append(node);return node;};
     const nav = element('ol','',shell);nav.className='cs-progress';nav.setAttribute('aria-label','Setup progress');
     const navButtons = SETUP_STEPS.map((title,index) => {
       const li=element('li','',nav),button=element('button','',li);button.type='button';
-      element('span',String(index+1),button).setAttribute('aria-hidden','true');element('b',title,button);
+      element('span',String(index+1),button).setAttribute('aria-hidden','true');element('b',['Start','Connect','Voices','Playback','Review'][index],button);
       button.setAttribute('aria-label',`Step ${index+1}: ${title}`);button.onclick=()=>navigate(index);return button;
     });
+    const caption = element('p','',shell);caption.className='cs-step-caption';
     const body = element('section','',shell);body.dataset.setupBody='';
     const feedback = element('p','',shell);feedback.className='cs-feedback';feedback.setAttribute('role','status');feedback.setAttribute('aria-live','polite');
     const actions = element('div','',shell);actions.className='cs-actions';
     const button = (text,parent,action) => {const node=element('button',text,parent);node.type='button';node.onclick=action;return node;};
     const back = button('Back',actions,()=>navigate(step-1));
-    const skip = button('Skip for now',actions,()=>task(async()=>{await defer();modal.dismiss();},'Saving your choice…',false));
+    const skip = button('Skip for now',actions,()=>task(async()=>{await defer();modal.dismiss();},'Saving your choice…',false));skip.className='cs-skip';
     const cancel = button('Cancel',actions,()=>{if(cancellable){ctrl?.abort();adapter.stopTest();}});cancel.hidden=true;
     const next = button('Next',actions,()=>step===4?finish():navigate(step+1));next.className='cs-primary';
     const say = (message,error=false) => {if(closed)return;feedback.textContent=message;feedback.classList.toggle('cs-error',error);feedback.setAttribute('role',error?'alert':'status');};
@@ -209,9 +154,9 @@ export function createSetupWizard(ctx, adapter) {
     };
     const lock = () => {
       shell.setAttribute('aria-busy',String(busy));
-      for(const node of body.querySelectorAll('input,select,button'))node.disabled=busy || node.dataset.unavailable==='true';
+      for(const node of body.querySelectorAll('input,select,textarea,button'))node.disabled=busy || node.dataset.unavailable==='true';
       navButtons.forEach((node,index)=>{node.disabled=busy || completed || index>visited;node.setAttribute('aria-current',index===step?'step':'false');});
-      back.disabled=busy || completed || step===0;skip.disabled=busy || completed;next.disabled=busy;
+      back.hidden=step===0 || completed || busy;skip.hidden=completed || busy;back.disabled=busy || completed || step===0;skip.disabled=busy || completed;next.disabled=busy;
       cancel.hidden=!busy || !cancellable;cancel.disabled=!busy || !cancellable;
     };
     async function task(operation,message,canCancel=true) {
@@ -236,8 +181,8 @@ export function createSetupWizard(ctx, adapter) {
     };
     const unsubDismiss = modal.onDismiss(()=>cleanup());
     active = {dispose(){cleanup(false);modal.dismiss();}};
-    function field(label,input,parent,hint) {
-      const wrap=element('label',label,parent);input.setAttribute('aria-label',label);wrap.append(input);
+    function field(label,input,parent,hint,visibleLabel=label) {
+      const wrap=element('label',visibleLabel,parent);input.setAttribute('aria-label',label);wrap.append(input);
       if(hint)element('small',hint,wrap);return input;
     }
     function select(label,options,value,parent,onChange,hint) {
@@ -251,8 +196,8 @@ export function createSetupWizard(ctx, adapter) {
     }
     function check(label,value,parent,onChange,hint) {
       const node=element('input');node.type='checkbox';node.checked=Boolean(value);node.onchange=()=>onChange(node.checked);
-      const wrap=element('label','',parent);wrap.className='cs-check';node.setAttribute('aria-label',label);wrap.append(node);element('span',label,wrap);
-      if(hint)element('p',hint,parent).className='cs-hint';return node;
+      const wrap=element('label','',parent);wrap.className='cs-check';node.setAttribute('aria-label',label);wrap.append(node);const text=element('span',label,wrap);
+      if(hint)element('small',hint,text);return node;
     }
     function number(label,key,min,max,parent,hint) {
       const node=element('input');node.type='number';node.min=min;node.max=max;node.step=1;node.value=draft[key];
@@ -270,15 +215,21 @@ export function createSetupWizard(ctx, adapter) {
       tests.delete('tts');render();
     }
     const routes = () => [['','Use default speech connection'],...connections.tts.map(item=>[`native:${item.id}`,`${item.name} · ${item.provider} · ${item.model || 'no model'}`])];
-    const signature = kind => JSON.stringify(kind==='planner'?[draft.plannerMode,draft.planner,draft.decisionConnection,draft.allowLlmFallback,Boolean(session().jev)]:[defaultRoute(),draft.connectionMode,draft.fixed[0]?.route,draft.fixed[0]?.voice]);
+    const signature = kind => JSON.stringify(kind==='planner'?[draft.plannerMode,draft.planner,draft.decisionConnection,draft.allowLlmFallback,Boolean(session().jev)]:[defaultRoute(),draft.connectionMode,draft.fixed[0]?.route,draft.fixed[0]?.voice,draft.fixed[0]?.accent,draft.fixed[0]?.style,draft.fixed[0]?.deliveryMode,draft.fixed[0]?.excluded]);
     function navigate(target) {
       if(busy || completed || target<0 || target>4)return;
       if(target>step){
         const issues=setupIssues(draft,connections,session()).filter(item=>item.step===step);
-        if(issues.length){say(issues.map(item=>item.message).join('\n'),true);return;}
+        if(issues.length){showIssues(issues);return;}
       }
       step=target;visited=Math.max(visited,step);say('');render();body.querySelector('h2')?.focus();
       body.scrollTop=0;modal.root.scrollTop=0;
+    }
+    function showIssues(issues) {
+      step=issues[0].step;visited=Math.max(visited,step);
+      if(step===2){const index=draft.fixed.findIndex(actor=>issues.some(item=>item.message.includes(actor.speaker)));if(index>=0)activeRole=index;}
+      if(step===3)playbackDetails=issues.some(item=>/Prefetch passages|Concurrent TTS requests|Max characters per request/.test(item.message));
+      render();say(issues.map(item=>item.message).join('\n'),true);body.scrollTop=0;body.querySelector('h2')?.focus();
     }
     function refresh() {
       return task(async signal=>{const latest=await adapter.connections(signal);if(closed || signal.aborted)return;connections=latest;tests.clear();render();say('Connections refreshed. No synthesis or planner test was run.');},'Refreshing connection lists…');
@@ -292,15 +243,16 @@ export function createSetupWizard(ctx, adapter) {
       const key=signature('tts');
       return task(async signal=>{await adapter.testVoice(draft,actor,signal);if(closed || signal.aborted)return;if(actor===draft.fixed[0])tests.set('tts',{key,message:'A narrator sample was synthesized and played.'});say(`Voice test passed: ${actor.voice}. A sample was synthesized and played.`);},'Synthesizing a short voice sample…');
     }
-    function voiceField(actor,parent,label,changed,allowAutomatic=false) {
-      const row=element('div','',parent),id=renderId;
+    function voiceField(actor,parent,label,changed,allowAutomatic=false,onLabel) {
+      const row=element('div','',parent),id=renderId;row.className='cs-voice-fields';
       const effective=()=>draft.connectionMode==='one'?defaultRoute():actor.route || defaultRoute();
       const automaticLabel=draft.plannerMode==='jev'?'Let Choir choose (Jev)':'Let the LLM choose';
       const emptyLabel=allowAutomatic?automaticLabel:'Choose a voice';
       let voiceId,catalogue=[];
       const isLead=draft.fixed.includes(actor);
-      if(isLead)select(`${label} voice gender`,[['auto','Any / automatic'],['female','Female'],['male','Male'],['neutral','Neutral']],actor.gender || 'auto',row,value=>{actor.gender=value;populate();},'Guides automatic casting and filters known voices. Unknown metadata stays visible; changing this keeps your selected voice.');
-      const choices=select(`${label} voice`,[['',emptyLabel]],actor.voice,row,value=>{actor.voice=value;if(voiceId)voiceId.value=value;populate();changed?.();});
+      const paired=element('div','',row);paired.className='cs-voice-choices';
+      if(isLead){const gender=select(`${label} voice gender`,[['auto','Any gender'],['female','Female'],['male','Male'],['neutral','Neutral']],actor.gender || 'auto',paired,value=>{actor.gender=value;populate();});gender.parentElement.className='cs-gender';gender.parentElement.firstChild.textContent='Gender preference';}
+      const choices=select(`${label} voice`,[['',emptyLabel]],actor.voice,paired,value=>{actor.voice=value;if(voiceId)voiceId.value=value;populate();changed?.();});choices.parentElement.className='cs-voice';choices.parentElement.firstChild.textContent='Voice';
       const note=element('small','Loading voices…',row);
       function populate() {
         const known=new Map(catalogue.map(item=>[item.id,item])),gender=isLead?actor.gender || 'auto':'auto';
@@ -315,13 +267,15 @@ export function createSetupWizard(ctx, adapter) {
         if(actor.voice && !known.has(actor.voice)){const option=element('option',`${actor.voice} · custom or saved ID`,choices);option.value=actor.voice;}
         choices.value=actor.voice || '';
         const selected=known.get(actor.voice),mismatch=gender!=='auto' && ['female','male','neutral'].includes(selected?.gender) && selected.gender!==gender;
-        note.textContent=[selected?.description,mismatch?'Your selected voice differs from the gender preference. Choose another voice if needed.':'', 'Voice IDs belong to this connection. Test before relying on them.'].filter(Boolean).join(' ');
+        note.textContent=[selected?.description,mismatch?'Selected voice differs from the gender preference.':''].filter(Boolean).join(' ');
+        if(automaticNote)automaticNote.hidden=Boolean(actor.voice);
+        onLabel?.(selected?.name || actor.voice);
       }
-      if(allowAutomatic)element('small',draft.plannerMode==='heuristic'?'Let the LLM choose requires switching the planner to Standard LLM on Connections.':'Automatic selection happens during planning, using this connection’s catalogue and Choir’s existing casting logic. Planner calls may incur charges.',row);
+      const automaticNote=allowAutomatic && draft.plannerMode!=='heuristic'?element('small','Chosen during planning. Assign a voice to keep its identity and audition it here.',row):null;
       const custom=element('details','',row);element('summary','Use a provider voice ID',custom);
       voiceId=input(`${label} voice ID`,actor.voice,custom,value=>{
         actor.voice=value;populate();changed?.();
-      },{hint:'Use an ID from this provider. Choir validates it with the selected route; a successful test confirms synthesis.'});
+      },{hint:'Paste a voice ID from this provider, then test it. This selects an existing voice; it does not create or clone one.'});
       const token=effective();
       void adapter.voices(token).then(list=>{
         if(closed || id!==renderId || token!==effective())return;
@@ -358,137 +312,194 @@ export function createSetupWizard(ctx, adapter) {
     }
     function render() {
       ++renderId;body.replaceChildren();
+      shell.dataset.setupComplete=String(completed);nav.hidden=completed;caption.hidden=completed;
+      caption.textContent=completed?'Setup saved':`Step ${step+1} of ${SETUP_STEPS.length} · ${SETUP_STEPS[step]}`;
       const heading=element('h2',completed?'Choir is ready':SETUP_STEPS[step],body);heading.tabIndex=-1;
       next.textContent=completed?'Close':step===4?'Finish setup':'Next';next.onclick=completed?()=>modal.dismiss():()=>step===4?finish():navigate(step+1);
+      const section=(title,parent=body)=>{const node=element('section','',parent);node.className='cs-section';node.dataset.setupSection=title;element('h3',title,node);return node;};
+      const card=(title,parent=body)=>{const node=element('section','',parent);node.className='cs-card';element('h3',title,node);return node;};
+      const row=parent=>{const node=element('div','',parent);node.className='cs-row';return node;};
+      const changeVoice=()=>tests.delete('tts');
+      const delivery=(actor,index)=>['auto','base','off'].includes(actor.deliveryMode)?actor.deliveryMode:index===0?'base':'auto';
+      const voiceNames=['Narrator','Persona','Main character'];
+      const routeName=token=>connections.tts.find(item=>`native:${item.id}`===token)?.name || 'Unavailable connection';
+      const retentionLabel={session:'this session only',1:'1 day',7:'7 days',30:'30 days',forever:'indefinitely'}[draft.retention] || 'invalid';
+      const brand=parent=>{const logo=element('img','',parent);logo.className='cs-logo';logo.src=`data:image/svg+xml;charset=utf-8,${encodeURIComponent(SETUP_LOGO)}`;logo.alt='';logo.width=60;logo.height=96;};
       if(completed){
-        element('div','♪',body).className='cs-mark';
-        element('p','Your setup is saved. New chats will use these cast defaults. Existing chats keep their voices.',body);
-        element('p','Use Plan latest, then Play in the voice mixer. Open a character’s editor in Cast to adjust names, aliases, or “Say name as” pronunciation.',body).className='cs-hint';
-        button('Test final playback',body,()=>testVoice());element('p','Optional: this synthesizes and plays one short narrator sample and may incur provider charges.',body).className='cs-hint';lock();return;
+        const hero=row(body);hero.classList.add('cs-hero');brand(hero);
+        element('p','Your preferences and voice defaults are saved.',hero).className='cs-lead';
+        const steps=element('ol','',body);steps.className='cs-map';
+        for(const [index,title,detail] of [[1,'Plan a reply','Open Choir and select Plan latest.'],[2,'Listen','Press Play in the message controls or mixer.'],[3,'Make it yours','Adjust voices in Cast; change mixer controls in Sound.']]){
+          const li=element('li','',steps);element('span',String(index),li).className='cs-map-number';const info=element('div','',li);element('strong',title,info);element('small',detail,info);
+        }
+        element('p','New chats use these voice defaults. Existing chats keep their voices; use Apply default in Cast if you want to replace them.',body).className='cs-hint';
+        const actor=draft.fixed.find(actor=>!actor.excluded && actor.voice);
+        if(actor){button('Test final playback',body,()=>testVoice(actor));element('small','Optional: synthesizes and plays one short sample. Provider charges may apply.',body);}
+        lock();return;
       }
       if(step===0){
-        element('div','♪',body).className='cs-mark';
-        element('p','Give your story a voice. Choir reads narration and dialogue with different voices, and can add a soundscape when you want one.',body);
-        const card=element('div','',body);card.className='cs-card';
-        element('h3',snapshot.existing?'Your existing setup was found':'A few choices, then you’re ready',card);
-        element('p',snapshot.existing?'We’ll start from your saved preferences and cast defaults. Nothing changes until you finish. Your existing chat casts are preserved.':'You need a speech provider and voices. Start with local heuristic attribution, or choose an LLM or Jev for more complex dialogue.',card);
-        element('p','Sound effects, ambience, music, and automatic playback are optional. Connection and voice tests run only when you ask; they may use paid APIs.',body);
-        element('p','Speech & Planner preferences are shared across chats. Voice defaults are used by new chats; existing chat casts stay independent. Skip saves no configuration.',body).className='cs-hint';
+        const hero=element('div','',body);hero.className='cs-hero';brand(hero);const intro=element('div','',hero);
+        element('p','Give your story a voice.',intro).className='cs-lead';
+        element('p','Distinct voices for narration and dialogue, with an optional soundscape.',intro);
+        const map=element('ol','',body);map.className='cs-map';
+        for(const [index,title,detail] of [[1,'Connect','Use a speech connection saved in Lumiverse.'],[2,'Choose voices','Set voices, accents, and delivery for new chats.'],[3,'Make it comfortable','Choose playback, reading, and audio storage preferences.']]){
+          const li=element('li','',map);element('span',String(index),li).className='cs-map-number';const info=element('div','',li);element('strong',title,info);element('small',detail,info);
+        }
+        const notice=element('div','',body);notice.className='cs-notice';
+        if(snapshot.existing){element('h3','Your existing setup was found',notice);element('p','We’ll start from your saved preferences. Existing chat casts are preserved.',notice);}
+        else element('p','Start with speech. Soundscapes and automation are optional and start off.',notice);
+        element('p','Nothing changes until Finish setup. Speech & Planner preferences are shared across chats; voice defaults apply to new chats.',body).className='cs-hint';
+        element('small','Tests run only when you press a Test button and may use paid APIs. Skip saves no configuration.',body);
       } else if(step===1){
-        element('p','Choose a speech connection saved in Lumiverse. Your API key and model are managed in Lumiverse’s Connect panel.',body);
-        select('Default TTS connection',[['','Choose a connection'],...connections.tts.map(item=>[item.id,`${item.name} · ${item.provider} · ${item.model || 'no model'}`])],draft.connection,body,value=>changeSpeechRouting(()=>{draft.connection=value;}));
-        illustratedGuide(body,'fish');
-        select('Planner engine',[['heuristic','Heuristic · local, no planner API'],['jev','Jev · Decision classification'],['llm','Standard LLM planner']],draft.plannerMode,body,value=>{draft.plannerMode=value;draft.useFastClassifier=value==='heuristic';draft.useJev=value==='jev';tests.delete('planner');render();});
-        element('p',draft.plannerMode==='heuristic'?'Heuristic attribution works locally for narration and simple dialogue. Ambiguous speakers can stop planning. Assign voices explicitly; use Jev or LLM for complex scenes. Speech still uses your TTS provider.':draft.plannerMode==='jev'?'Jev classifies dialogue through a Decision connection. Tests and classification can incur charges.':'An LLM identifies speakers and chooses voices. Planning and connection tests can incur charges.',body).className='cs-hint';
+        element('p','Choose where speech comes from and how Choir identifies speakers.',body);
+        const grid=element('div','',body);grid.className='cs-grid';
+        const speech=card('Speech provider',grid);
+        select('Default TTS connection',[['','Choose a connection'],...connections.tts.map(item=>[item.id,item.name])],draft.connection,speech,value=>changeSpeechRouting(()=>{draft.connection=value;}));
+        const selected=connections.tts.find(item=>item.id===draft.connection);
+        element('small',selected?`${selected.provider} · ${selected.model || 'Choose a model in Connect'}`:'Add a TTS connection in Lumiverse’s Connect panel to continue.',speech);
+        element('p','API keys and models are managed in Lumiverse. Test speech with a voice on the next step.',speech).className='cs-hint';
+        select('Voice connection mode',[['one','One connection for the whole cast'],['several','A connection for each character']],draft.connectionMode,speech,value=>changeSpeechRouting(()=>{draft.connectionMode=value;}));
+        const planner=card('Speaker detection',grid);
+        select('Planner engine',[['heuristic','Heuristic · local'],['jev','Jev · Decision connection'],['llm','Standard LLM planner']],draft.plannerMode,planner,value=>{draft.plannerMode=value;draft.useFastClassifier=value==='heuristic';draft.useJev=value==='jev';tests.delete('planner');render();});
+        element('p',draft.plannerMode==='heuristic'?'For narration and simple dialogue. Assign every speaking role a voice; ambiguous speakers may need manual help.':draft.plannerMode==='jev'?'Classifies dialogue using a Decision connection. Provider charges may apply.':'Identifies speakers and can choose voices. Planning uses your LLM and may incur charges.',planner).className='cs-hint';
         if(draft.plannerMode==='jev'){
-          select('Decision connection',[['','Default Decision connection'],...connections.decision.map(item=>[item.id,`${item.name} · ${item.provider} · ${item.model || 'Jev'}`])],draft.decisionConnection,body,value=>{draft.decisionConnection=value;tests.delete('planner');});
-          check('Allow LLM fallback after Jev fails',draft.allowLlmFallback,body,value=>{draft.allowLlmFallback=value;tests.delete('planner');},'Retries failed Jev classification with your Planner LLM. This can add a paid request.');
+          select('Decision connection',[['','Default Decision connection'],...connections.decision.map(item=>[item.id,`${item.name} · ${item.model || 'Jev'}`])],draft.decisionConnection,planner,value=>{draft.decisionConnection=value;tests.delete('planner');});
+          check('Allow LLM fallback after Jev fails',draft.allowLlmFallback,planner,value=>{draft.allowLlmFallback=value;tests.delete('planner');render();},'A failed classification can add a paid LLM request.');
           if(connections.directJev){
-            const advanced=element('details','',body);element('summary','Session Jev key for older Lumiverse hosts',advanced);
-            input('Jev session API key',session().jev,advanced,value=>{adapter.setSession('jev',value);tests.delete('planner');},{password:true,hint:'Used by Choir’s existing fallback on hosts without Decision APIs. Never saved.'});
+            const advanced=disclosure('Session Jev key for older Lumiverse hosts',planner);
+            input('Jev session API key',session().jev,advanced,value=>{adapter.setSession('jev',value);tests.delete('planner');},{password:true,hint:'Only for hosts without Decision APIs. Never saved.'});
           }
         }
-        if(draft.plannerMode!=='heuristic' || draft.enableSfx || draft.enableAmbience || draft.enableMusic){
-          select('Planner LLM connection',[['','Default LLM connection'],...connections.llm.map(item=>[item.id,`${item.name} · ${item.provider} · ${item.model || 'no model'}`])],draft.planner,body,value=>{draft.planner=value;tests.delete('planner');});
-        }else{
-          const optional=element('details','',body);element('summary','Optional LLM for sound cues and card analysis',optional);
-          select('Planner LLM connection',[['','Default LLM connection'],...connections.llm.map(item=>[item.id,`${item.name} · ${item.model || 'no model'}`])],draft.planner,optional,value=>{draft.planner=value;tests.delete('planner');});
+        if(draft.plannerMode==='llm' || draft.plannerMode==='jev' && draft.allowLlmFallback){
+          select('Planner LLM connection',[['','Default LLM connection'],...connections.llm.map(item=>[item.id,`${item.name} · ${item.model || 'no model'}`])],draft.planner,planner,value=>{draft.planner=value;tests.delete('planner');});
         }
-        button('Test planner connection',body,testPlanner);element('small',' Sends one small request unless Heuristic is selected.',body);
-        element('p','TTS connection testing is on the next step, using an actual voice sample.',body).className='cs-hint';
-        const guide=element('div','',body);guide.className='cs-card';element('h3','Missing a connection?',guide);
-        element('p','Open Lumiverse’s Connect panel and select TTS, LLM, or Decision. Create or edit your connection there, choose its model, then reopen this wizard and refresh. Choir uses your connections; it does not create host-managed connections.',guide);
-        button('Configure connections later',guide,()=>task(async()=>{await defer();modal.dismiss();adapter.connectionGuide();},'Saving your choice…',false));
-        button('Refresh connections',guide,refresh);
-        for(const error of connections.errors || [])element('p',error,guide).className='cs-error';
+        button('Test planner connection',planner,testPlanner);element('small',draft.plannerMode==='heuristic'?'Checks local attribution. No planner API request.':'Optional: sends one small planner request.',planner);
+        const help=section('Connections & help');
+        const tools=row(help);element('p','Add or edit connections in Lumiverse’s Connect panel, then refresh this list.',tools).className='cs-hint';
+        button('Refresh connections',tools,refresh);button('Configure connections later',tools,()=>task(async()=>{await defer();modal.dismiss();adapter.connectionGuide();},'Saving your choice…',false));
+        for(const error of connections.errors || [])element('p',error,help).className='cs-error';
+        illustratedGuide(help,'fish');
       } else if(step===2){
-        element('p','Choose voices for new chats. Existing chats keep their cast. A voice test synthesizes and plays one short sample.',body);
-        select('Voice connection mode',[['one','One connection for the whole cast'],['several','A connection for each character']],draft.connectionMode,body,value=>changeSpeechRouting(()=>{draft.connectionMode=value;}));
-        {
-          const selected=connections.tts.find(item=>item.id===draft.connection);
-          const provider=select('Default TTS provider',[['','Choose provider'],...[...new Set(connections.tts.map(item=>item.provider))].map(id=>[id,id])],selected?.provider,body,value=>changeSpeechRouting(()=>{draft.connection=connections.tts.find(item=>item.provider===value)?.id || '';}));
-          select('TTS model and connection',[['','Choose model'],...connections.tts.filter(item=>item.provider===provider.value).map(item=>[item.id,`${item.model || 'No model configured'} · ${item.name}`])],draft.connection,body,value=>changeSpeechRouting(()=>{draft.connection=value;}),'Native models are configured in Lumiverse’s Connect panel. Selecting one here selects its saved connection.');
-        }
-        const grid=element('div','',body);grid.className='cs-grid';
+        element('p','Voice defaults for new chats. Select a role to edit.',body);
+        const picker=element('div','',body);picker.className='cs-role-picker';picker.setAttribute('aria-label','Voice roles');
+        const panels=[],roleButtons=[],summaries=[];
+        const updateRoles=()=>draft.fixed.forEach((actor,index)=>{const summary=summaries[index];if(summary){summary.textContent=actor.excluded?'Speech off':actor.voice && summary.dataset.voiceId===actor.voice?summary.dataset.voiceName:actor.voice || (draft.plannerMode==='heuristic'?'Choose a voice':'Automatic voice');summary.title=summary.textContent;}});
+        const showRole=index=>{activeRole=index;panels.forEach((panel,i)=>panel.hidden=i!==index);roleButtons.forEach((node,i)=>node.setAttribute('aria-pressed',String(i===index)));};
         draft.fixed.forEach((actor,index)=>{
-          const name=['Narrator','Persona','Main character'][index],card=element('div','',grid);card.className='cs-card';element('h3',name,card);
-          if(draft.connectionMode==='several') select(`${name} connection`,routes(),actor.route || '',card,value=>{actor.route=value;actor.voice='';tests.delete('tts');render();});
-          voiceField(actor,card,name,()=>tests.delete('tts'),index!==0 || !jevNeedsNarratorVoice(draft,connections));
-          check(`Enable ${name.toLowerCase()} speech`,!actor.excluded,card,value=>{actor.excluded=!value;fishSourceWrap.hidden=!hasFishRoute();});
-          button(`Test ${name.toLowerCase()} voice`,card,()=>testVoice(actor));
+          const name=voiceNames[index],choice=button('',picker,()=>showRole(index));choice.setAttribute('aria-label',`Edit ${name.toLowerCase()} setup voice`);element('strong',index===2?'Character':name,choice);summaries.push(element('small','',choice));roleButtons.push(choice);
         });
+        draft.fixed.forEach((actor,index)=>{
+          const name=voiceNames[index],panel=element('section','',body);panel.className='cs-card';panel.dataset.setupRole=String(index);panel.setAttribute('aria-label',`${name} voice settings`);panels.push(panel);
+          const title=element('div','',panel);title.className='cs-voice-title';element('h3',name,title);
+          const enabled=check(`Enable ${name.toLowerCase()} speech`,!actor.excluded,title,value=>{actor.excluded=!value;fishSourceWrap.hidden=!hasFishRoute();changeVoice();updateRoles();});enabled.nextElementSibling.firstChild.textContent='Enable speech';
+          if(draft.connectionMode==='several')select(`${name} connection`,routes(),actor.route || '',panel,value=>{actor.route=value;actor.voice='';changeVoice();render();});
+          voiceField(actor,panel,name,()=>{changeVoice();updateRoles();},draft.plannerMode!=='heuristic' && (index!==0 || !jevNeedsNarratorVoice(draft,connections)),label=>{const summary=summaries[index];summary.dataset.voiceId=actor.voice;summary.dataset.voiceName=label || '';updateRoles();});
+          const customId=panel.querySelector('.cs-voice-fields details');
+          const acting=element('div','',panel);acting.className='cs-grid';
+          const accent=input(`${name} accent`,actor.accent,acting,value=>{actor.accent=value;changeVoice();},{placeholder:'e.g. light Irish accent'});accent.maxLength=300;accent.parentElement.firstChild.textContent='Accent preference';
+          const mode=select(`${name} delivery`,[['auto','Automatic acting'],['base','Base style only'],['off','No tone directions']],delivery(actor,index),acting,value=>{actor.deliveryMode=value;changeVoice();});mode.parentElement.firstChild.textContent='Delivery';
+          const style=input(`${name} base delivery`,actor.style,panel,value=>{actor.style=value;changeVoice();},{placeholder:index===0?'e.g. calm, measured narration':'e.g. warm, direct',hint:'Automatic adds planner acting. Base style only ignores planner emotions; accents stay active. Accent accuracy depends on the voice and provider.'});style.parentElement.firstChild.textContent='Base delivery style (optional)';
+          panel.append(customId);
+          button(`Test ${name.toLowerCase()} voice`,panel,()=>testVoice(actor));element('small','Optional: generates and plays a short sample. Provider charges may apply.',panel);
+        });
+        updateRoles();showRole(activeRole);
+        const connection=row(body);element('p',`Default speech: ${routeName(defaultRoute())}`,connection).className='cs-hint';button('Change connection',connection,()=>navigate(1));
         const fishSourceWrap=element('div','',body);fishSourceWrap.hidden=!hasFishRoute();
-        select('Voices the planner picks from',[['community','Fish community library'],['own','My Fish voices'],['both','Both']],draft.fishVoiceSource,fishSourceWrap,value=>{draft.fishVoiceSource=value;render();},'Applies to automatic Fish casting. “My Fish voices” uses your assigned and added voices; add custom IDs in the drawer. Explicit voice assignments stay unchanged.');
-        const npc=element('div','',body);npc.className='cs-card';element('h3','Automatic casting',npc);
+        select('Voices the planner picks from',[['community','Fish community library'],['own','My Fish voices'],['both','Both']],draft.fishVoiceSource,fishSourceWrap,value=>{draft.fishVoiceSource=value;render();},'For automatic Fish casting. Explicit assignments stay unchanged. Add your provider voice IDs above or in Cast.');
+        const npc=section('New speakers');
         const policy=draft.npcPolicy;
-        select('Automatic casting',[['skip','Disabled'],['single','Shared voice'],['preferred','Preferred voices'],['llm','Automatic selection']],policy.mode,npc,value=>{policy.mode=value;render();});
-        if(policy.mode!=='skip' && draft.connectionMode==='several') select('Casting connection',routes(),policy.route || '',npc,value=>{policy.route=value;policy.voice='';policy.voices=[];render();});
+        select('Automatic casting',[['skip','Disabled · assign new speakers yourself'],['single','Shared voice'],['preferred','Preferred voices'],['llm','Automatic selection']],policy.mode,npc,value=>{policy.mode=value;render();});
+        if(policy.mode!=='skip' && draft.connectionMode==='several')select('Casting connection',routes(),policy.route || '',npc,value=>{policy.route=value;policy.voice='';policy.voices=[];render();});
         if(policy.mode==='single')voiceField(policy,npc,'Shared');
         if(policy.mode==='preferred'){
-          input('Preferred voice IDs',(policy.voices || []).join(', '),npc,value=>{policy.voices=value.split(',').map(id=>id.trim()).filter(Boolean);},{hint:'Comma-separated IDs from the selected Casting connection.'});
-          const id=renderId;void adapter.voices(draft.connectionMode==='one'?defaultRoute():policy.route || defaultRoute()).then(list=>{if(!closed && id===renderId)element('small',`Available: ${list.map(item=>item.id).join(', ')}`,npc);}).catch(error=>{if(!closed && id===renderId)say(safeError(error),true);});
+          input('Preferred voice IDs',(policy.voices || []).join(', '),npc,value=>{policy.voices=value.split(',').map(id=>id.trim()).filter(Boolean);},{hint:'Comma-separated IDs from this casting connection.'});
+          const id=renderId;void adapter.voices(effectiveRoute(policy)).then(list=>{if(!closed && id===renderId)element('small',`Available: ${list.map(item=>item.id).join(', ')}`,npc);}).catch(error=>{if(!closed && id===renderId)say(safeError(error),true);});
         }
-        element('p','Automatic selection needs Jev or an LLM and may make planner calls. Shared or disabled discovered character speech is easiest for local heuristic attribution.',npc).className='cs-hint';
+        element('p',policy.mode==='skip'?'Unassigned new speakers stay silent until you give them a voice.':policy.mode==='llm'?'Automatic selection needs Jev or an LLM and may incur planner charges.':'Shared and preferred voices can be used with local heuristic attribution.',npc).className='cs-hint';
       } else if(step===3){
-        element('p','Start with speech, then add the extras you want. Unconfigured features should stay off.',body);
-        const sound=element('div','',body);sound.className='cs-card';element('h3','A soundscape for your story',sound);
-        input('Freesound API key',draft.freesoundApiKey,sound,value=>{draft.freesoundApiKey=value;},{password:true,hint:'Saved in Choir’s existing preferences. Sound effects and ambience need this key plus an LLM for cue selection.'});
-        illustratedGuide(sound,'freesound');
-        check('Sound effects',draft.enableSfx,sound,value=>{draft.enableSfx=value;});
-        check('Ambient sound',draft.enableAmbience,sound,value=>{draft.enableAmbience=value;});
-        check('Background music',draft.enableMusic,sound,value=>{draft.enableMusic=value;loop.hidden=!value;},'Music uses Choir’s existing library and attribution. Sound cue planning uses your LLM and may incur charges.');
-        const loop=element('div','',sound);loop.hidden=!draft.enableMusic;
-        check('Loop music between replies',draft.loopMusic,loop,value=>{draft.loopMusic=value;},'Keep music playing between replies while the music channel is active.');
-        select('Sound cue LLM connection',[['','Default LLM connection'],...connections.llm.map(item=>[item.id,`${item.name} · ${item.model || 'no model'}`])],draft.planner,sound,value=>{draft.planner=value;tests.delete('planner');});
-        const reading=element('div','',body);reading.className='cs-card';element('h3','Reading',reading);
-        check('Skip non-story blocks',draft.skipMeta!==false,reading,value=>{draft.skipMeta=value;},'Keep automatic filtering of trackers, recaps and interface panels. LLM and Jev modes can also use your planner to find non-story text.');
-        const skipped=element('textarea');skipped.rows=2;skipped.value=draft.ignoredTags || '';skipped.placeholder='summary, .status-panel, #phone-panel';
-        skipped.oninput=()=>{draft.ignoredTags=skipped.value;};field('Skip tags and blocks',skipped,reading,'Add tag names, classes or IDs separated by commas. These rules apply across chats; automatic filtering stays available.');
-        select('Highlight spoken text',[['off','Off'],['passage','Passage'],['word','Word by word']],draft.readAlong || 'off',reading,value=>{draft.readAlong=value;});
-        check('Follow narration',Boolean(draft.followNarration),reading,value=>{draft.followNarration=value;});
-        element('p','Set name pronunciation in the character’s editor after setup. “Say name as” applies when any voice says that name in the chat.',reading).className='cs-hint';
-        const playback=element('div','',body);playback.className='cs-card';element('h3','Playback & saved audio',playback);
-        check('Floating audio mixer',draft.enableMixer,playback,value=>{draft.enableMixer=value;},'Show playback, speed and volume controls over the chat. Adjust speed and volume there after setup.');
-        check('Match passage loudness',draft.normalizeLoudness,playback,value=>{draft.normalizeLoudness=value;},'Reduce volume differences between generated speech passages.');
-        select('Audio retention for new recordings',[['session','This session only'],['1','1 day'],['7','7 days'],['30','30 days'],['forever','Indefinitely']],draft.retention,playback,value=>{draft.retention=value;},'Sets the default for new recordings. To change existing recordings in this chat, use Audio retention in Saved.');
-        const buffering=disclosure('Buffering and request limits',playback);
-        element('p','Prefetch prepares speech ahead of playback. More requests can reduce gaps but increase provider load and generate unused audio. Fast playback can still catch up to a slow provider.',buffering).className='cs-hint';
-        number('Prefetch passages','prefetch',0,4,buffering,'0 disables lookahead. For faster playback, try 2 with 2 concurrent requests. More lookahead may generate speech you do not finish.');
-        number('Concurrent TTS requests','concurrency',1,4,buffering,'Limit simultaneous speech requests. Try 2 for faster playback if your provider allows it; playback speed does not speed up synthesis.');
-        number('Max characters per request','chunk',80,10000,buffering,'Long passages are split at this limit. Smaller requests can start sooner but require more calls.');
-        check('Group speech requests',draft.batchSpeech,buffering,value=>{draft.batchSpeech=value;},'Used only by compatible providers and models, with compatible voice levels and speeds and no added voice gap.');
-        const controls=disclosure('Drawer and message controls',playback);
+        const main=element('div','',body),details=element('div','',body);main.hidden=playbackDetails;details.hidden=!playbackDetails;
+        const setDetails=value=>{playbackDetails=value;main.hidden=value;details.hidden=!value;body.scrollTop=0;heading.textContent=value?'Playback details':'Playback';heading.focus();};
+        if(playbackDetails)heading.textContent='Playback details';
+        element('p','Choose everyday controls. Soundscapes and automation are optional.',main);
+        const playback=card('Playback & saved audio',main);
+        const controls=element('div','',playback);controls.className='cs-grid';
+        check('Floating audio mixer',draft.enableMixer,controls,value=>{draft.enableMixer=value;});
         check('Show message play controls',draft.sectionButtons,controls,value=>{draft.sectionButtons=value;});
-        check('Show automatic planning shortcut',draft.showAutoPlanAction,controls,value=>{draft.showAutoPlanAction=value;},'Shows a shortcut for the Auto-plan preference. Showing it does not turn automatic planning on.');
-        const automation=element('div','',body);automation.className='cs-card';element('h3','Automation',automation);
-        check('Auto-plan new replies',draft.autoPlan,automation,value=>{draft.autoPlan=value;},'Plans incoming replies automatically. LLM or Jev calls may incur charges.');
-        check('Auto-play new replies',draft.auto,automation,value=>{draft.auto=value;},'Automatically generates speech for new replies. Provider charges and browser playback restrictions can apply.');
-        element('p','Automatic voice selection is controlled by Automatic casting on the previous step. Nothing plays or calls a planner as part of saving setup.',body).className='cs-hint';
+        check('Match passage loudness',draft.normalizeLoudness,playback,value=>{draft.normalizeLoudness=value;},'Reduce volume differences between speech passages.');
+        select('Audio retention for new recordings',[['session','This session only'],['1','1 day'],['7','7 days'],['30','30 days'],['forever','Indefinitely']],draft.retention,playback,value=>{draft.retention=value;},'Audio is saved on this device for replay and download. For existing recordings, change Audio retention in Saved.');
+        const reading=section('Reading',main);
+        select('Highlight spoken text',[['off','Off'],['passage','Passage'],['word','Word by word']],draft.readAlong || 'off',reading,value=>{draft.readAlong=value;});
+        check('Follow narration',Boolean(draft.followNarration),reading,value=>{draft.followNarration=value;},'Keep the spoken passage in view.');
+        const automation=section('Automatic replies',main),automatic=row(automation);
+        check('Auto-plan new replies',draft.autoPlan,automatic,value=>{draft.autoPlan=value;});
+        check('Auto-play new replies',draft.auto,automatic,value=>{draft.auto=value;});
+        element('small','Automatic planning and speech can incur provider charges. Nothing plays or calls a planner while saving setup.',automation);
+        const sound=section('Soundscape',main),toggles=row(sound);
+        check('Sound effects',draft.enableSfx,toggles,value=>{draft.enableSfx=value;updateSound();});
+        check('Ambient sound',draft.enableAmbience,toggles,value=>{draft.enableAmbience=value;updateSound();});
+        check('Background music',draft.enableMusic,toggles,value=>{draft.enableMusic=value;updateSound();});
+        const requirements=element('div','',sound),freesound=element('div','',requirements);
+        input('Freesound API key',draft.freesoundApiKey,freesound,value=>{draft.freesoundApiKey=value;},{password:true,hint:'Required for sound effects and ambience. Saved in Choir preferences.'});
+        select('Sound cue LLM connection',[['','Default LLM connection'],...connections.llm.map(item=>[item.id,`${item.name} · ${item.model || 'no model'}`])],draft.planner,requirements,value=>{draft.planner=value;tests.delete('planner');});
+        element('small','Sound cue selection uses your LLM and may incur charges. Music needs no Freesound key.',requirements);
+        const loop=element('div','',sound);check('Loop music between replies',draft.loopMusic,loop,value=>{draft.loopMusic=value;});
+        function updateSound(){requirements.hidden=!(draft.enableSfx || draft.enableAmbience || draft.enableMusic);freesound.hidden=!(draft.enableSfx || draft.enableAmbience);loop.hidden=!draft.enableMusic;}
+        updateSound();illustratedGuide(sound,'freesound');
+        const more=section('Fine tuning',main);button('More playback settings',more,()=>setDetails(true));element('small','Buffering, request limits, custom text filters, and the Auto-plan shortcut.',more);
+        button('Back to playback',details,()=>setDetails(false));
+        const buffering=section('Buffering and request limits',details);
+        element('p','Lookahead prepares speech before you reach it. More requests can reduce gaps, but can generate unused audio and increase provider load.',buffering).className='cs-hint';
+        const numbers=element('div','',buffering);numbers.className='cs-grid';
+        number('Prefetch passages','prefetch',0,4,numbers,'0 turns lookahead off. Try 2 for faster playback.');
+        number('Concurrent TTS requests','concurrency',1,4,numbers,'Try 2 if your provider permits it.');
+        number('Max characters per request','chunk',80,10000,buffering,'Smaller requests can start sooner, but require more calls.');
+        check('Group speech requests',draft.batchSpeech,buffering,value=>{draft.batchSpeech=value;},'Used only by compatible providers, voices and playback settings.');
+        const filtering=section('Text filters',details);
+        check('Skip non-story blocks',draft.skipMeta!==false,filtering,value=>{draft.skipMeta=value;},'Filter trackers, recaps and interface panels. LLM and Jev modes can also run a planner check.');
+        const skipped=element('textarea');skipped.rows=2;skipped.value=draft.ignoredTags || '';skipped.placeholder='summary, .status-panel, #phone-panel';skipped.oninput=()=>{draft.ignoredTags=skipped.value;};
+        field('Skip tags and blocks',skipped,filtering,'Tag names, classes or IDs, separated by commas. Applies across chats.');
+        check('Show automatic planning shortcut',draft.showAutoPlanAction,details,value=>{draft.showAutoPlanAction=value;},'Shows a shortcut; does not turn Auto-plan on.');
+        element('p','Set name pronunciation in the character’s Cast editor after setup.',details).className='cs-hint';
       } else {
-        element('p','Review your choices. Ready means configuration is present; only a successful explicit test confirms a connection worked.',body);
+        element('p','Check the essentials, then save. Tests are optional and run only when you ask.',body);
         const issues=setupIssues(draft,connections,session());
-        const review=(title,detail,target,status)=>{
-          const row=element('div','',body);row.className='cs-card cs-review';const info=element('div','',row);element('h3',title,info);element('small',detail,info);element('span',status,row).className='cs-status';button('Edit',row,()=>navigate(target));
+        const group=title=>{const node=element('section','',body);node.className='cs-review-group';element('h3',title,node);return node;};
+        const review=(parent,title,detail,target,status,role)=>{
+          const node=element('div','',parent);node.className='cs-review';const info=element('div','',node);element('h3',title,info);element('small',detail,info);element('span',status,node).className='cs-status';
+          const edit=button('Edit',node,()=>{
+            if(role!=null)activeRole=role;if(target===3)playbackDetails=false;navigate(target);
+            const destination={'New speakers':'New speakers',Reading:'Reading','Optional features':draft.enableSfx || draft.enableAmbience || draft.enableMusic?'Soundscape':'Automatic replies'}[title];
+            if(destination){const section=[...body.querySelectorAll('[data-setup-section]')].find(node=>node.dataset.setupSection===destination);section?.scrollIntoView?.({block:'start'});const heading=section?.querySelector('h3');if(heading){heading.tabIndex=-1;heading.focus({preventScroll:true});}}
+          });edit.setAttribute('aria-label',`Edit ${title.toLowerCase()}`);
         };
-        const tts=connections.tts.find(item=>item.id===draft.connection);
-        review('Speech',`${tts?.name || 'Missing TTS connection'} · ${tts?.provider || ''} · ${tts?.model || 'no model'}`,1,issues.some(item=>item.step===1)?'Needs Attention':'Ready');
+        const testStatus=kind=>tests.get(kind)?.key===signature(kind)?'Test passed':'Not tested';
+        const connectionGroup=group('Connections'),tts=connections.tts.find(item=>item.id===draft.connection);
+        review(connectionGroup,'Speech',`${tts?.name || 'Missing TTS connection'} · ${tts?.provider || ''} · ${tts?.model || 'no model'}`,1,issues.some(item=>item.step===1 && /TTS/.test(item.message))?'Needs attention':testStatus('tts'));
         const plannerConnection=(draft.plannerMode==='jev'?connections.decision:connections.llm).find(item=>draft.plannerMode==='jev'?(draft.decisionConnection?item.id===draft.decisionConnection:item.is_default):(draft.planner?item.id===draft.planner:item.is_default));
-        const plannerDetail=draft.plannerMode==='heuristic'?'Local heuristic · ambiguous dialogue may need manual help':`${draft.plannerMode==='jev'?'Jev':'Standard LLM'} · ${plannerConnection?.name || (draft.plannerMode==='jev' && connections.directJev && session().jev?'Session Jev connection':'Missing planner connection')}${plannerConnection?.model?` · ${plannerConnection.model}`:''}`;
-        review('Planner',plannerDetail+(draft.plannerMode==='jev'?` · LLM fallback: ${draft.allowLlmFallback?'on':'off'}`:''),1,issues.some(item=>item.step===1)?'Needs Attention':'Ready');
-        review('Cast defaults',draft.fixed.map((actor,index)=>`${['Narrator','Persona','Main character'][index]}: ${actor.excluded?'disabled':(actor.voice || (draft.plannerMode==='llm'?'LLM chooses during planning':draft.plannerMode==='jev'?'Choir chooses with Jev':'needs a voice'))+` (gender preference: ${actor.gender || 'auto'})`}`).join(' · ')+` · Automatic casting: ${draft.npcPolicy.mode}`+(hasFishRoute()?` · Fish voice source: ${draft.fishVoiceSource}`:''),2,issues.some(item=>item.step===2)?'Needs Attention':'Ready');
-        review('Optional features',[['Sound effects',draft.enableSfx],['Ambience',draft.enableAmbience],[draft.loopMusic?'Music (loop between replies)':'Music',draft.enableMusic],['Auto-plan',draft.autoPlan],['Auto-play',draft.auto]].filter(item=>item[1]).map(item=>item[0]).join(', ') || 'All optional features are off',3,issues.some(item=>item.step===3)?'Needs Attention':'Optional');
-        review('Reading',`Custom skip rules: ${draft.ignoredTags || 'none'} · Automatic non-story filtering: ${draft.skipMeta===false?'off':'on'} · Highlight: ${draft.readAlong || 'off'} · Follow narration: ${draft.followNarration?'on':'off'} · Message controls: ${draft.sectionButtons?'on':'off'} · Auto-plan shortcut: ${draft.showAutoPlanAction?'shown':'hidden'}`,3,'Optional');
-        const retentionLabel={session:'this session only',1:'1 day',7:'7 days',30:'30 days',forever:'indefinitely'}[draft.retention] || 'invalid';
-        review('Playback & saved audio',`Mixer: ${draft.enableMixer?'on':'off'} · Loudness matching: ${draft.normalizeLoudness?'on':'off'} · New recordings: ${retentionLabel} · Prefetch: ${draft.prefetch} · Concurrent TTS: ${draft.concurrency} · Request size: ${draft.chunk} · Group speech: ${draft.batchSpeech?'on':'off'}`,3,issues.some(item=>item.step===3)?'Needs Attention':'Ready');
-        for(const kind of ['tts','planner']){const test=tests.get(kind);element('p',test?.key===signature(kind)?`${kind==='tts'?'Speech':'Planner'} test passed: ${test.message}`:`${kind==='tts'?'Speech':'Planner'} connection has not been tested with these choices.`,body).className='cs-hint';}
+        const plannerDetail=draft.plannerMode==='heuristic'?'Local heuristic · no planner API':`${draft.plannerMode==='jev'?'Jev':'Standard LLM'} · ${plannerConnection?.name || (draft.plannerMode==='jev' && connections.directJev && session().jev?'Session Jev connection':'Missing planner connection')}${plannerConnection?.model?` · ${plannerConnection.model}`:''}`;
+        review(connectionGroup,'Planner',plannerDetail+(draft.plannerMode==='jev'?` · LLM fallback: ${draft.allowLlmFallback?'on':'off'}`:''),1,issues.some(item=>item.step===1 && !/TTS/.test(item.message))?'Needs attention':testStatus('planner'));
+        const cast=group('Voice defaults · new chats');
+        draft.fixed.forEach((actor,index)=>review(cast,voiceNames[index],actor.excluded?'Speech disabled':`${actor.voice || (draft.plannerMode==='llm'?'LLM chooses during planning':draft.plannerMode==='jev'?'Choir chooses with Jev':'Choose a voice')} · ${routeName(effectiveRoute(actor))}${actor.accent?` · ${actor.accent}`:''} · ${['Automatic acting','Base style only','No tone directions'][['auto','base','off'].indexOf(delivery(actor,index))]}`,2,actor.excluded?'Off':issues.some(item=>item.step===2 && item.message.includes(actor.speaker))?'Needs attention':actor.voice?'Assigned':'Automatic',index));
+        review(cast,'New speakers',`Automatic casting: ${draft.npcPolicy.mode}${hasFishRoute()?` · Fish voice source: ${draft.fishVoiceSource}`:''}`,2,'Optional');
+        const preferences=group('Playback preferences');
+        review(preferences,'Playback & saved audio',`Mixer: ${draft.enableMixer?'on':'off'} · Message controls: ${draft.sectionButtons?'on':'off'} · Loudness matching: ${draft.normalizeLoudness?'on':'off'} · New recordings: ${retentionLabel}`,3,issues.some(item=>item.step===3)?'Needs attention':'Configured');
+        review(preferences,'Reading',`Highlight: ${draft.readAlong || 'off'} · Follow narration: ${draft.followNarration?'on':'off'} · Custom skip rules: ${draft.ignoredTags || 'none'} · Automatic non-story filtering: ${draft.skipMeta===false?'off':'on'}`,3,'Configured');
+        review(preferences,'Optional features',[['Sound effects',draft.enableSfx],['Ambience',draft.enableAmbience],[draft.loopMusic?'Music (loop between replies)':'Music',draft.enableMusic],['Auto-plan',draft.autoPlan],['Auto-play',draft.auto]].filter(item=>item[1]).map(item=>item[0]).join(', ') || 'All optional features are off',3,'Optional');
+        const limits=disclosure('Request settings summary',body);element('p',`Prefetch: ${draft.prefetch} · Concurrent TTS: ${draft.concurrency} · Request size: ${draft.chunk} · Group speech: ${draft.batchSpeech?'on':'off'} · Auto-plan shortcut: ${draft.showAutoPlanAction?'shown':'hidden'}`,limits).className='cs-hint';
+        const testing=section('Optional connection checks'),buttons=row(testing);
+        button('Test planner connection',buttons,testPlanner);
+        if(!draft.fixed[0].excluded)button('Test narrator voice',buttons,()=>testVoice());
+        for(const kind of ['tts','planner']){const test=tests.get(kind);element('small',test?.key===signature(kind)?`${kind==='tts'?'Speech':'Planner'} test passed: ${test.message}`:`${kind==='tts'?'Speech':'Planner'} connection has not been tested with these choices.`,testing);}
+        element('small','Voice tests generate speech; LLM and Jev tests may use paid APIs. Saving itself makes no planner or synthesis request.',testing);
         if(issues.length)say(issues.map(item=>item.message).join('\n'),true);
-        element('p','Finish saves shared Speech & Planner preferences and defaults for new chats. Existing chat voice choices remain intact. You can run setup again from Choir settings.',body).className='cs-hint';
+        element('p','Finish saves shared preferences and voice defaults for new chats. Existing chat voice choices remain intact. Run setup again from the Setup tab whenever you need it.',body).className='cs-hint';
       }
       lock();
     }
+
     function finish() {
       const issues=setupIssues(draft,connections,session());
-      if(issues.length){say(issues.map(item=>item.message).join('\n'),true);return;}
+      if(issues.length){showIssues(issues);return;}
       return task(async signal=>{
         let committing=false;
         try {
