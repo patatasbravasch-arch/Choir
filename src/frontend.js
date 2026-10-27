@@ -355,7 +355,7 @@ export async function setup(ctx) {
     <p data-et="plannerHint" role="note" style="font-size:.85em;opacity:.75;margin:6px 0 0" hidden></p>
     <div class="et-row">
       <label class="et-check" title="Combine compatible passages into fewer TTS calls; grouped clips share one level."><input data-et="batchSpeech" type="checkbox"> Group speech requests</label>
-      <small data-et="groupingStatus" role="status" style="opacity:.75" hidden></small>
+      <small data-et="groupingStatus" role="status" style="opacity:.75;flex-basis:100%;line-height:1.5" hidden></small>
     </div>
     </section><section data-choir-page="play"><h4 class="et-subhead">Sound</h4>
     <div class="et-row">
@@ -3416,13 +3416,25 @@ export async function setup(ctx) {
     const route=scope(config),connection=nativeConnections.find(item=>`native:${item.id}`===route);
     const maxSpeakers=nativeSpeakerLimit(connection);
     const name=connection?.name || 'This connection';
-    node.title=config.normalizeLoudness?'Loudness matching keeps different voices in separate clips so each can be balanced.':maxSpeakers?`${name} can combine up to ${maxSpeakers} ${detectProvider(route)==='gemini'?'preset ':''}voices per call.`:`${name}'s Lumiverse relay advertises one voice per call; different assigned voices need separate calls.`;
+    const reasons=[];
+    if(config.normalizeLoudness)reasons.push('Loudness matching keeps different voices in separate clips so each can be balanced.');
+    if(voiceGapSetting()>0)reasons.push('Gap between voices keeps spoken turns separate. Set the gap to 0 to allow shared dialogue clips.');
+    const members=plan?.segments?.filter(segment=>!segment.kind).flatMap(speechMembers).filter(segment=>!speakerExcluded(segment.speaker)) || [];
+    if(new Set(members.map(segment=>segment.route || route)).size>1)reasons.push('Different TTS connections use separate calls.');
+    const byRoute=new Map();for(const member of members){const key=member.route || route;if(!byRoute.has(key))byRoute.set(key,[]);byRoute.get(key).push(member);}
+    for(const voices of byRoute.values()){
+      if(new Set(voices.map(segment=>mixerVolume(1,segment.speaker,mixerState.channels))).size>1)reasons.push('Different channel volumes keep those voices in separate clips.');
+      if(new Set(voices.map(segment=>playbackRateFor(segment.speaker))).size>1)reasons.push('Different character speeds keep those voices in separate clips.');
+    }
+    const capability=maxSpeakers?`${name} can combine up to ${maxSpeakers} ${detectProvider(route)==='gemini'?'preset ':''}voices per call.`:`${name}'s Lumiverse relay advertises one voice per call; different assigned voices need separate calls.`;
+    const explanation=[...new Set([...reasons,capability])].join(' ');
+    node.title=explanation;node.textContent=`Grouping enabled. ${explanation}`;node.hidden=false;
     if(plan?.segments?.length){
       try{const batches=playbackBatches(plan.segments.map((segment,passageIndex)=>({...segment,passageIndex})),config);
         const speech=batches.filter(batch=>!batch.kind).length;
         $('planSummary').textContent=`Speech plan · ${plan.segments.filter(segment=>!segment.kind).length} text turns · ${speech} speech ${speech===1?'clip':'clips'}`;
         const requests=batches.filter(batch=>!batch.kind).reduce((sum,batch)=>sum+(batch.unison?.length || 1),0);
-        node.textContent=`This plan: ${speech} speech ${speech===1?'batch':'batches'}${requests>speech?` (up to ${requests} TTS calls)`:''}`;node.hidden=false;
+        node.textContent=`This plan: ${speech} speech ${speech===1?'batch':'batches'}${requests>speech?` (up to ${requests} TTS calls)`:''}. ${explanation}`;
       }catch{}
     }
   }

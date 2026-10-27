@@ -551,7 +551,7 @@ test('planWithJev classifies dialogue speakers and emotion tags into valid speec
     // The persona speaks in replies too, and a speaker outside the cast has its own choice.
     assert.deepEqual(Object.keys(calls[0].body.questions.q0.criteria), ['Persona', 'Alice', 'Bob', 'Someone not listed', 'Nobody (not spoken aloud)']);
     assert.equal(calls[0].body.questions.q0.instructions, 'Which character speaks this dialogue: ""Good morning!""?');
-    assert.deepEqual(Object.keys(calls[1].body.questions.q1.criteria), ['neutral', 'cheerful', 'whispering', 'angry', 'sad', 'sigh']);
+    assert.deepEqual(Object.keys(calls[1].body.questions.q1.criteria), ['neutral', 'cheerful', 'delighted', 'playful', 'sarcastic', 'whispering', 'angry', 'sad', 'sigh']);
 
     // Check segments attribution and emotion styles
     const aliceSeg = plan.segments.find(s => s.text === '"Good morning!"');

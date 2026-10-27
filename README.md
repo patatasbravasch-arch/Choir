@@ -4,7 +4,7 @@
 
 # Choir
 
-[![Version](https://img.shields.io/badge/version-1.1.6--staging.50-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/lunch-test)
+[![Version](https://img.shields.io/badge/version-1.1.6--staging.51-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/lunch-test)
 [![Platform](https://img.shields.io/badge/platform-Lumiverse%20Spindle-purple.svg)](https://docs.lumiverse.chat/)
 [![Tests](https://img.shields.io/badge/tests-590%20tests-blue.svg)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -12,6 +12,8 @@
 An installable Lumiverse Spindle extension for multi-voice narration, dialogue attribution, sound effects, ambience and background music.
 
 </div>
+
+Version **1.1.6-staging.51** improves acting guidance for LLM and Jev: intent and nearby narration take priority over harsh wording, and Jev can choose delighted, playful or sarcastic delivery. Existing explicit Fish cues and narrator delivery settings retain priority. No additional model calls are added. Replan a message to replace an older emotional interpretation; cached Replay keeps its saved performance. **Settings → Performance → Group speech requests** now displays the batch count and explains restrictions directly, including loudness matching, voice gaps, different connections, channel volumes and character speeds. Shared dialogue clips require compatible provider capabilities and settings; independent loudness matching still keeps different voices separate.
 
 Version **1.1.6-staging.50** on **lunch-test** flattens the drawer into **Cast / Playback / Saved / Settings**, with direct settings pages, one character editor, and separate Mixer layout and Volume limits actions. **Setup guide** stays in the header and offers **Quick start**, three-step **Guided**, or direct-category **Custom** setup. Switching modes keeps the draft; finishing preserves existing chat casts. Inactive cast use an **In this reply / All saved** selector. See [drawer navigation](docs/drawer-navigation.md) and [setup guide](ONBOARDING.md).
 

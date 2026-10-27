@@ -1175,8 +1175,17 @@ export function audioBytes(base64, mimeType) {
 // Words from the Fish Audio community library's tag vocabulary that describe how a voice sounds.
 export const FISH_VOICE_TAGS='deep, low, high, soft, gentle, warm, calm, bright, clear, crisp, smooth, raspy, husky, breathy, energetic, cheerful, playful, confident, authoritative, serious, dramatic, mysterious, dark, intimate, expressive, narration, storytelling, character-voice, anime';
 
+// Shared by LLM casting and both Decision transports. Acting follows intent,
+// rather than the literal sentiment of a quote stripped of its story context.
+export const DELIVERY_CONTEXT_RULES = `Delivery guidance:
+- Read the whole passage, including narration before AND after the quote, and identify this speaker's intent before choosing a tone. Nearby speech tags, actions and emotional reactions belong to the performance; another character's feelings do not.
+- Profanity, insults, commands, rhetorical disbelief, bold text and capitals are not by themselves evidence of anger or shouting. Distinguish delighted disbelief, affectionate teasing and playful mock outrage from genuine hostility.
+- A delighted reaction or amused grin can make harsh words playful; a cruel, threatening or bitter grin need not be happy. Use the surrounding scene rather than a single keyword. Preserve genuine anger when the scene supports it.
+- Emotion and volume are separate: a soft or breathed-out line can be delighted, and an emphatic command can be playful. Use a short positive direction describing the intended performance. When the intent is unclear, choose neutral rather than inventing an intense emotion.`;
+
 // cast-r1e, the winner of the castbench casting benchmark: one compact request casts the whole reply.
-// Measured as is; keep the prompt text verbatim. Only the cast-without-voice and community lines are additions.
+// Keep the measured speaker-attribution baseline verbatim. Delivery guidance,
+// unassigned voices and community casting are appended in castingPrompt.
 const CASTING_SYSTEM = `You are an audiobook casting director. For every quoted line (marked D<id>) in the reply, decide who says it aloud.
 Rules:
 - Use attribution tags, actions next to the quote, turn-taking, and point of view. In first-person narration, 'I' is the narrating character (see aliases).
@@ -1212,7 +1221,7 @@ export function castingPrompt(units, config, context) {
   const used=new Set(actors.map(actor=>actor.voice));
   const voices=routeVoices(config,npcRoute(config),true).slice(0,60).filter(voice=>!used.has(voice.id)).map(voice=>`${voice.id} (${voice.gender ?? ''}, ${voice.description ?? ''})`).join('; ');
   const unvoiced=actors.filter(actor=>!(config.npcs.includes(actor)?npcCastActor(actor,config):actor).voice).map(actor=>actor.speaker);
-  const system=CASTING_SYSTEM+(unvoiced.length?`\nThese cast members have no voice yet; add an NPC line for each of them too: ${unvoiced.join(', ')}.`:'')
+  const system=CASTING_SYSTEM+`\n${DELIVERY_CONTEXT_RULES}`+(unvoiced.length?`\nThese cast members have no voice yet; add an NPC line for each of them too: ${unvoiced.join(', ')}.`:'')
     +(config.communityRoutes && Object.keys(config.communityRoutes).length?`\nIf no voice id fits (none listed), write the NPC voice as young, middle-aged or old and 1 to 4 tone words from: ${FISH_VOICE_TAGS}. Then add one line: LANG|ISO 639-1 code of the story's language.`:'');
   const lines=units.map(unit=>unit.kind==='dialogue'?`D${unit.id}: ${unit.text}`:`   ${unit.text}`);
   return [{role:'system',content:system},

@@ -2337,6 +2337,7 @@ test('matching loudness separates Fish voices and replay rebuilds an older group
   assert.equal(h.synthesis.length,5);assert.ok(h.synthesis.slice(1).every(request=>!request.parameters.turns));
   assert.equal(h.requests.filter(request=>request.action==='plan').length,planned,'splitting for loudness reuses attribution');
   assert.match(h.$('groupingStatus').title,/Loudness matching keeps different voices/);
+  assert.match(h.$('groupingStatus').textContent,/Loudness matching keeps different voices/,'the reason is visible without hovering');
   await h.play();assert.equal(h.synthesis.length,5,'the individually balanced clips remain cached');
  }finally{await h.close();}
 });
@@ -2403,7 +2404,18 @@ test('grouping status explains a single-voice provider and updates its batch cou
   await fish.plan();assert.match(fish.$('groupingStatus').textContent,/1 speech batch/);
   const level=document.querySelector('[aria-label="Mira volume percent"]');level.value='50';level.dispatchEvent(new fish.dom.window.Event('input',{bubbles:true}));
   assert.match(fish.$('groupingStatus').textContent,/3 speech batches/);
+  assert.match(fish.$('groupingStatus').textContent,/Different channel volumes/);
  }finally{await fish.close();}
+});
+
+test('grouping explains a voice gap before planning and updates when the gap is removed',async()=>{
+ const h=await fishGroupingHarness();try{
+  assert.equal(h.$('groupingStatus').hidden,false);assert.match(h.$('groupingStatus').textContent,/Grouping enabled.*up to 5 voices/);
+  const gap=document.querySelector('[aria-label="Gap between voices in settings value"]');assert.ok(gap);gap.value='200';gap.dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));
+  assert.match(h.$('groupingStatus').textContent,/Gap between voices.*gap to 0/);
+  gap.value='0';gap.dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));
+  assert.doesNotMatch(h.$('groupingStatus').textContent,/Gap between voices/);await h.plan();await h.play();assert.equal(h.synthesis.length,1);
+ }finally{await h.close();}
 });
 test('grouping falls back to separate calls for unequal speaker levels and old relays',async()=>{
   for(const oldRelay of [false,true]){

@@ -1176,8 +1176,17 @@ function audioBytes(base64, mimeType) {
 // Words from the Fish Audio community library's tag vocabulary that describe how a voice sounds.
 const FISH_VOICE_TAGS='deep, low, high, soft, gentle, warm, calm, bright, clear, crisp, smooth, raspy, husky, breathy, energetic, cheerful, playful, confident, authoritative, serious, dramatic, mysterious, dark, intimate, expressive, narration, storytelling, character-voice, anime';
 
+// Shared by LLM casting and both Decision transports. Acting follows intent,
+// rather than the literal sentiment of a quote stripped of its story context.
+const DELIVERY_CONTEXT_RULES = `Delivery guidance:
+- Read the whole passage, including narration before AND after the quote, and identify this speaker's intent before choosing a tone. Nearby speech tags, actions and emotional reactions belong to the performance; another character's feelings do not.
+- Profanity, insults, commands, rhetorical disbelief, bold text and capitals are not by themselves evidence of anger or shouting. Distinguish delighted disbelief, affectionate teasing and playful mock outrage from genuine hostility.
+- A delighted reaction or amused grin can make harsh words playful; a cruel, threatening or bitter grin need not be happy. Use the surrounding scene rather than a single keyword. Preserve genuine anger when the scene supports it.
+- Emotion and volume are separate: a soft or breathed-out line can be delighted, and an emphatic command can be playful. Use a short positive direction describing the intended performance. When the intent is unclear, choose neutral rather than inventing an intense emotion.`;
+
 // cast-r1e, the winner of the castbench casting benchmark: one compact request casts the whole reply.
-// Measured as is; keep the prompt text verbatim. Only the cast-without-voice and community lines are additions.
+// Keep the measured speaker-attribution baseline verbatim. Delivery guidance,
+// unassigned voices and community casting are appended in castingPrompt.
 const CASTING_SYSTEM = `You are an audiobook casting director. For every quoted line (marked D<id>) in the reply, decide who says it aloud.
 Rules:
 - Use attribution tags, actions next to the quote, turn-taking, and point of view. In first-person narration, 'I' is the narrating character (see aliases).
@@ -1213,7 +1222,7 @@ function castingPrompt(units, config, context) {
   const used=new Set(actors.map(actor=>actor.voice));
   const voices=routeVoices(config,npcRoute(config),true).slice(0,60).filter(voice=>!used.has(voice.id)).map(voice=>`${voice.id} (${voice.gender ?? ''}, ${voice.description ?? ''})`).join('; ');
   const unvoiced=actors.filter(actor=>!(config.npcs.includes(actor)?npcCastActor(actor,config):actor).voice).map(actor=>actor.speaker);
-  const system=CASTING_SYSTEM+(unvoiced.length?`\nThese cast members have no voice yet; add an NPC line for each of them too: ${unvoiced.join(', ')}.`:'')
+  const system=CASTING_SYSTEM+`\n${DELIVERY_CONTEXT_RULES}`+(unvoiced.length?`\nThese cast members have no voice yet; add an NPC line for each of them too: ${unvoiced.join(', ')}.`:'')
     +(config.communityRoutes && Object.keys(config.communityRoutes).length?`\nIf no voice id fits (none listed), write the NPC voice as young, middle-aged or old and 1 to 4 tone words from: ${FISH_VOICE_TAGS}. Then add one line: LANG|ISO 639-1 code of the story's language.`:'');
   const lines=units.map(unit=>unit.kind==='dialogue'?`D${unit.id}: ${unit.text}`:`   ${unit.text}`);
   return [{role:'system',content:system},
@@ -1896,6 +1905,17 @@ const UNLISTED_SPEAKER = 'Someone not listed';
 const NOT_SPOKEN = 'Nobody (not spoken aloud)';
 const NOT_SPOKEN_CHOICE = { name: NOT_SPOKEN, description: "Not dialogue: these quoted words are not said aloud by anyone at this moment. Examples: a quoted word, name, nickname or term being talked about; written, typed or displayed text; words someone said earlier that the narration is only quoting; out-of-character notes; or a noise. A character's own quoted thoughts are not Nobody: they belong to that character." };
 const UNNAMED_SPEAKER = 'Unnamed (the story never gives this speaker a name)';
+const JEV_DELIVERY_CHOICES = {
+  neutral: 'Natural, restrained speaking tone; the emotional intent is unclear or unmarked',
+  cheerful: 'Warm, upbeat or happy',
+  delighted: 'Amused, delighted surprise or happy disbelief',
+  playful: 'Teasing, mischievous or playfully commanding; mock outrage without genuine hostility',
+  sarcastic: 'Dry, ironic or sardonic',
+  whispering: 'Explicitly whispered or hushed speech',
+  angry: 'Genuine anger, irritation or hostility supported by the scene, not just harsh wording',
+  sad: 'Sad or sorrowful',
+  sigh: 'Sighing or weary'
+};
 
 // Jev can only choose, so a new speaker's name must be offered: capitalised word runs that appear mid-sentence,
 // or that never appear in lowercase and occur in the narration. Uncased scripts yield none and keep the fallback.
@@ -2023,15 +2043,8 @@ async function planWithJev({ transcript, config, apiKey, endpoint, context = '',
         try {
           emotionChoices = await ask('emotion', u => ({
             type: 'choice',
-            instructions: `What is the emotional delivery style of the line marked [[ ]] in this passage: "${passage(u)}"?`,
-            criteria: {
-              neutral: 'Normal speaking tone',
-              cheerful: 'Cheerful or happy',
-              whispering: 'Whispering or soft',
-              angry: 'Angry or irritated',
-              sad: 'Sad or sorrowful',
-              sigh: 'Sighing or weary'
-            }
+            instructions: `${DELIVERY_CONTEXT_RULES}\nChoose the best delivery of the line marked [[ ]] in this passage: "${passage(u)}"`,
+            criteria: JEV_DELIVERY_CHOICES
           }));
         } catch (error) {
           if (signal?.aborted) throw error;
@@ -2055,7 +2068,7 @@ async function planWithJev({ transcript, config, apiKey, endpoint, context = '',
       }) : dialogueUnits.map(() => UNLISTED_SPEAKER);
 
       if (config.useStyle !== false) {
-        const emotions = ["neutral", "cheerful", "whispering", "angry", "sad", "sigh"];
+        const emotions = Object.entries(JEV_DELIVERY_CHOICES).map(([name,description])=>({name,description}));
         try {
           emotionChoices = await classifyWithJev({
             items,
@@ -2063,7 +2076,7 @@ async function planWithJev({ transcript, config, apiKey, endpoint, context = '',
             apiKey: key,
             endpoint: ep,
             signal,
-            question: 'What is the emotional delivery style for'
+            question: `${DELIVERY_CONTEXT_RULES}\nUse this line's before-and-after context in state.lines (or state), and choose its best delivery`
           });
         } catch (error) {
           if(signal?.aborted)throw error;
@@ -2470,7 +2483,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
   (async () => {
     const input = message.input || {};
     if (message.action === 'ping') {
-      send({result:{version:"1.1.6-staging.50",ready:true,decisionsAvailable:typeof spindle.decisions?.evaluate==='function'}});return;
+      send({result:{version:"1.1.6-staging.51",ready:true,decisionsAvailable:typeof spindle.decisions?.evaluate==='function'}});return;
     }
     if(message.action==='cardCast'){
       const card=input.card;

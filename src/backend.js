@@ -1,4 +1,4 @@
-import { cardAnalysisRoles, reconcileCastDuplicates, castIdentityResolver, validateCastConfig, validatePlan, npcCastActor, parsePlanJson, resolvePlanReferences, castReply, speechSourceUnits, normalizeName, unisonSpeakers, fastClassifyPlan, resolvePlannerMode, soundCuePrompt, parseSoundCues, rankMusic, MUSIC_GENRES, skipCheckPrompt, parseSkipRows, skippedLines } from './core.js';
+import { cardAnalysisRoles, reconcileCastDuplicates, castIdentityResolver, validateCastConfig, validatePlan, npcCastActor, parsePlanJson, resolvePlanReferences, castReply, speechSourceUnits, normalizeName, unisonSpeakers, fastClassifyPlan, resolvePlannerMode, soundCuePrompt, parseSoundCues, rankMusic, MUSIC_GENRES, skipCheckPrompt, parseSkipRows, skippedLines, DELIVERY_CONTEXT_RULES } from './core.js';
 
 import { voiceDelivery } from './delivery.js';
 
@@ -70,6 +70,17 @@ export const UNLISTED_SPEAKER = 'Someone not listed';
 export const NOT_SPOKEN = 'Nobody (not spoken aloud)';
 const NOT_SPOKEN_CHOICE = { name: NOT_SPOKEN, description: "Not dialogue: these quoted words are not said aloud by anyone at this moment. Examples: a quoted word, name, nickname or term being talked about; written, typed or displayed text; words someone said earlier that the narration is only quoting; out-of-character notes; or a noise. A character's own quoted thoughts are not Nobody: they belong to that character." };
 const UNNAMED_SPEAKER = 'Unnamed (the story never gives this speaker a name)';
+const JEV_DELIVERY_CHOICES = {
+  neutral: 'Natural, restrained speaking tone; the emotional intent is unclear or unmarked',
+  cheerful: 'Warm, upbeat or happy',
+  delighted: 'Amused, delighted surprise or happy disbelief',
+  playful: 'Teasing, mischievous or playfully commanding; mock outrage without genuine hostility',
+  sarcastic: 'Dry, ironic or sardonic',
+  whispering: 'Explicitly whispered or hushed speech',
+  angry: 'Genuine anger, irritation or hostility supported by the scene, not just harsh wording',
+  sad: 'Sad or sorrowful',
+  sigh: 'Sighing or weary'
+};
 
 // Jev can only choose, so a new speaker's name must be offered: capitalised word runs that appear mid-sentence,
 // or that never appear in lowercase and occur in the narration. Uncased scripts yield none and keep the fallback.
@@ -197,15 +208,8 @@ export async function planWithJev({ transcript, config, apiKey, endpoint, contex
         try {
           emotionChoices = await ask('emotion', u => ({
             type: 'choice',
-            instructions: `What is the emotional delivery style of the line marked [[ ]] in this passage: "${passage(u)}"?`,
-            criteria: {
-              neutral: 'Normal speaking tone',
-              cheerful: 'Cheerful or happy',
-              whispering: 'Whispering or soft',
-              angry: 'Angry or irritated',
-              sad: 'Sad or sorrowful',
-              sigh: 'Sighing or weary'
-            }
+            instructions: `${DELIVERY_CONTEXT_RULES}\nChoose the best delivery of the line marked [[ ]] in this passage: "${passage(u)}"`,
+            criteria: JEV_DELIVERY_CHOICES
           }));
         } catch (error) {
           if (signal?.aborted) throw error;
@@ -229,7 +233,7 @@ export async function planWithJev({ transcript, config, apiKey, endpoint, contex
       }) : dialogueUnits.map(() => UNLISTED_SPEAKER);
 
       if (config.useStyle !== false) {
-        const emotions = ["neutral", "cheerful", "whispering", "angry", "sad", "sigh"];
+        const emotions = Object.entries(JEV_DELIVERY_CHOICES).map(([name,description])=>({name,description}));
         try {
           emotionChoices = await classifyWithJev({
             items,
@@ -237,7 +241,7 @@ export async function planWithJev({ transcript, config, apiKey, endpoint, contex
             apiKey: key,
             endpoint: ep,
             signal,
-            question: 'What is the emotional delivery style for'
+            question: `${DELIVERY_CONTEXT_RULES}\nUse this line's before-and-after context in state.lines (or state), and choose its best delivery`
           });
         } catch (error) {
           if(signal?.aborted)throw error;

@@ -52,12 +52,15 @@ try{
   await page.getByRole('button',{name:'Collapse Choir voice mixer',exact:true}).click();await tab('Settings').click();await tab('Playback').click();await page.getByRole('button',{name:'Customize mixer',exact:true}).click();assert.equal(await page.getByRole('combobox',{name:'Mixer buttons per row',exact:true}).inputValue(),'2');
   await page.getByRole('button',{name:'Reset mixer layout',exact:true}).click();await page.waitForFunction(()=>window.fixtureStore.get('ui:mixer')?.quickButtonColumns===0);
   const before=await page.evaluate(()=>window.calls.length);
+  await showDrawerControl(page,'batchSpeech');await page.locator('[data-et="batchSpeech"]').check();
+  assert.equal(await page.locator('[data-et="groupingStatus"]').isVisible(),true);assert.match(await page.locator('[data-et="groupingStatus"]').innerText(),/Loudness matching keeps different voices/);
   await page.evaluate(async()=>{window.cleanup();const config=window.fixtureStore.get('chat:fixture');config.batchSpeech=true;config.normalizeLoudness=false;config.fixed[0].accent='Scottish';config.fixed[2].route='';config.fixed[2].voice='Kore';window.fixtureStore.set('chat:fixture',config);window.cleanup=await window.mountChoir();});
   await showDrawerControl(page,'normalizeLoudness');await page.locator('[data-et="normalizeLoudness"]').uncheck();await page.waitForFunction(()=>window.fixtureStore.get('settings:global')?.normalizeLoudness===false);
   await showDrawerControl(page,'batchSpeech');await page.locator('[data-et="batchSpeech"]').check();await page.waitForFunction(()=>window.fixtureStore.get('settings:global')?.batchSpeech===true);await tab('Playback').click();
   await page.locator('[data-et="latest"]').click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Ready:'));
   await page.locator('[data-et="drawerPlay"]').click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.includes('Playback finished'));
   const grouped=await page.evaluate(before=>window.calls.slice(before),before);assert.equal(grouped.length,1,JSON.stringify({grouped,settings:await page.evaluate(()=>({saved:window.fixtureStore.get('chat:fixture'),checked:document.querySelector('[data-et="batchSpeech"]').checked,mixer:window.fixtureStore.get('ui:mixer')}))}));assert.equal(grouped[0].parameters.turns.length,3);
+  await showDrawerControl(page,'batchSpeech');assert.match(await page.locator('[data-et="groupingStatus"]').innerText(),/1 speech batch/);assert.doesNotMatch(await page.locator('[data-et="groupingStatus"]').innerText(),/Loudness matching keeps different voices/);
   assert.equal(grouped[0].parameters.turns[0].style,'Measured narration. Accent: Scottish');assert.equal(grouped[0].parameters.turns[1].style,'whispering. Accent: Irish');assert.equal(grouped[0].parameters.speech_style,'');
   await page.close();console.log(`PASS ${mobile?'mobile':'desktop'} task tabs, keyboard, row layout, persistence and mixed-provider accents`);
  }

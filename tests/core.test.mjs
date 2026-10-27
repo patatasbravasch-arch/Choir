@@ -751,7 +751,7 @@ const scripted=answers=>{const calls=[];const llm=async messages=>{calls.push(me
 test('the casting prompt lists the cast, unused voices, recent context and the reply with marked dialogue',()=>{
   const transcript='Mira looked up. "Hi." "Bye," I said.';
   const [system,user]=castingPrompt(speechSourceUnits(transcript),castingCast(),'earlier');
-  assert.match(system.content,/^You are an audiobook casting director\./);assert.match(system.content,/NPC\|name\|female\/male\/neutral\|voice id from the available voices \(match gender and character\)\.$/);
+  assert.match(system.content,/^You are an audiobook casting director\./);assert.match(system.content,/NPC\|name\|female\/male\/neutral\|voice id from the available voices \(match gender and character\)\./);
   assert.equal(user.content,`Cast:\n- Jay (aliases: I) [persona]: A tall quiet man. ${'x'.repeat(202)}\n- Mira Vale (aliases: Mira) [character]\n- Guard [npc]\n\nAvailable voices for new NPCs: f1 (female, Soft)\n\nEarlier chat (context only):\nearlier\n\nReply to cast (indented lines are narration):\n   Mira looked up.\nD1: "Hi."\nD2: "Bye,"\n   I said.`);
   const unvoiced=castingCast();unvoiced.fixed[2].voice='';
   assert.match(castingPrompt([],unvoiced,'')[0].content,/no voice yet; add an NPC line for each of them too: Mira Vale\.$/);
