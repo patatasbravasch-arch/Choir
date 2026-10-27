@@ -1,3 +1,33 @@
+// Apply only edits made since this tab's baseline to the newest saved value.
+// Named cast arrays merge by speaker, so editing one voice preserves additions,
+// removals and unrelated voice edits made in another tab.
+export function mergeSettingsChanges(latest, baseline, local) {
+  if(JSON.stringify(local)===JSON.stringify(baseline))return structuredClone(latest);
+  const object=value=>value!==null && typeof value==='object' && !Array.isArray(value);
+  if(object(local)){
+    // An intentional edit wins a concurrent deletion as a complete value.
+    // Keeping only changed fields here could drop an actor's speaker or voice.
+    if(latest===undefined && baseline!==undefined)return structuredClone(local);
+    const before=object(baseline)?baseline:{},current=object(latest)?latest:{};
+    return Object.fromEntries([...new Set([...Object.keys(current),...Object.keys(before),...Object.keys(local)])].flatMap(key=>{
+      const value=mergeSettingsChanges(current[key],before[key],local[key]);
+      return value===undefined?[]:[[key,value]];
+    }));
+  }
+  const named=value=>Array.isArray(value) && value.every(item=>object(item) && typeof item.speaker==='string') && new Set(value.map(item=>item.speaker.trim().toLowerCase())).size===value.length;
+  if(named(local) && named(baseline) && named(latest)){
+    const index=items=>new Map(items.map(item=>[item.speaker.trim().toLowerCase(),item]));
+    const before=index(baseline),current=index(latest),edited=index(local);
+    const reordered=JSON.stringify([...before.keys()])!==JSON.stringify([...edited.keys()]);
+    const order=[...new Set(reordered?[...edited.keys(),...current.keys()]:[...current.keys(),...edited.keys()])];
+    return order.flatMap(key=>{
+      const value=mergeSettingsChanges(current.get(key),before.get(key),edited.get(key));
+      return value===undefined?[]:[value];
+    });
+  }
+  return structuredClone(local);
+}
+
 // HTTP LAN hosts expose getRandomValues, but not randomUUID or SubtleCrypto.
 export function randomUuid(cryptoApi=globalThis.crypto) {
   if(typeof cryptoApi?.randomUUID==='function')return cryptoApi.randomUUID();

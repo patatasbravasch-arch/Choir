@@ -60,7 +60,7 @@ test('drawer mixer customization preserves channel levels and optional Follow na
   follow().click();await until(()=>h.store.get('chat:chat-a')?.followNarration===true);assert.equal(h.$('followNarration').checked,true);assert.equal(follow().getAttribute('aria-pressed'),'true');assert.equal(h.$('readAlong').value,'off');
   h.$('followNarration').checked=false;h.$('followNarration').dispatchEvent(new h.dom.window.Event('change'));assert.equal(follow().getAttribute('aria-pressed'),'false');await until(()=>h.store.get('chat:chat-a')?.followNarration===false);
   follow().click();await until(()=>h.store.get('chat:chat-a')?.followNarration===true);show('follow',false);assert.equal(h.$('followNarration').checked,true,'hiding Follow must not stop following');show('follow',true);
-  await until(()=>h.store.get('ui:mixer')?.layout?.follow===true);await h.reload();assert.equal(follow().hidden,false);assert.equal(follow().getAttribute('aria-pressed'),'true');assert.equal(mixer().querySelector('.cm-levels').hidden,true);
+  await until(()=>h.store.get('ui:mixer')?.layout?.follow===true && h.store.get('ui:mixer')?.layout?.channelLevels===false);await tick();await h.reload();assert.equal(follow().hidden,false);assert.equal(follow().getAttribute('aria-pressed'),'true');assert.equal(mixer().querySelector('.cm-levels').hidden,true);
   h.$('customizeMixer').click();show('channelLevels',true);assert.equal(mixer().querySelector('.cm-levels').hidden,false);assert.equal(mixer().querySelector('.cm-levels-body').hidden,false);assert.equal(h.store.get('ui:mixer').channels.Narrator.volume,1.8);assert.equal(h.store.get('ui:mixer').master,.7);
   h.$('mixerLayout').dispatchEvent(new h.dom.window.KeyboardEvent('keydown',{key:'Escape',bubbles:true}));assert.equal(h.$('mixerLayout').hidden,true);assert.equal(document.activeElement,h.$('customizeMixer'));
   assert.equal(h.synthesis.length,0);assert.equal(h.requests.filter(request=>request.action==='plan').length,0);
@@ -71,7 +71,7 @@ test('optional mixer character speeds synchronize with drawer controls and chang
  const h=await harness({playbackRate:2,layout:{voiceSpeeds:true,speedSlider:true}});try{
   await h.plan();const entry=()=>document.querySelector('[aria-label="Narrator speed in mixer value"]');assert.ok(entry());assert.equal(entry().value,'2.00');
   h.state.blockAudio=true;h.$('play').click();await until(()=>h.audios.some(audio=>!audio.paused));const audio=h.audios.find(audio=>!audio.paused),requests=h.synthesis.length;
-  entry().value='0.75';entry().dispatchEvent(new h.dom.window.Event('input'));assert.equal(audio.playbackRate,0.75);assert.equal(document.querySelector('[aria-label="Narrator speed value"]').value,'0.75');await until(()=>h.store.get('ui:mixer')?.channels.Narrator?.speed===0.75);
+  entry().value='0.75';entry().dispatchEvent(new h.dom.window.Event('input'));assert.equal(audio.playbackRate,0.75);assert.equal(document.querySelector('[aria-label="Narrator speed value"]').value,'0.75');await until(()=>h.store.get('ui:mixer')?.channels?.Narrator?.speed===0.75);
   document.querySelector('[aria-label="Follow playback speed for Narrator in mixer"]').click();assert.equal(audio.playbackRate,2);assert.equal(entry().value,'2.00');assert.equal(h.synthesis.length,requests);
   const flag=document.querySelector('[data-choir-layout="voiceSpeeds"]');flag.checked=false;flag.dispatchEvent(new h.dom.window.Event('change'));assert.equal(entry(),null);assert.equal(audio.paused,false);h.$('stop').click();
  }finally{await h.close();}
@@ -1294,7 +1294,7 @@ test('mixer plans silently, plays the latest reply, filters voices by plan and r
   h.$('plan-latest').click();await until(()=>h.requests.filter(r=>r.action==='plan').length===1 && !h.$('latest').disabled && names().length===3);
   assert.equal(h.audios.length,0);assert.equal(h.synthesis.length,0);assert.deepEqual(names(),['Narrator','Mira','Guard']);
   const volume=mixer.querySelector('[aria-label="Mira volume"]');volume.value='0.42';volume.dispatchEvent(new h.dom.window.Event('input'));volume.dispatchEvent(new h.dom.window.Event('change'));mixer.querySelector('[aria-label="Mira silent"]').click();
-  await until(()=>h.store.get('ui:mixer')?.channels.Mira.mute===true);
+  await until(()=>h.store.get('ui:mixer')?.channels?.Mira?.mute===true);
   h.state.messages=[h.message,{id:'latest-b',content:'Only the narrator speaks in the latest reply.',is_user:false}];h.subscriptions.get('chat.messageCount')();h.$('play').click();await until(()=>h.$('status').textContent.includes('Playback finished'));
   assert.deepEqual(names(),['Narrator']);assert.equal(h.requests.filter(r=>r.action==='plan').at(-1).input.transcript,'Only the narrator speaks in the latest reply.');assert.equal(h.synthesis.at(-1).text,'Only the narrator speaks in the latest reply.');
   h.state.messages=[h.message];await h.plan();assert.deepEqual(names(),['Narrator','Mira','Guard']);assert.equal(mixer.querySelector('[aria-label="Mira volume"]').value,'0.42');assert.equal(mixer.querySelector('[aria-label="Mira silent"]').getAttribute('aria-pressed'),'true');
@@ -1448,7 +1448,7 @@ test('one cast channel tab includes every character on desktop and mobile and re
    assert.deepEqual(tabs().map(item=>item.textContent),['Cast','Scene audio']);assert.deepEqual(visible().map(row=>row.dataset.speaker),['Narrator','Mira','Guard']);
    const panel=document.querySelector('[role="tabpanel"]');assert.equal(panel.getAttribute('aria-labelledby'),tab('Cast').id);
    const percent=document.querySelector('[aria-label="Mira volume percent"]');percent.value='42';percent.dispatchEvent(new h.dom.window.Event('input'));document.querySelector('[aria-label="Mira silent"]').click();
-   await until(()=>h.store.get('ui:mixer')?.channels.Mira?.mute);await h.reload();assert.deepEqual(visible().map(row=>row.dataset.speaker),['Narrator','Mira','Guard']);
+   await until(()=>h.store.get('ui:mixer')?.channels?.Mira?.mute);await h.reload();assert.deepEqual(visible().map(row=>row.dataset.speaker),['Narrator','Mira','Guard']);
    tab('Scene audio').click();assert.deepEqual(visible().map(row=>row.dataset.speaker),['SFX','Ambience','Music']);
    const effects=document.querySelector('[aria-label="SFX volume percent"]');effects.value='31';effects.dispatchEvent(new h.dom.window.Event('input'));
    await until(()=>h.store.get('ui:mixer')?.sfx===0.31);tab('Cast').click();assert.equal(document.querySelector('[aria-label="Mira volume percent"]').value,'42');
@@ -3829,7 +3829,7 @@ test('each character speed replaces the playback speed for that character, follo
   assert.equal(voices(h)[0].playbackRate,2,'narration plays at its own 2x with the playback speed at 1x');
   setRange(h,speedOf('Narrator'),'0.5');assert.equal(voices(h)[0].playbackRate,0.5,'a live change reaches the block that is playing');
   typeValue(h,speedEntry(),'2');assert.equal(voices(h)[0].playbackRate,0.5,'narration keeps its own 0.5x rather than multiplying the playback speed');
-  assert.equal(savedMixer(h).channels.Narrator.speed,0.5);
+  await until(()=>savedMixer(h)?.channels?.Narrator?.speed===0.5);
   setRange(h,speedOf('Mira'),'2.5');assert.equal(voices(h)[0].playbackRate,0.5,'Mira does not change the narration');
   assert.equal(document.querySelector('[aria-label="Mira speed value"]').value,'2.50');
   voices(h)[0].onended();
@@ -3935,7 +3935,7 @@ test('excluded opening dialogue adds no voice gap before the first audible speak
 test('different character speeds split Fish dialogue and rebuild cached Replay without another planner request',async()=>{
  const h=await fishGroupingHarness({enabled:true});try{
   await h.plan();await h.play();assert.equal(h.synthesis.length,1);assert.ok(h.synthesis[0].parameters.turns.length>1);
-  setRange(h,document.querySelector('[aria-label="Mira speed"]'),'0.25');await until(()=>savedMixer(h)?.channels.Mira.speed===0.25);
+  setRange(h,document.querySelector('[aria-label="Mira speed"]'),'0.25');await until(()=>savedMixer(h)?.channels?.Mira?.speed===0.25);
   const replay=()=>[...h.$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay').click();
   const start=voices(h).length;replay();await until(()=>h.$('status').textContent.includes('Playback finished'));
   assert.deepEqual(voices(h).slice(start).map(audio=>audio.playbackRate),[1,0.25,1]);

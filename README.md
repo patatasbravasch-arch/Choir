@@ -4,14 +4,16 @@
 
 # Choir
 
-[![Version](https://img.shields.io/badge/version-1.1.6--staging.39-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/staging)
+[![Version](https://img.shields.io/badge/version-1.1.6--staging.40-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/lunch-test)
 [![Platform](https://img.shields.io/badge/platform-Lumiverse%20Spindle-purple.svg)](https://docs.lumiverse.chat/)
-[![Tests](https://img.shields.io/badge/tests-545%20tests-blue.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-549%20tests-blue.svg)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 An installable Lumiverse Spindle extension for multi-voice narration, dialogue attribution, sound effects, ambience and background music.
 
 </div>
+
+Version **1.1.6-staging.40** fixes the three findings from the v39 audit. Clear/delete and expiry also invalidate Cue/companion speech and scene-audio caches, including pending loads and other tabs on the same device. Valid cached audio remains reusable. Chat/cast and mixer saves merge this tab's edits with the latest saved values; available browser Web Locks serialize overlapping saves, and an untouched mixer no longer writes on page leave. Browsers without native Popover support get an unclipped Sections menu with touch targets, Escape dismissal and focus return. Reload older Choir tabs after updating. The drawer redesign is still a separate proposal; the existing setup wizard remains available.
 
 Version **1.1.6-staging.39** adds an optional **Message controls** quick button in **Customize mixer**. **Messages** toggles the existing **Show message play controls** setting without changing audio or making provider requests. Message Play, Sections and the download icon share the swipe row in Lumiverse's bubble and minimal layouts. Sections open in a compact menu. The download icon appears only for a complete saved playback matching the selected swipe; unfinished, edited, expired or deleted audio stays hidden. It remains available when Play controls are hidden and is temporarily disabled while Choir is busy.
 
