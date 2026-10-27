@@ -163,7 +163,7 @@ try{
   await withDrawerControl(speedPage,'enableSfx',()=>speedPage.locator('[data-et="enableSfx"]').uncheck());await withDrawerControl(speedPage,'enableAmbience',()=>speedPage.locator('[data-et="enableAmbience"]').uncheck());
   await withDrawerControl(speedPage,'latest',()=>speedPage.locator('[data-et="latest"]').click());await speedPage.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Ready:'));
   await withDrawerControl(speedPage,'fixed',()=>speedPage.getByRole('button',{name:'Edit Mira',exact:true}).click());
-  await speedPage.getByRole('spinbutton',{name:'Mira speed value',exact:true}).fill('0.75');await speedPage.getByRole('spinbutton',{name:'Mira speed value',exact:true}).blur();
+  await speedPage.getByRole('button',{name:'Pronunciation & voice speed ›',exact:true}).click();await speedPage.getByRole('spinbutton',{name:'Mira speed value',exact:true}).fill('0.75');await speedPage.getByRole('spinbutton',{name:'Mira speed value',exact:true}).blur();
   if(process.env.CHOIR_CHARACTER_SPEED_SCREENSHOT)await speedPage.locator('.et-cast-row').filter({has:speedPage.locator('[aria-label="Mira speed"]')}).screenshot({path:process.env.CHOIR_CHARACTER_SPEED_SCREENSHOT});
   await withDrawerControl(speedPage,'voiceGapMsEntry',()=>speedPage.locator('[data-et="voiceGapMsEntry"]').fill('200'));await speedPage.locator('[data-et="voiceGapMsEntry"]').blur();
   await speedPage.evaluate(()=>{const OriginalAudio=window.Audio;window.Audio=function(url){const audio=new OriginalAudio(url);audio.addEventListener('playing',()=>audio.startedAt=performance.now());audio.addEventListener('ended',()=>audio.endedAt=performance.now());return audio;};});
@@ -237,12 +237,12 @@ try{
   assert.equal(await page.locator('.cm-auto-plan button:visible').evaluateAll(nodes=>new Set(nodes.map(node=>Math.round(node.getBoundingClientRect().top))).size),2,'Five default switches should use readable rows of three.');
   assert.equal(await autoPlanSwitch.getAttribute('aria-pressed'),'false');await autoPlanSwitch.click();assert.equal(await autoPlanSwitch.getAttribute('aria-pressed'),'true');
   await page.waitForFunction(()=>window.fixtureStore.get('chat:fixture').autoPlan===true);await autoPlanSwitch.click();assert.equal(await autoPlanSwitch.getAttribute('aria-pressed'),'false');
-  const autoPlaySwitch=page.getByRole('button',{name:'Auto-play new replies',exact:true}),autoPlaySetting=page.getByRole('checkbox',{name:'Auto-play new replies',exact:true});
+  const autoPlaySwitch=page.getByRole('button',{name:'Auto-play new replies',exact:true}),autoPlaySetting=page.locator('[data-et="auto"]');
   assert.equal(await autoPlaySwitch.innerText(),'Auto-play');assert.equal(await autoPlaySwitch.getAttribute('aria-pressed'),'false');
   await autoPlaySwitch.click();assert.equal(await autoPlaySetting.isChecked(),true);assert.equal(await autoPlaySwitch.getAttribute('aria-pressed'),'true');assert.equal(await autoPlanSwitch.getAttribute('aria-pressed'),'false');
   await page.waitForFunction(()=>window.fixtureStore.get('chat:fixture').auto===true);
   await autoPlaySwitch.press('Space');assert.equal(await autoPlaySetting.isChecked(),false);assert.equal(await autoPlaySwitch.getAttribute('aria-pressed'),'false');
-  await autoPlaySetting.check();assert.equal(await autoPlaySwitch.innerText(),'Auto-play');
+  await showDrawerControl(page,'auto');await autoPlaySetting.check();assert.equal(await autoPlaySwitch.innerText(),'Auto-play');
   if(process.env.CHOIR_AUTOMATION_SCREENSHOT)await page.locator('.cm-auto-plan').screenshot({path:process.env.CHOIR_AUTOMATION_SCREENSHOT});
   await autoPlaySetting.uncheck();assert.equal(await autoPlaySwitch.innerText(),'Auto-play');
   await page.waitForFunction(()=>window.fixtureStore.get('chat:fixture').auto===false);assert.equal(await page.evaluate(()=>window.calls.length),0);
@@ -314,7 +314,7 @@ try{
   assert.equal(await cast.locator('[data-choir-route]').evaluateAll(nodes=>nodes.every(node=>node.parentElement.hidden)),true);
   await withDrawerControl(page,'connectionMode',()=>page.locator('[data-et="connectionMode"]').selectOption('several',{force:true}));await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Several TTS restored'));
   assert.equal(await cast.locator('[data-choir-route]').nth(2).inputValue(),'native:b');
-  await withDrawerControl(page,'fixed',()=>cast.getByRole('button',{name:'Edit Narrator',exact:true}).click());await cast.getByLabel('Aliases (comma separated)',{exact:true}).first().fill('Gentle narration');
+  await withDrawerControl(page,'fixed',()=>cast.getByRole('button',{name:'Edit Narrator',exact:true}).click());await cast.getByRole('button',{name:'Pronunciation & voice speed ›',exact:true}).click();await cast.getByLabel('Aliases (comma separated)',{exact:true}).first().fill('Gentle narration');
   await page.waitForFunction(()=>document.querySelector('[data-et="saveState"]').textContent==='Saved automatically');
   assert.deepEqual(await page.evaluate(()=>window.fixtureStore.get('chat:fixture').fixed[0].aliases),['Gentle narration']);
   await page.evaluate(async()=>{window.cleanup();const config=window.fixtureStore.get('chat:fixture');for(let index=0;index<20;index++)config.fixed.push({speaker:index===0?'A character with a very long name that must fit without hiding controls':`Cast member ${index}`,voice:'n',style:''});window.cleanup=await window.mountChoir();});
@@ -421,7 +421,7 @@ try{
   await withDrawerControl(page,'fixed',()=>fishCard.getByRole('button',{name:'Edit Mira',exact:true}).click());
   await fishCard.locator('[data-choir-route]').selectOption('native:c');
   await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Speaker TTS connection selected'));
-  await fishCard.getByRole('button',{name:'Paste Fish Audio voice ID for Mira',exact:true}).click();
+  await fishCard.getByRole('button',{name:'Find a voice',exact:true}).click();await fishCard.getByRole('button',{name:'Paste Fish Audio voice ID for Mira',exact:true}).click();
   const voiceId='0123456789abcdef0123456789abcdef';await fishCard.getByRole('textbox',{name:'Fish Audio voice ID for Mira',exact:true}).fill(voiceId);
   await fishCard.getByRole('textbox',{name:'Voice description for Mira',exact:true}).fill('A warm Irish storyteller.');
   const synthesisBeforeId=await page.evaluate(()=>window.calls.length);await fishCard.getByRole('button',{name:'Use this voice',exact:true}).click();
@@ -430,12 +430,12 @@ try{
   await withDrawerControl(page,'fixed',()=>fishCard.getByRole('button',{name:'Edit Mira',exact:true}).click());await fishCard.locator('[data-choir-preview]').click();
   await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent==='Audition finished.');
   assert.deepEqual(await page.evaluate(()=>({voice:window.calls.at(-1).voice,connection:window.calls.at(-1).connectionId})),{voice:voiceId,connection:'c'});
-  await fishCard.getByRole('button',{name:'Paste Fish Audio voice ID for Mira',exact:true}).click();
+  await fishCard.getByRole('button',{name:'Find a voice',exact:true}).click();await fishCard.getByRole('button',{name:'Paste Fish Audio voice ID for Mira',exact:true}).click();
   await page.locator('main').evaluate(node=>node.style.width='280px');
   assert.equal(await fishCard.locator('[data-choir-voice-id-editor]').evaluate(node=>node.scrollWidth<=node.clientWidth+1),true);
   const fieldBounds=await fishCard.locator('[data-choir-voice-id-input]').boundingBox();const fishBounds=await fishCard.boundingBox();assert.ok(fieldBounds.x+fieldBounds.width<=fishBounds.x+fishBounds.width+1);
   if(process.env.CHOIR_VOICE_ID_SCREENSHOT)await fishCard.screenshot({path:process.env.CHOIR_VOICE_ID_SCREENSHOT});
-  const defaultSetup=page.locator('.et-section-header').filter({has:page.getByRole('heading',{name:'Cast',exact:true})});
+  await showDrawerControl(page,'captureDefaults');const defaultSetup=page.locator('.et-default-actions');
   const defaultStart=await page.evaluate(()=>({plans:window.plans,calls:window.calls.length,chunk:document.querySelector('[data-et="chunk"]').value}));
   await defaultSetup.getByRole('button',{name:'Set default',exact:true}).click();const defaultDialog=page.getByRole('dialog',{name:'Set default',exact:true});assert.equal(await defaultDialog.isVisible(),true);
   if(process.env.CHOIR_DEFAULT_SPEECH_SCREENSHOT)await defaultDialog.screenshot({path:process.env.CHOIR_DEFAULT_SPEECH_SCREENSHOT});
@@ -469,7 +469,7 @@ try{
   await page.evaluate(()=>window.cleanup());assert.equal(await page.locator('[data-choir-mixer]').count(),0);
   const touch=await browser.newPage({viewport:{width:320,height:640},isMobile:true,hasTouch:true});touch.on('pageerror',error=>errors.push(error.message));await touch.goto(`http://127.0.0.1:${server.address().port}`);await touch.waitForFunction(()=>window.ready);
   assert.equal(await touch.getByRole('spinbutton',{name:'Mira speed value',exact:true}).isVisible(),false);
-  await showDrawerControl(touch,'fixed');await touch.getByRole('button',{name:'Edit Mira',exact:true}).tap();assert.equal(await touch.getByRole('spinbutton',{name:'Mira speed value',exact:true}).isVisible(),true);
+  await showDrawerControl(touch,'fixed');await touch.getByRole('button',{name:'Edit Mira',exact:true}).tap();await touch.getByRole('button',{name:'Pronunciation & voice speed ›',exact:true}).tap();assert.equal(await touch.getByRole('spinbutton',{name:'Mira speed value',exact:true}).isVisible(),true);
   assert.equal(await touch.locator('.et-character-speed').evaluateAll(nodes=>nodes.every(node=>node.scrollWidth<=node.clientWidth+1)),true);
   if(process.env.CHOIR_CHARACTER_SPEED_MOBILE_SCREENSHOT)await touch.locator('.et-cast-row').filter({has:touch.locator('[aria-label="Mira speed"]')}).screenshot({path:process.env.CHOIR_CHARACTER_SPEED_MOBILE_SCREENSHOT});
   await touch.getByRole('button',{name:'Close Mira editor',exact:true}).tap();await touch.getByRole('button',{name:'Open Choir voice mixer',exact:true}).tap();

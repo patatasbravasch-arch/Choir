@@ -450,7 +450,7 @@ export function createSetupWizard(ctx, adapter) {
         const playback=element('div','',body);playback.className='cs-card';element('h3','Playback & saved audio',playback);
         check('Floating audio mixer',draft.enableMixer,playback,value=>{draft.enableMixer=value;},'Show playback, speed and volume controls over the chat. Adjust speed and volume there after setup.');
         check('Match passage loudness',draft.normalizeLoudness,playback,value=>{draft.normalizeLoudness=value;},'Reduce volume differences between generated speech passages.');
-        select('Audio retention for new recordings',[['session','This session only'],['1','1 day'],['7','7 days'],['30','30 days'],['forever','Indefinitely']],draft.retention,playback,value=>{draft.retention=value;},'Sets the default for new recordings. To change existing recordings in this chat, use Audio retention in Advanced Settings.');
+        select('Audio retention for new recordings',[['session','This session only'],['1','1 day'],['7','7 days'],['30','30 days'],['forever','Indefinitely']],draft.retention,playback,value=>{draft.retention=value;},'Sets the default for new recordings. To change existing recordings in this chat, use Audio retention in Saved.');
         const buffering=disclosure('Buffering and request limits',playback);
         element('p','Prefetch prepares speech ahead of playback. More requests can reduce gaps but increase provider load and generate unused audio. Fast playback can still catch up to a slow provider.',buffering).className='cs-hint';
         number('Prefetch passages','prefetch',0,4,buffering,'0 disables lookahead. For faster playback, try 2 with 2 concurrent requests. More lookahead may generate speech you do not finish.');

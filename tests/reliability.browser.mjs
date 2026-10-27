@@ -663,7 +663,7 @@ test('cast defaults contain only lead and NPC choices; cancel and navigation dis
  const h=await harness();try{
   const current=structuredClone(h.store.get('chat:chat-a')),get=()=>document.querySelector('[role="dialog"][aria-label="Set default"]'),button=name=>[...get().querySelectorAll('button')].find(item=>item.textContent===name);
   h.$('captureDefaults').click();assert.ok(get());assert.equal(get().querySelectorAll('[role="tab"]').length,2);assert.equal(get().querySelector('[data-default-field]'),null);
-  assert.equal(h.$('captureDefaults').closest('.et-section-header').querySelector('h3').textContent,'Cast');
+  assert.equal(h.$('captureDefaults').closest('[data-choir-panel]').dataset.choirPanel,'cast');
   assert.equal(h.$('captureNpcDefaults'),null);
   const voice=get().querySelector('[aria-label="Default {{char}} voice"]');voice.value='';voice.dispatchEvent(new h.dom.window.Event('change'));
   button('Voices').focus();get().dispatchEvent(new h.dom.window.KeyboardEvent('keydown',{key:'Tab',shiftKey:true,bubbles:true}));assert.equal(document.activeElement,button('Save default'));
@@ -1116,7 +1116,7 @@ test('legacy discovered characters keep their voice and pronunciation in the uni
   saved.casts['native:a'].push(mira);saved.cardCastNPCs=['mira'];h.store.set('chat:chat-a',saved);await h.reload();
   assert.equal(h.$('fixed').children.length,2);assert.match(h.$('npcs').textContent,/Mira/);
   assert.equal(document.querySelector('[aria-label="Move Mira to NPC cast"]'),null);
-  assert.deepEqual([...document.querySelectorAll('.et-section-header h3')].filter(node=>/Cast/.test(node.textContent)).map(node=>node.textContent),['Cast']);
+  assert.equal(document.querySelectorAll('[data-choir-panel="cast"] .et-section-header h3').length,1);assert.equal(document.querySelector('[data-choir-panel="cast"] h3').textContent,'In this reply');
   await h.plan();await h.reload();
   const actor=h.store.get('chat:chat-a').casts['native:a'].find(actor=>actor.speaker==='Mira');
   assert.equal(actor.voice,'m');assert.equal(actor.sayAs,'Mee Rah');assert.match(h.$('npcs').textContent,/Mira/);
@@ -2678,7 +2678,7 @@ test('host remount replaces the previous mixer and cancels its playback',async()
 test('latest planned notice invites an explicit redo without discarding cached audio',async()=>{
   const h=await harness();try{
     assert.equal(h.$('latestNotice').hidden,true);await h.plan();await h.play();
-    assert.equal(h.$('latestNotice').hidden,false);assert.equal(h.$('latestNotice').textContent,'Already planned. Plan latest again to redo it.');
+    assert.equal(h.$('latestNotice').hidden,false);assert.equal(h.$('latestNotice').textContent,'Planned');assert.match(h.$('latestNotice').title,/Plan latest again/);
     const before=h.synthesis.length;await h.plan();assert.equal(h.requests.filter(r=>r.action==='plan').length,2);await h.play();assert.equal(h.synthesis.length,before);
     await h.reload();assert.equal(h.$('latestNotice').hidden,false);await h.plan();assert.equal(h.requests.filter(r=>r.action==='plan').length,3);
     h.store.set('activeplan:chat-a','another-message');await h.reload();await until(()=>!h.$('latestNotice').hidden);

@@ -94,7 +94,7 @@ try{
   assert.equal(await page.evaluate(()=>window.fixtureStore.get('settings:global').ignoredTags),'.tracker');assert.equal(await page.evaluate(()=>window.calls.length),0);
   assert.equal(await page.evaluate(()=>window.fixtureStore.get('settings:global').prefetch),2);assert.equal(await page.evaluate(()=>window.fixtureStore.get('settings:global').concurrency),2);
   assert.equal(await page.evaluate(()=>window.fixtureStore.get('settings:global').retention),'7');assert.equal(await page.evaluate(()=>window.fixtureStore.get('settings:captured-defaults').leadVoices[0].gender),'female');
-  await withDrawerControl(page,'fixed',()=>page.getByRole('button',{name:'Edit Eliza',exact:true}).click());const spelling=page.locator('[data-et="fixed"] [data-choir-say-as]').nth(2);await spelling.fill('Eh-Lee-Zah');
+  await withDrawerControl(page,'fixed',()=>page.getByRole('button',{name:'Edit Eliza',exact:true}).click());await page.getByRole('button',{name:'Pronunciation & voice speed ›',exact:true}).click();const spelling=page.locator('[data-et="fixed"] [data-choir-say-as]').nth(2);await spelling.fill('Eh-Lee-Zah');
   await page.waitForFunction(()=>document.querySelector('[data-et="saveState"]').textContent==='Saved automatically');
   await page.getByRole('button',{name:'Test pronunciation of Eliza',exact:true}).click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent==='Audition finished.');
   assert.match(await page.evaluate(()=>window.calls[0].text),/Eh-Lee-Zah opened the door/);
@@ -114,7 +114,7 @@ try{
   await rich.getByRole('button',{name:'Skip for now',exact:true}).click();
   await withDrawerControl(rich,'fixed',()=>rich.getByRole('button',{name:'Edit Richter Vane (Callsign: Grim)',exact:true}).click());
   const richRow=rich.locator('[data-et="fixed"] .et-card').nth(2);
-  await richRow.locator('[data-choir-say-as]').fill('Rish-ter');await richRow.getByLabel('Name spelling to pronounce',{exact:true}).selectOption('Richter');
+  await richRow.getByRole('button',{name:'Pronunciation & voice speed ›',exact:true}).click();await richRow.locator('[data-choir-say-as]').fill('Rish-ter');await richRow.getByLabel('Name spelling to pronounce',{exact:true}).selectOption('Richter');
   await rich.waitForFunction(()=>document.querySelector('[data-et="saveState"]').textContent==='Saved automatically');
   assert.equal(await rich.evaluate(()=>window.fixtureStore.get('chat:fixture').fixed[2].sayAsName),'Richter');
   await richRow.getByRole('button',{name:'Test pronunciation of Richter Vane (Callsign: Grim)',exact:true}).click();

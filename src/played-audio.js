@@ -57,3 +57,23 @@ export function playedAudioFilename(character,chatId,messageIndex){
   const chat=String(chatId).replace(/[<>:"/\\|?*\x00-\x1f\[\]]/g,'_').slice(0,100);
   return `Choir - ${initials} - ${chat} - ${String(messageIndex+1).padStart(3,'0')}.wav`;
 }
+
+// Store WAVs without recompression or third-party code. Parts remain separate
+// until the browser writes the ZIP; the cap bounds a bulk export's memory use.
+export function createWavArchive(entries,{maxBytes=256*1024*1024}={}){
+  if(!entries.length || entries.length>65535)throw new Error('Choose between 1 and 65535 completed recordings.');
+  const table=Array.from({length:256},(_,n)=>{let crc=n;for(let bit=0;bit<8;bit++)crc=crc&1?0xedb88320^(crc>>>1):crc>>>1;return crc>>>0;});
+  const parts=[],central=[],names=new Set();let offset=0,total=0;
+  for(const {filename,bytes} of entries){
+    if(!filename || /[\\/\x00-\x1f]/u.test(filename) || names.has(filename))throw new Error('Archive recording names must be unique filenames.');
+    names.add(filename);const name=new TextEncoder().encode(filename),data=bytes instanceof Uint8Array?bytes:new Uint8Array(bytes);
+    if(name.length>65535)throw new Error('A recording filename is too long.');
+    total+=data.byteLength+name.length*2+76;if(total+22>maxBytes)throw new Error('These recordings exceed the 256 MB ZIP limit. Download messages individually.');
+    let crc=0xffffffff;for(const byte of data)crc=table[(crc^byte)&255]^(crc>>>8);crc=(crc^0xffffffff)>>>0;
+    const header=new Uint8Array(30),view=new DataView(header.buffer);view.setUint32(0,0x04034b50,true);view.setUint16(4,20,true);view.setUint16(6,0x800,true);view.setUint16(12,33,true);view.setUint32(14,crc,true);view.setUint32(18,data.byteLength,true);view.setUint32(22,data.byteLength,true);view.setUint16(26,name.length,true);
+    const directory=new Uint8Array(46),index=new DataView(directory.buffer);index.setUint32(0,0x02014b50,true);index.setUint16(4,20,true);index.setUint16(6,20,true);index.setUint16(8,0x800,true);index.setUint16(14,33,true);index.setUint32(16,crc,true);index.setUint32(20,data.byteLength,true);index.setUint32(24,data.byteLength,true);index.setUint16(28,name.length,true);index.setUint32(42,offset,true);
+    parts.push(header,name,data);central.push(directory,name);offset+=header.length+name.length+data.length;
+  }
+  const size=central.reduce((sum,part)=>sum+part.length,0),end=new Uint8Array(22),view=new DataView(end.buffer);view.setUint32(0,0x06054b50,true);view.setUint16(8,entries.length,true);view.setUint16(10,entries.length,true);view.setUint32(12,size,true);view.setUint32(16,offset,true);
+  return new Blob([...parts,...central,end],{type:'application/zip'});
+}

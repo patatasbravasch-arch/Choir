@@ -15,22 +15,22 @@ try{
   const page=await browser.newPage({viewport:mobile?{width:320,height:800}:{width:1440,height:1050},isMobile:mobile,hasTouch:mobile});page.on('pageerror',error=>errors.push(error.message));
   await page.goto(`http://127.0.0.1:${server.address().port}/`);await page.waitForFunction(()=>window.ready);
   const tab=name=>page.getByRole('tab',{name,exact:true});
-  assert.equal(await tab('Play').getAttribute('aria-selected'),'true');
-  await tab('Play').press('ArrowRight');assert.equal(await tab('Cast').getAttribute('aria-selected'),'true');assert.equal(await tab('Cast').evaluate(n=>n===document.activeElement),true);
+  assert.equal(await tab('Cast').getAttribute('aria-selected'),'true');
+  await tab('Cast').press('ArrowRight');assert.equal(await tab('Sound').getAttribute('aria-selected'),'true');assert.equal(await tab('Sound').evaluate(n=>n===document.activeElement),true);await tab('Cast').click();
   assert.equal(await page.locator('[data-et="fixed"]').isVisible(),true);
-  await tab('Cast').press('End');assert.equal(await tab('Settings').getAttribute('aria-selected'),'true');
+  await tab('Cast').press('End');assert.equal(await tab('Setup').getAttribute('aria-selected'),'true');
   assert.equal(await page.getByRole('button',{name:'Set up Choir',exact:true}).isVisible(),true);
-  await page.getByRole('button',{name:'Customize mixer',exact:true}).click();
+  await tab('Sound').click();await page.getByRole('button',{name:'Customize mixer',exact:true}).click();
   await page.getByRole('combobox',{name:'Mixer buttons per row',exact:true}).selectOption('2');
   await page.getByRole('checkbox',{name:'Show Follow narration',exact:true}).check();
   await page.getByRole('checkbox',{name:'Show Message controls',exact:true}).check();
   await page.waitForFunction(()=>window.fixtureStore.get('ui:mixer')?.quickButtonColumns===2);
-  await page.getByRole('button',{name:'Done',exact:true}).click();await tab('Play').click();await page.locator('[data-et="showMixer"]').click();
+  await page.getByRole('button',{name:'Back to sound',exact:true}).click();await tab('Sound').click();await page.locator('[data-et="showMixer"]').click();
   const positions=await page.locator('.cm-auto-plan button:visible').evaluateAll(nodes=>nodes.map(n=>({x:n.getBoundingClientRect().x,y:n.getBoundingClientRect().y,w:n.getBoundingClientRect().width,h:n.getBoundingClientRect().height})));
   assert.equal(positions[0].y,positions[1].y);assert.ok(positions[2].y>positions[0].y);assert.ok(positions.every(p=>p.w>=44 && p.h>=(mobile?44:30)));
   assert.equal(await page.locator('[data-choir-mixer]').evaluate(n=>n.scrollWidth<=n.clientWidth+1),true);
   if(shots)await page.screenshot({path:path.join(shots,`ui-cleanup-${mobile?'mobile':'desktop'}-play.png`)});
-  await tab('Recordings').click();assert.equal(await page.locator('[data-et="retention"]').isVisible(),true);assert.equal(await page.locator('[data-et="deleteChatAudio"]').isVisible(),true);
+  await page.getByRole('button',{name:'Collapse Choir voice mixer',exact:true}).click();await tab('Saved').click();assert.equal(await page.locator('[data-et="retention"]').isVisible(),true);assert.equal(await page.locator('[data-et="deleteChatAudio"]').isVisible(),true);
   await page.evaluate(async()=>{
    window.cleanup();const config=window.fixtureStore.get('chat:fixture');config.batchSpeech=false;config.fixed[0]={speaker:'Narrator',voice:'Charon',style:'Measured narration',accent:'Irish'};config.fixed[2]={speaker:'Mira',voice:'fish-voice',route:'native:b',style:'whispering',accent:'Irish'};window.fixtureStore.set('chat:fixture',config);
    const original=window.fetch;window.fetch=async(url,options)=>{
@@ -43,16 +43,16 @@ try{
   const narrator=page.locator('.et-cast-row').filter({has:page.locator('strong').filter({hasText:/^Narrator$/})});
   assert.equal(await narrator.locator('[data-choir-delivery-mode]').inputValue(),'base');
   if(shots)await page.screenshot({path:path.join(shots,`ui-cleanup-${mobile?'mobile':'desktop'}-cast.png`)});
-  await tab('Play').click();await page.locator('[data-et="latest"]').click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Ready:'));
+  await tab('Sound').click();await page.locator('[data-et="latest"]').click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Ready:'));
   await page.locator('[data-et="showMixer"]').click();await page.locator('[data-choir-action="playback"]').click();
   await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.includes('Playback finished'),{timeout:20000});
   const calls=await page.evaluate(()=>window.calls),gemini=calls.find(c=>c.connectionId==='a'),fish=calls.find(c=>c.connectionId==='b');
   assert.ok(gemini && fish,JSON.stringify(calls));assert.equal(gemini.parameters.speech_style,'Measured narration. Accent: Irish');assert.equal(fish.parameters.voice_direction,'whispering. Accent: Irish');assert.ok(!fish.text.includes('[cheerful]'));assert.ok(!gemini.text.includes('Accent:'));
-  await tab('Settings').click();await page.getByRole('button',{name:'Customize mixer',exact:true}).click();assert.equal(await page.getByRole('combobox',{name:'Mixer buttons per row',exact:true}).inputValue(),'2');
+  await page.getByRole('button',{name:'Collapse Choir voice mixer',exact:true}).click();await tab('Setup').click();await tab('Sound').click();await page.getByRole('button',{name:'Customize mixer',exact:true}).click();assert.equal(await page.getByRole('combobox',{name:'Mixer buttons per row',exact:true}).inputValue(),'2');
   await page.getByRole('button',{name:'Reset mixer layout',exact:true}).click();await page.waitForFunction(()=>window.fixtureStore.get('ui:mixer')?.quickButtonColumns===0);
   const before=await page.evaluate(()=>window.calls.length);
   await page.evaluate(async()=>{window.cleanup();const config=window.fixtureStore.get('chat:fixture');config.batchSpeech=true;config.fixed[0].accent='Scottish';config.fixed[2].route='';config.fixed[2].voice='Kore';window.fixtureStore.set('chat:fixture',config);window.cleanup=await window.mountChoir();});
-  await tab('Settings').click();await page.locator('[data-et="batchSpeech"]').check();await page.waitForFunction(()=>window.fixtureStore.get('settings:global')?.batchSpeech===true);await tab('Play').click();
+  await tab('Setup').click();await page.locator('[data-et="batchSpeech"]').check();await page.waitForFunction(()=>window.fixtureStore.get('settings:global')?.batchSpeech===true);await tab('Sound').click();
   await page.locator('[data-et="latest"]').click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Ready:'));
   await page.locator('[data-et="drawerPlay"]').click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.includes('Playback finished'));
   const grouped=await page.evaluate(before=>window.calls.slice(before),before);assert.equal(grouped.length,1,JSON.stringify({grouped,settings:await page.evaluate(()=>({saved:window.fixtureStore.get('chat:fixture'),checked:document.querySelector('[data-et="batchSpeech"]').checked,mixer:window.fixtureStore.get('ui:mixer')}))}));assert.equal(grouped[0].parameters.turns.length,3);

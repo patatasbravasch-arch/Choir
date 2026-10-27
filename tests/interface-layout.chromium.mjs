@@ -31,7 +31,7 @@ try{
       window.cleanup=await window.mountChoir();
     });
     await withDrawerControl(page,'latest',()=>page.locator('[data-et="latest"]').click());await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Ready:'));
-    await showDrawerControl(page,'otherCast');assert.equal(await page.locator('[data-et="otherCast"]').isVisible(),true);
+    await page.locator('[data-choir-tab="cast"]').click();assert.equal(await page.locator('[data-et="otherCast"]').isVisible(),true);
     assert.equal(await page.locator('[data-et="otherCast"]').evaluate(node=>node.open),false);
     assert.equal(await page.locator('[data-et="otherCastRows"] strong').filter({hasText:/^Kova$/}).count(),1);
     await page.locator('[data-choir-tab="settings"]').click();

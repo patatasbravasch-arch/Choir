@@ -1,19 +1,23 @@
-# UI-CLEANUP preview
+# Choir drawer
 
-Version: **1.1.6-staging.41**. Branch: **UI-CLEANUP**. Based on staging `bc38705`.
+Version: **1.1.6-staging.42**. Branch: **lunch-test**.
 
 ## Using the drawer
 
 | Tab | What belongs here |
 | --- | --- |
-| Play | Play/pause/resume the latest reply, plan it again, open the mixer, sound switches, speed, voice gaps and reading follow/highlights. The speech plan stays here. |
-| Cast | Character voices, accents, base delivery and automatic casting. Absent characters keep their voices in Other characters. |
-| Recordings | Saved messages, Replay, Download, retention and clearing saved chat audio. |
-| Settings | Setup wizard, connections, planner, mixer customization, filtering and request/buffering settings. |
+| Cast | Compact character rows. Edit opens one voice page with connection, voice, accent and delivery. Pronunciation and individual speed have a secondary page. Absent characters retain their settings under Other characters. |
+| Sound | Music, ambience, effects, reading, playback speed/gaps and Customize mixer. |
+| Saved | Recent message recordings, Replay, per-message download, Download all, retention and clearing chat audio. |
+| Setup | Setup wizard, connections, planner and auto-plan/auto-play. Advanced settings holds buffering, filtering and cast import/export. |
 
-The setup wizard remains available under **Settings → Set up Choir**. Status, errors and an active Stop control stay visible across tabs. Tab navigation supports arrow keys, Home and End. Automatic casting, storage and ordinary settings no longer require opening their own nested disclosure. Large speech-plan/JSON views and absent characters still collapse where useful.
+Play/pause/resume, Plan latest and Open mixer stay available above every tab. A download icon appears there when the latest reply has a complete saved playback. Errors and Stop remain accessible. Tabs support arrow keys, Home and End.
 
-**Settings → Customize mixer** keeps control visibility and ordering, and adds **Buttons per row** (Automatic or 1–7). The mixer grows for wider rows on desktop; on narrow screens buttons wrap earlier to remain usable. Preview mixer opens it without leaving Settings. Choices persist on this device separately from the chat cast. Reset layout preserves levels, speeds and gaps. This uses CSS layout and event handlers; it adds no polling or recurring animation.
+**Sound → Customize mixer** controls visibility, quick-button order and **Buttons per row** (Automatic or 1–7). Follow narration, Message controls and Channel levels remain optional. Hidden controls keep their settings. Reset mixer layout preserves audio levels, limits, speeds and gaps. **Volume limits** sets ceilings for Master (1–100%) and Voices, Music, Ambience and Sound effects (1–300%). Lowering a ceiling immediately clamps higher levels and slider/number maxima. Preferences persist on this device, separately from chat casting. These controls add no polling or audio-processing loop.
+
+**Saved → Download all** creates one ZIP containing a separate WAV for each complete saved playback in the current chat, including recordings older than the recent-message list. It reuses recorded mixes without new speech synthesis. Partial, expired, deleted or edited recordings are skipped. Each WAV retains the sounds, speed and mixer levels heard during that playback and uses `Choir - initials - chat ID - 001.wav` naming. The ZIP is limited to 256 MB; individual WAVs retain their 128 MB limit. Existing recordings without a mixed playback need one complete replay first.
+
+**Setup → Set up Choir** reopens the existing wizard. It also opens automatically on a fresh installation; completed or deliberately skipped setup does not reopen on every load. No additional collapse layers are used for ordinary settings. Only absent characters, large plan/JSON views and secondary tasks leave the main page.
 
 ## Accents and delivery
 
@@ -59,8 +63,6 @@ Recommended sequence: named presets first, then host-backed Fish creation, then 
 
 ## Validation
 
-Automated coverage includes delivery routing, narrator defaults, disabled acting with retained accents, legacy model syntax, multilingual request budgets, keyboard tab navigation, mixer row layout/persistence/reset and mixed-provider requests. Existing playback, download, retention, casting, setup and settings-merge checks are also run. Browser audio checks use synthetic audio, so they verify requests, timing and files rather than making a claim about how convincing a provider's Irish accent sounds.
+Unit and browser coverage checks delivery routing, narrator defaults, retained accents, ZIP bytes/CRC/directory offsets and volume-limit normalization. Real Chromium checks use synthetic audio to verify compact desktop/touch pages, saved casting and layout preferences, live limits, current-chat bulk export, mixed WAV samples, partial/expired recording exclusion, setup, cancellation and retention. They do not evaluate the perceived quality of a provider's accent.
 
-Validation completed with **561 automated checks passing** and **all 11 Chromium test programs passing**, including desktop/touch layouts, setup, playback, download and retention. The new browser coverage checks mixed Fish/Gemini requests and separate Gemini turn accents in a grouped request. Scene levels remain scrollable when additional button rows use the available height.
-
-The branch was also installed through the real local Lumiverse extension manager. Drawer navigation, the setup wizard, narrator delivery defaults, accent editing and mixer layout persistence were checked there. Live provider audio quality was not evaluated. Screenshots and the detailed local-installation report accompany the task.
+Validation covers 561 existing automated checks, three new archive/limit checks and all 12 Chromium programs. Updated UI assertions and the 34 mixer/setup regressions passed on rerun. The desktop/touch archive check also verifies an older recording outside the recent-message list and excludes edited audio without new TTS calls.

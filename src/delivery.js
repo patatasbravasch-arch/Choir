@@ -41,3 +41,10 @@ export function normalizeMixerColumns(value) {
   const number = Number(value);
   return Number.isInteger(number) && number >= 1 && number <= 7 ? number : 0;
 }
+
+export function normalizeMixerVolumeLimits(value={}) {
+  return Object.fromEntries(['master','voices','music','ambience','sfx'].map(key=>{
+    const maximum=key==='master'?1:3,number=Number(value?.[key]);
+    return [key,Number.isFinite(number)&&number>0?Math.max(.01,Math.min(maximum,Math.round(number*100)/100)):maximum];
+  }));
+}
