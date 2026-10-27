@@ -1316,7 +1316,7 @@ export async function setup(ctx) {
     const slider=document.createElement('input');slider.type='range';slider.min='0';slider.max='0';slider.step='0.1';slider.value='0';slider.disabled=true;slider.setAttribute('aria-label','Seek in current spoken block');
     const time=document.createElement('span');root.append(slider,time);
     const control={root,slider,time,messageId};seekControls.add(control);
-    slider.oninput=()=>{const audio=currentAudio;if(disposed || root.hidden || slider.disabled || !audio || !activePlayback || (messageId && messageId!==activePlayback.messageId) || !Number.isFinite(audio.duration))return;audio.currentTime=Math.max(0,Math.min(Number(slider.value),Math.max(0,audio.duration-0.05)));savePosition(audio.currentTime);updateSeekControls();};
+    slider.oninput=()=>{const audio=currentAudio;if(disposed || root.hidden || slider.disabled || !audio || !activePlayback || (messageId && messageId!==activePlayback.messageId) || !Number.isFinite(audio.duration))return;const seconds=Math.max(0,Math.min(Number(slider.value),Math.max(0,audio.duration-0.05)));if(Math.abs(seconds-audio.currentTime)>0.05)playedCapture?.markDiscontinuous();audio.currentTime=seconds;savePosition(audio.currentTime);updateSeekControls();};
     return control;
   }
   function updateSeekControls(){
@@ -2956,7 +2956,9 @@ export async function setup(ctx) {
     const text=(value,limit)=>typeof value==='string'?value.trim().slice(0,limit):'';
     activeCardKey=await cardFingerprint(character);
     const roles=rolesForCard(character);
-    const profiles=roles.length?roles.map(role=>[cast.fixed.find(actor=>[actor.speaker,...(actor.aliases || [])].some(name=>[role.name,...(role.aliases || [])].some(other=>normalizeName(name)===normalizeName(other))))?.speaker || role.name,{...character,name:role.name,description:role.description},'character']):[[cast.fixed[2]?.speaker,character,'character']];
+    // A shared personality/scenario describes several people. Only single-role
+    // cards can safely attach those fields to one speaker's voice profile.
+    const profiles=roles.length?roles.map(role=>[cast.fixed.find(actor=>[actor.speaker,...(actor.aliases || [])].some(name=>[role.name,...(role.aliases || [])].some(other=>normalizeName(name)===normalizeName(other))))?.speaker || role.name,{...(roles.length===1?character:{}),name:role.name,description:role.description},'character']):[[cast.fixed[2]?.speaker,character,'character']];
     return [...profiles,[cast.fixed[1]?.speaker,persona,'persona']].flatMap(([speaker,profile,role])=>!speaker || !profile?[]:[{
       speaker,name:text(profile.name,100),role,description:text(profile.description,8000),personality:text(profile.personality,2000),
       // Scenario cards often leave the description empty and introduce their characters in the scenario and greeting.
@@ -3239,8 +3241,9 @@ export async function setup(ctx) {
   }
   function beginPlayedAudio(){
     try{const output=playbackOutput();if(output){playedCapture=createPlayedAudioCapture(audioContext,output);syncPlayedAudio();return playedCapture;}}catch{}
-    return playedCapture={start(){},pause(){},fail(){},discard(){},finish:async()=>({error:'This browser cannot save the played audio mix.'})};
+    return playedCapture={continuous:false,markDiscontinuous(){},start(){},pause(){},fail(){},discard(){},finish:async()=>({error:'This browser cannot save the played audio mix.'})};
   }
+  const playedAudioHint=played=>played?.blob && played.complete===false?' This playback was skipped or seeked. Play the message from the start without navigation to save a complete WAV; saved speech will be reused.':'';
   function prepareLoudness(blob){
     if(!loudnessMeasurements.has(blob))loudnessMeasurements.set(blob,(async()=>{
       const AudioContextClass=globalThis.AudioContext || globalThis.webkitAudioContext;
@@ -3549,6 +3552,7 @@ export async function setup(ctx) {
     const blockStart=(index)=>{const passage=segments[index]?.passageIndex ?? index;while(index>0 && (segments[index-1].passageIndex ?? index-1)===passage)index--;return index;};
     advancePlayback=(direction=1)=>{
       if(ctrl.signal.aborted || token!==revision || !skipAudio || !activePlayback)return;
+      mix?.markDiscontinuous();
       const passage=segments[playIdx]?.passageIndex ?? playIdx;let next=playIdx+1;
       while(next<segments.length && (segments[next].passageIndex ?? next)===passage)next++;
       for(let index=playIdx;index<next;index++)skipped.add(index);
@@ -3750,7 +3754,7 @@ export async function setup(ctx) {
       const playedAudio=await mix?.finish();if(playedCapture===mix)playedCapture=null;
       // A carried music load can save its cache after foreground playback
       // finishes. That late write must retain the newly completed mix.
-      if(playedAudio)savedPlayedAudio={...playedAudio,content:source.content,complete:fullMessage};
+      if(playedAudio)savedPlayedAudio={...playedAudio,content:source.content,complete:fullMessage && mix.continuous};
       await waitForSaves();
       if(saveError)status(`Audio could not be saved: ${saveError}`,true);
       return {blobs,segments,warnings:[...warnings],passages,passageKeys:savedPassageKeys(),playedAudio:playedAudio?savedPlayedAudio:null,recordingMetadata};
@@ -3837,7 +3841,7 @@ export async function setup(ctx) {
         try{const partial=await recordingStore('get',key);await recordingStore('put',key,{...partial,...recordingMetadata,content:source.content,transcript:source.transcript,signature,fullMessage:fullPlayback,segments,blobs,passages,passageKeys,resumedPlayback:Boolean(source.resume),playedAudio:playedAudio?{...playedAudio,content:source.content}:partial?.playedAudio,speechTexts:segments.map(segment=>recordingSpeechText(segment,snapshot)),sfxPlacement:SFX_PLACEMENT_VERSION,retention:snapshot.retention});storageError='';}
         catch(error){storageError=error.message;}
       }
-      if(token===revision){renderMessages();status((storageError?`Playback finished. Audio could not be saved: ${storageError}`:snapshot.retention==='session'?'Playback finished. Audio kept for this session; Replay is available beside the message.':'Playback finished. Audio saved on this device; Replay is available beside the message.')+(source.resume && !playedAudio?' This playback was resumed. Use Replay beside the message to play from the start and save a complete WAV; saved speech will be reused.':'')+foleyWarning(warnings));}
+      if(token===revision){renderMessages();status((storageError?`Playback finished. Audio could not be saved: ${storageError}`:snapshot.retention==='session'?'Playback finished. Audio kept for this session; Replay is available beside the message.':'Playback finished. Audio saved on this device; Replay is available beside the message.')+(source.resume && !playedAudio?' This playback was resumed. Use Replay beside the message to play from the start and save a complete WAV; saved speech will be reused.':'')+playedAudioHint(playedAudio)+foleyWarning(warnings));}
     } finally {ctrl.abort();if(token===revision){playedCapture?.discard();playedCapture=null;}void refreshCacheStatus();if(token===revision){activePlayback=null;advancePlayback=null;generationPolicyChanged=null;updateNextControls();controller=null;setBusy(false);}}
   }
   async function replayRecording(messageId) {
@@ -3875,7 +3879,7 @@ export async function setup(ctx) {
         const {warnings,playedAudio}=await player.playbackPromise;
         if(token!==revision || ctrl.signal.aborted)throw abortError();
         if(playedAudio){const saved=await recordingStore('get',recordingKey(targetChat,messageId));await recordingStore('put',recordingKey(targetChat,messageId),{...saved,playedAudio:{...playedAudio,content:recording.content}});}
-        if(token===revision)status('Playback finished. Name pronunciation updated.'+foleyWarning(warnings));
+        if(token===revision)status('Playback finished. Name pronunciation updated.'+playedAudioHint(playedAudio)+foleyWarning(warnings));
         return;
       }
       // Recover old sparse indexes from the exact saved passage cache before
@@ -3901,7 +3905,7 @@ export async function setup(ctx) {
         status(`Replaying ${audioProgress(recording.segments,index)}: ${recording.segments[index].speaker}`);
         const segment=recording.segments[index];
         let nextIndex=index+1;
-        advancePlayback=(direction=1)=>{if(!skipAudio || ctrl.signal.aborted || token!==revision)return;const passage=segment.passageIndex ?? index;if(direction<0){let start=index;while(start>0 && (recording.segments[start-1].passageIndex ?? start-1)===passage)start--;nextIndex=Math.max(0,start-1);const previous=recording.segments[nextIndex].passageIndex ?? nextIndex;while(nextIndex>0 && (recording.segments[nextIndex-1].passageIndex ?? nextIndex-1)===previous)nextIndex--;}else while(nextIndex<recording.segments.length && (recording.segments[nextIndex].passageIndex ?? nextIndex)===passage)nextIndex++;pauseNext=heldPaused();skipAudio();};
+        advancePlayback=(direction=1)=>{if(!skipAudio || ctrl.signal.aborted || token!==revision)return;mix?.markDiscontinuous();const passage=segment.passageIndex ?? index;if(direction<0){let start=index;while(start>0 && (recording.segments[start-1].passageIndex ?? start-1)===passage)start--;nextIndex=Math.max(0,start-1);const previous=recording.segments[nextIndex].passageIndex ?? nextIndex;while(nextIndex>0 && (recording.segments[nextIndex-1].passageIndex ?? nextIndex-1)===previous)nextIndex--;}else while(nextIndex<recording.segments.length && (recording.segments[nextIndex].passageIndex ?? nextIndex)===passage)nextIndex++;pauseNext=heldPaused();skipAudio();};
         activePlayback={chatId:targetChat,messageId,content:recording.content,passage:segment.passageIndex ?? index,chunk:segment.chunkIndex ?? 0};
         for(const kind in beds){const marker=bedIndex(recording.segments,index,kind),bedBlob=bedEnabled(kind) && recording.blobs[marker];const entry=recording.segments[marker]?.[kind];followBed(entry?.stop?entry:bedBlob && entry,async()=>bedBlob,kind);}
         const paused=pauseNext;pauseNext=false;await playBlob(blob,ctrl.signal,recording.segments[index].speaker,0,config.normalizeLoudness,paused,{messageId,items:recording.segments,index,gapMs:gapBefore(recording.segments,index)});
@@ -3909,8 +3913,8 @@ export async function setup(ctx) {
       }
       const playedAudio=await mix?.finish();if(playedCapture===mix)playedCapture=null;
       if(token!==revision || ctrl.signal.aborted)throw abortError();
-      if(playedAudio)await recordingStore('put',recordingKey(targetChat,messageId),{...recording,playedAudio:{...playedAudio,content:recording.content,complete:wholeMessage}});
-      if(token===revision)status('Replay finished.');
+      if(playedAudio)await recordingStore('put',recordingKey(targetChat,messageId),{...recording,playedAudio:{...playedAudio,content:recording.content,complete:wholeMessage && mix.continuous}});
+      if(token===revision)status('Replay finished.'+playedAudioHint(playedAudio?{...playedAudio,complete:wholeMessage && mix.continuous}:null));
     } finally {if(token===revision){playedCapture?.discard();playedCapture=null;fadeOutBeds();activePlayback=null;advancePlayback=null;generationPolicyChanged=null;updateNextControls();controller=null;setBusy(false);}}
   }
   function recordingSpeechMissing(recording,snapshot,respectExclusions=true){

@@ -31,6 +31,13 @@ test('Stop discards a played mix and delayed recorder events cannot turn it into
  await new Promise(resolve=>setTimeout(resolve,0));assert.equal(h.connections.size,0);assert.equal(await capture.finish(),null);
 });
 
+test('navigation permanently marks only the current mix discontinuous while ordinary pause and resume stay continuous',async()=>{
+ const h=fixture(),capture=createPlayedAudioCapture(h.context,h.output,{Recorder:h.Recorder});
+ capture.start();capture.pause();capture.start();assert.equal(capture.continuous,true);
+ capture.markDiscontinuous();capture.pause();capture.start();await capture.finish();assert.equal(capture.continuous,false);
+ const next=createPlayedAudioCapture(h.context,h.output,{Recorder:h.Recorder});assert.equal(next.continuous,true);next.discard();
+});
+
 test('pausing a played mix excludes inactive time, resumes the same recording and can finish while paused',async()=>{
  const h=fixture(),capture=createPlayedAudioCapture(h.context,h.output,{Recorder:h.Recorder});
  capture.pause();capture.start();const recorder=h.recorder;h.context.currentTime=6;capture.pause();capture.pause();

@@ -129,12 +129,25 @@ export async function planWithJev({ transcript, config, apiKey, endpoint, contex
   const cast = jevSpeakerCast(config);
   const choices = cast.length ? [...cast, { name: UNLISTED_SPEAKER, description: 'A speaker who matches none of the other choices, their names or descriptions.' }, NOT_SPOKEN_CHOICE] : [];
 
-  const chosen = new Map(), used = new Set(allCast.map(actor => actor.voice).filter(Boolean));
+  const chosen = new Map(), catalogueVoices = new Map(), used = new Set(allCast.map(actor => actor.voice).filter(Boolean));
   const decisionInput = { decisionConnection: decisionConnection || config.decisionConnection, connectionId:connectionId || config.planner, jevApiKey: key, jevEndpoint: ep };
+  const canSearchCommunity=(actor,npc)=>Boolean(config.communityRoutes?.[actor.route || config.defaultRoute || ''] && (!npc || !config.npcPolicy || config.npcPolicy.mode==='llm'));
+  const catalogueFor=(actor,npc)=>config.voices.filter(voice=>(voice.route || '')===(actor.route || config.defaultRoute || '') && (!npc || config.npcPolicy?.mode!=='preferred' || config.npcPolicy.voices.includes(voice.id)));
+  const catalogueVoice=(actor,npc)=>{
+    const route=actor.route || config.defaultRoute || '',identity=JSON.stringify([normalizeName(actor.speaker),route]);
+    if(catalogueVoices.has(identity))return catalogueVoices.get(identity);
+    if(config.communityRoutes?.[route]==='community' && canSearchCommunity(actor,npc))return '';
+    const available=catalogueFor(actor,npc),pool=available.filter(voice=>!actor.gender || actor.gender==='auto' || !voice.gender || voice.gender===actor.gender);
+    if(!pool.length && available.length && !canSearchCommunity(actor,npc))throw new Error(`No ${actor.gender} voice is available for ${actor.speaker}. Choose a suitable voice or change the cast gender preference.`);
+    const exact=voice=>!actor.gender || actor.gender==='auto' || voice.gender===actor.gender;
+    const match=pool.find(voice=>!used.has(voice.id) && exact(voice)) || pool.find(voice=>!used.has(voice.id)) || pool.find(exact) || pool[0];
+    if(match){catalogueVoices.set(identity,match.id);used.add(match.id);}
+    return match?.id || '';
+  };
   // Jev returns no voice description, so the Decision model describes each speaker before the community search.
   const communityVoice = async (actor, npc) => {
     const route = actor.route || config.defaultRoute || '', name = normalizeName(actor.speaker);
-    if (!config.communityRoutes?.[route] || (npc && config.npcPolicy && config.npcPolicy.mode !== 'llm')) return '';
+    if (!canSearchCommunity(actor,npc)) return '';
     if (!chosen.has(name)) {
       const answers = await decide({ transcript, characters: cast }, {
         gender: { type: 'choice', instructions: `Does ${actor.speaker} in this story have a feminine, masculine or neutral voice?`, criteria: { female: 'Feminine voice', male: 'Masculine voice', neutral: 'Neutral or androgynous voice' } },
@@ -273,8 +286,8 @@ export async function planWithJev({ transcript, config, apiKey, endpoint, contex
     const original=allCast.find(actor=>[actor.speaker,...(actor.aliases || [])].some(alias=>normalizeName(alias)===normalizeName(name)));
     const npc=!config.fixed.includes(original),actor=npc?npcCastActor(original || {speaker:name,voice:'',gender:'auto'},config):original;
     const route=actor.route || config.defaultRoute || '';
-    const catalogue=config.voices.filter(voice=>(voice.route || '')===route && (!npc || config.npcPolicy?.mode!=='preferred' || config.npcPolicy.voices.includes(voice.id)));
-    if(actor.voice || ['female','male','neutral'].includes(actor.gender) || config.communityRoutes?.[route] || !catalogue.some(voice=>voice.gender))continue;
+    const catalogue=catalogueFor(actor,npc);
+    if(actor.voice || ['female','male','neutral'].includes(actor.gender) || config.communityRoutes?.[route]==='community' && canSearchCommunity(actor,npc) || !catalogue.some(voice=>voice.gender))continue;
     automatic.set(normalizeName(actor.speaker),actor);
   }
   const automaticActors=[...automatic.values()];
@@ -291,13 +304,13 @@ export async function planWithJev({ transcript, config, apiKey, endpoint, contex
     }
   }
 
-  const rawSegments = [], catalogueVoices = new Map();
+  const rawSegments = [];
   for (const u of units) {
     if (u.kind === 'narration') {
       rawSegments.push({
         unit_ids: [u.id],
         speaker: narrator?.speaker || 'Narrator',
-        voice: narrator?.voice || (narrator ? await communityVoice(narrator, false) : ''),
+        voice: narrator?.voice || (narrator ? catalogueVoice(narrator,false) || await communityVoice(narrator, false) : ''),
         style: '',
         route: narrator?.route || config.defaultRoute || '',
         gender: narrator?.gender || 'auto'
@@ -313,19 +326,7 @@ export async function planWithJev({ transcript, config, apiKey, endpoint, contex
       if(npc)actor=npcCastActor(actor,config);
       if(inferredGenders.has(normalizeName(actor.speaker)))actor={...actor,gender:inferredGenders.get(normalizeName(actor.speaker))};
       const style = dialogueEmotionMap.get(u.id) || '';
-      const identity=JSON.stringify([normalizeName(actor.speaker),actor.route || config.defaultRoute || '']);
-      let voice = actor.voice || catalogueVoices.get(identity) || await communityVoice(actor, npc);
-      if (!voice && config.voices?.length) {
-        const route = actor.route || config.defaultRoute || '';
-        const available=config.voices.filter(v => (v.route || '') === route && (!npc || config.npcPolicy?.mode!=='preferred' || config.npcPolicy.voices.includes(v.id)));
-        const preferred=available.filter(v=>!actor.gender || actor.gender==='auto' || !v.gender || v.gender===actor.gender);
-        const pool=preferred;
-        if(!pool.length && available.length)throw new Error(`No ${actor.gender} voice is available for ${actor.speaker}. Choose a suitable voice or change the cast gender preference.`);
-        const exact=v=>actor.gender==='auto' || !actor.gender || v.gender===actor.gender;
-        const match=pool.find(v=>!used.has(v.id) && exact(v)) || pool.find(v=>!used.has(v.id)) || pool.find(exact) || pool[0];
-        voice = match?.id || '';
-        actor.voice=voice;catalogueVoices.set(identity,voice);used.add(voice);
-      }
+      const voice = actor.voice || catalogueVoice(actor,npc) || await communityVoice(actor, npc);
       members.push({speaker:actor.speaker || chosenName,voice,style,route:actor.route || config.defaultRoute || '',gender:actor.gender || 'auto'});
       }
       const actor=members[0],voice=actor.voice,style=actor.style;
@@ -477,13 +478,29 @@ const SIMPLE_VOICE_TRAITS=[
   ['clear',/\b(?:clear|crisp|articulate)\b/i],
   ['narration',/\b(?:narrator|narration|storyteller|storytelling|audiobook)\b/i]
 ];
-const simpleVoiceTraits=text=>SIMPLE_VOICE_TRAITS.filter(([,pattern])=>pattern.test(text)).map(([trait])=>trait);
+// Conservative English fallback, used without another paid inference request.
+// Stop a negation at punctuation or a contrast, so "not loud but calm" keeps calm.
+const positiveVoiceEvidence=text=>String(text || '').replace(/\b(?:not(?!\s+(?:only|just)\b)|never|no\s+longer|without|(?:is|are|was|were|does|do|did|ca|could|wo|would|should|has|have|had)n['’]t)\b[^.!?;,:\n]*?(?=\b(?:but|however|yet|instead)\b|[.!?;,:\n]|$)/gi,' ');
+const simpleVoiceTraits=text=>SIMPLE_VOICE_TRAITS.filter(([,pattern])=>pattern.test(positiveVoiceEvidence(text))).map(([trait])=>trait);
+function speakerVoiceEvidence(text,speaker,profile){
+  const names=new Set([speaker,profile?.name,...String(speaker || '').split(/\s+/)].filter(Boolean).map(normalizeName));
+  let own=true;
+  return positiveVoiceEvidence(text).split(/[.!?;,\n]+|\b(?:and|but|while|whereas)\s+(?=[A-Z]|his\b|her\b|their\b)/).filter(clause=>{
+    // Exclude an explicitly named other subject and its following pronouns.
+    // Unlabelled profile fragments ("A soft-spoken man") still describe the owner.
+    const subject=/\b([\p{Lu}][\p{L}'’\-]*(?:\s+[\p{Lu}][\p{L}'’\-]*){0,2})\s+(?:is|was|has|had|speaks|sounds|seems)\b/u.exec(clause)?.[1];
+    if(subject && !/^(?:he|she|they|it|i|you|this|that|voice|personality|character)$/i.test(subject))own=names.has(normalizeName(subject));
+    return own;
+  }).join('. ');
+}
 function communityVoiceBrief(speaker,wish,profile) {
-  const about=[profile?.personality,profile?.description].filter(Boolean).join(' ');
-  const female=/\b(?:female|woman|girl|feminine)\b/i.test(about),male=/\b(?:male|man|boy|masculine)\b/i.test(about);
-  const gender=['female','male','neutral'].includes(wish.gender)?wish.gender:female!==male?female?'female':'male':'';
+  const evidence=fields=>fields.map(value=>speakerVoiceEvidence(value,speaker,profile)).join('. ');
+  const about=evidence([profile?.personality,profile?.description]),fallback=evidence([profile?.scenario,profile?.firstMessage]);
+  const genderIn=text=>{const female=/\b(?:female|woman|girl|feminine)\b/i.test(text),male=/\b(?:male|man|boy|masculine)\b/i.test(text);return female!==male?female?'female':'male':'';};
+  const gender=['female','male','neutral'].includes(wish.gender)?wish.gender:genderIn(about) || genderIn(fallback);
   const narrator=normalizeName(speaker)==='narrator' || profile?.role==='narrator';
-  const traits=narrator?['narration','clear','calm']:[...new Set([...simpleVoiceTraits(about),...(wish.tags || [])])].slice(0,3);
+  const primaryTraits=simpleVoiceTraits(about);
+  const traits=narrator?['narration','clear','calm']:[...new Set([...(primaryTraits.length?primaryTraits:simpleVoiceTraits(fallback)),...(wish.tags || []).filter(tag=>positiveVoiceEvidence(tag).trim())])].slice(0,3);
   return {role:narrator?'narrator':'character',gender,traits:traits.length?traits:['clear']};
 }
 
@@ -500,14 +517,18 @@ export async function searchCommunityVoices({ gender, tags = [], allowAnnouncer=
     const response = await spindle.cors(`https://api.fish.audio/model?${query}`, { method: 'GET', headers: { 'Accept': 'application/json' } });
     signal?.throwIfAborted();
     if (response.status < 200 || response.status >= 300) throw new Error(`Fish community voice search HTTP ${response.status}.`);
+    let page;try{page=JSON.parse(response.body);}catch{throw new Error('Fish community voice search returned invalid JSON.');}
+    if(!Array.isArray(page?.items))throw new Error('Fish community voice search returned an invalid voice list.');
     const titles = new Set(), voices = [];
-    for (const item of JSON.parse(response.body)?.items || []) {
-      const title = normalizeName(item.title || item._id);
-      if (typeof item._id!=='string' || !item._id || usedIds.has(item._id.toLowerCase()) || titles.has(title) || Array.isArray(item.tags) && item.tags.some(tag=>String(tag).toLowerCase()===opposite)) continue;
-      const kind=[title,...(Array.isArray(item.tags)?item.tags:[])].join(' ');
+    for (const item of page.items) {
+      if(!item || typeof item!=='object' || Array.isArray(item) || typeof item._id!=='string' || !item._id.trim())continue;
+      const titleText=typeof item.title==='string' && item.title.trim()?item.title:item._id,title=normalizeName(titleText);
+      const tags=Array.isArray(item.tags)?item.tags.filter(tag=>typeof tag==='string').map(tag=>tag.trim()).filter(Boolean):[];
+      if (usedIds.has(item._id.toLowerCase()) || titles.has(title) || tags.some(tag=>tag.toLowerCase()===opposite)) continue;
+      const kind=[title,...tags].join(' ');
       if(/\b(?:soundboard|compilation|sound effects?|sfx|music only)\b/i.test(kind) || !allowAnnouncer && /\bannouncer\b|smash\s*bros/i.test(title))continue;
       titles.add(title);
-      voices.push({ id: item._id, title: item.title || item._id, tags: Array.isArray(item.tags) ? item.tags.slice(0, 8) : [], description: String(item.description || '').slice(0, 300), languages: Array.isArray(item.languages) ? item.languages : [] });
+      voices.push({ id: item._id, title:titleText, tags:tags.slice(0,8), description:typeof item.description==='string'?item.description.slice(0,300):'', languages:Array.isArray(item.languages)?item.languages.filter(language=>typeof language==='string'):[] });
     }
     if (voices.length) return voices.slice(0, 10);
   }
@@ -516,7 +537,7 @@ export async function searchCommunityVoices({ gender, tags = [], allowAnnouncer=
 
 export async function chooseCommunityVoice({ speaker, wish, language, used, profile, input = {}, userId, signal }) {
   const brief=communityVoiceBrief(speaker,wish,profile);
-  const allowAnnouncer=/\bannouncer\b/i.test([profile?.description,profile?.personality,...(wish.tags || [])].join(' '));
+  const allowAnnouncer=/\bannouncer\b/i.test([profile?.description,profile?.personality,profile?.scenario,profile?.firstMessage,...(wish.tags || [])].map(value=>speakerVoiceEvidence(value,speaker,profile)).join(' '));
   const voices = await searchCommunityVoices({...brief,tags:brief.traits,allowAnnouncer}, language, used, signal);
   const wanted = [brief.gender,...brief.traits].filter(Boolean).join(', ');
   const ids=voices.map((_,index)=>`s${index}`),criteria=Object.fromEntries(voices.map((voice,index)=>[ids[index],`${voice.title} — ${voice.tags.join(', ')}; ${voice.description} (${voice.languages.join(', ')})`]));

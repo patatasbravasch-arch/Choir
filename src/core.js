@@ -1302,7 +1302,8 @@ export async function castReply(transcript, config, context, llm) {
     if(!choice.voice) {
       const route=actor?selected.route || config.defaultRoute || '':npcRoute(config),pool=routeVoices(config,route,npc);
       const fits=voice=>gender==='auto' || !voice.gender || voice.gender===gender,free=pool.filter(voice=>!used.has(voice.id));
-      choice.voice=(pool.find(voice=>voice.id===row.voice && fits(voice)) || free.find(voice=>gender==='auto' || voice.gender===gender) || free.find(fits) || pool.find(fits) || free[0] || pool[0])?.id || '';
+      const community=Boolean(config.communityRoutes?.[route] && (!npc || !config.npcPolicy || config.npcPolicy.mode==='llm'));
+      choice.voice=(pool.find(voice=>voice.id===row.voice && fits(voice)) || free.find(voice=>gender==='auto' || voice.gender===gender) || free.find(fits) || pool.find(fits) || (!community && (free[0] || pool[0])))?.id || '';
       if(choice.voice)used.add(choice.voice);
       else if(config.communityRoutes?.[route]) {
         const words=String(row.voice || '').toLowerCase().match(/[a-z-]+/g) || [];

@@ -987,6 +987,68 @@ const communityCast={voices:[{id:'own-1',route:'native:fish'},{id:'used-1',route
 const describedPlan='D1|Mira|soft\nNPC|Mira|female|young; soft, bright\nLANG|pt-BR';
 const fishSearch=(urls,pages)=>async url=>{urls.push(new URL(url));const items=pages[urls.length-1];return items?{status:200,body:JSON.stringify({total:items.length,items})}:{status:500,body:'Down'};};
 
+test('Both Fish sources prefer compatible owned voices in either planner and search community only when needed',async()=>{
+ for(const engine of ['plan','planJev'])for(const [source,owned,expected] of [
+  ['both',[{id:'owned',gender:'female'}],'owned'],['both',[],'community'],
+  ['both',[{id:'wrong-gender',gender:'male'}],'community'],['community',[{id:'owned',gender:'female'}],'community']
+ ]){
+  let searches=0;
+  const cast={...communityCast,voices:[{id:'n',route:'native:narrator'},...owned.map(voice=>({...voice,route:'native:fish'}))],communityRoutes:{'native:fish':source},
+   fixed:[{speaker:'Narrator',voice:'n',route:'native:narrator',style:''},{speaker:'Mira',voice:'',gender:'female',route:'native:fish',style:''}],npcs:[]};
+  const h=await harness(async()=>({content:'D0|Mira|\nNPC|Mira|female|young; soft'}),async()=>{
+   searches++;assert.equal(expected,'community','a usable owned voice must not depend on community availability');return {status:200,body:JSON.stringify({items:[fishItem('community','Soft voice')]})};
+  },null,null,null,{evaluate:async input=>({answers:Object.hasOwn(input.questions,'speaker_0')?{speaker_0:{choice:'Mira'}}:Object.hasOwn(input.questions,'gender')?{gender:{choice:'female'},language:{choice:'en'}}:{q0:{choice:'s0'}}})});
+  h.send(engine,{transcript:'"Hello."',config:cast});const result=(await h.result()).message;
+  assert.equal(result.error,undefined,`${engine}/${source}/${expected}`);assert.equal(result.result.segments[0].voice,expected);assert.equal(searches,expected==='community'?1:0);
+ }
+});
+
+test('Jev Both casts automatic narration and infers dialogue gender before choosing an owned voice',async()=>{
+ let searches=0,inferred=0;
+ const h=await harness(null,async()=>{searches++;throw Error('Community offline');},null,null,null,{evaluate:async input=>{
+  if(Object.hasOwn(input.questions,'speaker_0'))return {answers:{speaker_0:{choice:'Mira'}}};
+  inferred++;return {answers:{voice_gender_0:{choice:'female'}}};
+ }});
+ h.send('planJev',{transcript:'The room fell silent. "Hello."',config:{...communityCast,voices:[{id:'owned-man',gender:'male',route:'native:fish'},{id:'owned-woman',gender:'female',route:'native:fish'}],communityRoutes:{'native:fish':'both'},fixed:[{speaker:'Narrator',voice:'',route:'native:fish',style:''},{speaker:'Mira',voice:'',route:'native:fish',style:''}],npcs:[]}});
+ const result=(await h.result()).message;assert.equal(result.error,undefined);assert.deepEqual([...result.result.segments.map(segment=>[segment.speaker,segment.voice])],[['Narrator','owned-man'],['Mira','owned-woman']]);assert.equal(inferred,1);assert.equal(searches,0);
+});
+
+test('Fish briefs ignore negated and other-person traits and use scenario or greeting evidence when needed',async()=>{
+ const cases=[
+  [{description:'Mira is calm.',personality:'Mira is not sassy and never confident.'},'calm'],
+  [{description:'Mira is not sassy but calm.'},'calm'],
+  [{description:"Mira isn't a man. Mira is a quiet woman."},'female, soft'],
+  [{description:'Mira is a shy man. His friend Mara is a loud confident woman. She is sassy.'},'male, soft'],
+  [{scenario:'Mira is a gentle, soft-spoken woman.'},'female, soft'],
+  [{firstMessage:'Mira is a man with a low voice.'},'male, deep'],
+  [{personality:'Mira is not only confident but also playful.'},'playful, confident'],
+  [{description:'Mira es una mujer tranquila y segura.'},'female, calm','NPC|Mira|female|young; calm']
+ ];
+ for(const [profile,expected,hints=''] of cases){
+  let brief;const urls=[],h=await harness(async()=>({content:`D0|Mira|\n${hints}`}),fishSearch(urls,[[fishItem('voice','Speaking voice',['clear'])]]),null,null,null,{evaluate:async input=>{brief=input.state;return {answers:{q0:{choice:'s0'}}};}});
+  h.send('plan',{transcript:'"Hello."',config:{...communityCast,characterProfiles:[{speaker:'Mira',name:'Mira',...profile}]}});
+  const result=(await h.result()).message;assert.equal(result.error,undefined,JSON.stringify(profile));assert.equal(brief.voice,expected,JSON.stringify(profile));assert.equal(result.result.segments[0].voice,'voice');
+ }
+});
+
+test('Fish skips malformed metadata rows, sanitizes optional fields and reports malformed pages clearly',async()=>{
+ let choice;const h=await harness(async()=>({content:'D0|Mira|'}),async()=>({status:200,body:JSON.stringify({items:[null,7,'broken',[],{}, {_id:3,title:'Broken'}, {_id:' ',title:'Blank'}, {_id:'valid',title:{bad:true},tags:[null,{},'soft'],description:{bad:true},languages:[4,'en']} ]})}),null,null,null,{evaluate:async input=>{choice=input;return {answers:{q0:{choice:'s0'}}};}});
+ h.send('plan',{transcript:'"Hello."',config:communityCast});const result=(await h.result()).message;
+ assert.equal(result.error,undefined);assert.equal(result.result.segments[0].voice,'valid');assert.equal(choice.questions.q0.criteria.s0,'valid — soft;  (en)');
+ for(const body of ['not json','null','{"items":{}}']){
+  let calls=0;const invalid=await harness(async()=>({content:'D0|Mira|'}),async()=>{calls++;return {status:200,body};});invalid.send('plan',{transcript:'"Hello."',config:communityCast});
+  assert.match((await invalid.result()).message.error,/Fish community voice search returned (?:invalid JSON|an invalid voice list)/);assert.equal(calls,1);
+ }
+});
+
+test('a negated announcer request or another person being an announcer cannot enable soundboard casting',async()=>{
+ for(const description of ['Mira is calm, not an announcer.','Mira is quiet. Her friend Mara is an announcer.']){
+  let candidates;const h=await harness(async()=>({content:'D0|Mira|'}),async()=>({status:200,body:JSON.stringify({items:[fishItem('bad','Smash Bros announcer',['female']),fishItem('good','Ordinary speech',['female'])]})}),null,null,null,{evaluate:async input=>{candidates=input.questions.q0.criteria;return {answers:{q0:{choice:'s0'}}};}});
+  h.send('plan',{transcript:'"Hello."',config:{...communityCast,characterProfiles:[{speaker:'Mira',description}]}});
+  const result=(await h.result()).message;assert.equal(result.error,undefined);assert.equal(result.result.segments[0].voice,'good');assert.equal(Object.keys(candidates).length,1);
+ }
+});
+
 test('a first Fish narration resolves an automatic voice from an empty relay catalogue',async()=>{
   const urls=[],cast={...communityCast,voices:[],fixed:[{speaker:'Narrator',voice:'',style:'',route:'native:fish'}],npcs:[]};
   const h=await harness(async()=>({content:'{"choice":"s0"}'}),fishSearch(urls,[[fishItem('narrator-first','Narrator',['neutral','middle-aged','calm'])]]));

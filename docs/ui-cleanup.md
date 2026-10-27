@@ -19,6 +19,8 @@ Play/pause/resume, Plan latest and Open mixer stay available above every tab. A 
 
 **Saved → Download all** creates one ZIP containing a separate WAV for each complete saved playback in the current chat, including recordings older than the recent-message list. It reuses recorded mixes without new speech synthesis. Partial, expired, deleted or edited recordings are skipped. Each WAV retains the sounds, speed and mixer levels heard during that playback and uses `Choir - initials - chat ID - 001.wav` naming. The ZIP is limited to 256 MB; individual WAVs retain their 128 MB limit. Existing recordings without a mixed playback need one complete replay first.
 
+Next, Previous and seeking make that playback's mix incomplete, so it is excluded from individual and bulk downloads. Pause/resume does not. Play the message from the start without navigation to save a complete mix; cached speech is reused and only missing passages need synthesis. If all speech is already cached, Replay saves the complete mix without new synthesis. Stopping an unfinished replay preserves a previously completed mix.
+
 **Setup → Set up Choir** reopens the redesigned five-step wizard. Voices are edited one role at a time, with accents and delivery available during setup. Playback starts with everyday controls and retention; More playback settings holds request limits and text filters. Review separates configured choices from passed tests. See [setup guide](../ONBOARDING.md). It also opens automatically on a fresh installation; completed or deliberately skipped setup does not reopen on every load. No additional collapse layers are used for ordinary settings. Only absent characters, large plan/JSON views and secondary tasks leave the main page.
 
 ## Accents and delivery
@@ -56,6 +58,8 @@ Gemini separates sustained performance metadata from momentary inline vocal soun
 **Mixed providers work per character.** A Fish character and Gemini narrator use separate connections and adapters. They are never combined into one cross-provider synthesis call. Compatible same-provider dialogue retains each turn's own delivery and accent. Effective instructions also participate in audio cache keys and request-size limits.
 
 Automatic Fish casting uses a small trait brief rather than requiring the voice to match a full biography. Narrator means clear, calm storytelling; a sassy male suggests playful, confident male speech. The closest available voice is chosen and saved. Age and accent details do not veto a usable voice; accent preferences still travel separately in delivery instructions. A failed/refused model choice falls back to those same traits, with obvious soundboards and compilations excluded.
+
+**Both** uses compatible owned Fish voices first in Standard and Jev, then community search when none fits the route and gender. **Fish community library** searches directly; preferred-voice and manually assigned choices remain in force. Multi-character cards pass only each person's scoped description. Simple profile matching ignores English negated clauses and explicitly named other subjects, and uses scenario/greeting details as fallback evidence. This local heuristic is English-based and cannot reliably interpret every ambiguous biography or other language; existing planner gender/trait hints still work with stories in other languages, and manual choices remain available.
 
 ## Custom voices: implementation options
 

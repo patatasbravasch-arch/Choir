@@ -1216,10 +1216,11 @@ test('no verified card suggestions keeps the existing cast and does not block pl
 
 test('freeform scenario titles use cached generic card analysis and preserve separately assigned voices',async()=>{
  const h=await harness();try{
-  h.state.character={name:'Closing Time',description:'Adrian is the captain. Ethan is his teammate. No special headings or tags.'};h.state.cardRoles=[{name:'Adrian',aliases:['Captain Adrian'],description:'Low-voiced captain.'},{name:'Ethan',description:'Brighter teammate.'}];h.state.multiCard=true;
+  h.state.character={name:'Closing Time',description:'Adrian is the captain. Ethan is his teammate. No special headings or tags.',personality:'Adrian is stern. Ethan is playful.',scenario:'Both men work the evening shift.',first_mes:'Adrian welcomes Ethan.'};h.state.cardRoles=[{name:'Adrian',aliases:['Captain Adrian'],description:'Low-voiced captain.'},{name:'Ethan',description:'Brighter teammate.'}];h.state.multiCard=true;
   const saved=structuredClone(h.store.get('chat:chat-a'));saved.fixed[2].speaker='Closing Time';saved.fixed[2].aliases=[];h.store.set('chat:chat-a',saved);h.message.content='Adrian said, "Hello." Ethan replied, "Wait."';
   await h.reload();await h.plan();assert.equal(h.requests.filter(request=>request.action==='cardCast').length,1);assert.deepEqual(h.store.get('chat:chat-a').fixed.slice(2).map(actor=>[actor.speaker,actor.voice]),[['Adrian','m'],['Ethan','new']]);
   const profiles=h.requests.find(request=>request.action==='plan').input.config.characterProfiles;assert.deepEqual(profiles.map(profile=>profile.speaker),['Adrian','Ethan']);assert.match(profiles[1].description,/Brighter/);
+  for(const profile of profiles)for(const field of ['personality','scenario','firstMessage'])assert.equal(profile[field],'',`${field} must not leak from the shared card`);
   await h.reload();await h.plan();assert.equal(h.requests.filter(request=>request.action==='cardCast').length,1);
   h.state.character.description+=' Both lead the evening shift.';await h.plan();assert.equal(h.requests.filter(request=>request.action==='cardCast').length,2);assert.deepEqual(h.store.get('chat:chat-a').fixed.slice(2).map(actor=>actor.voice),['m','new']);
   h.state.character.name='After Hours';await h.plan();assert.equal(h.requests.filter(request=>request.action==='cardCast').length,3);assert.deepEqual(h.store.get('chat:chat-a').fixed.slice(2).map(actor=>actor.voice),['m','new']);
