@@ -21,7 +21,7 @@ try{
   assert.equal(await page.locator('[data-et="fixed"]').isVisible(),true);
   await tab('Cast').press('End');assert.equal(await tab('Settings').getAttribute('aria-selected'),'true');
   assert.equal(await page.getByRole('button',{name:'Setup guide',exact:true}).isVisible(),true);
-  await tab('Playback').click();await page.getByRole('button',{name:'Customize mixer',exact:true}).click();
+  await tab('Playback').click();assert.equal(await page.locator('[data-choir-panel="play"]').evaluate(n=>n.scrollWidth<=n.clientWidth+1),true);await page.getByRole('button',{name:'Customize mixer',exact:true}).click();
   await page.getByRole('combobox',{name:'Mixer buttons per row',exact:true}).selectOption('2');
   await page.getByRole('checkbox',{name:'Show Follow narration',exact:true}).check();
   await page.getByRole('checkbox',{name:'Show Message controls',exact:true}).check();
@@ -45,6 +45,7 @@ try{
   assert.equal(await narrator.locator('[data-choir-delivery-mode]').inputValue(),'base');
   if(shots)await page.screenshot({path:path.join(shots,`ui-cleanup-${mobile?'mobile':'desktop'}-cast.png`)});
   await tab('Playback').click();await page.locator('[data-et="latest"]').click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Ready:'));
+  assert.equal(await page.getByRole('status').filter({hasText:/^Planned$/}).isVisible(),true);assert.equal(await page.locator('.et-current-message').evaluate(n=>n.scrollWidth<=n.clientWidth+1),true);
   await page.locator('[data-et="showMixer"]').click();await page.locator('[data-choir-action="playback"]').click();
   await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.includes('Playback finished'),{timeout:20000});
   const calls=await page.evaluate(()=>window.calls),gemini=calls.find(c=>c.connectionId==='a'),fish=calls.find(c=>c.connectionId==='b');
@@ -62,7 +63,13 @@ try{
   const grouped=await page.evaluate(before=>window.calls.slice(before),before);assert.equal(grouped.length,1,JSON.stringify({grouped,settings:await page.evaluate(()=>({saved:window.fixtureStore.get('chat:fixture'),checked:document.querySelector('[data-et="batchSpeech"]').checked,mixer:window.fixtureStore.get('ui:mixer')}))}));assert.equal(grouped[0].parameters.turns.length,3);
   await showDrawerControl(page,'batchSpeech');assert.match(await page.locator('[data-et="groupingStatus"]').innerText(),/1 speech batch/);assert.doesNotMatch(await page.locator('[data-et="groupingStatus"]').innerText(),/Loudness matching keeps different voices/);
   assert.equal(grouped[0].parameters.turns[0].style,'Measured narration. Accent: Scottish');assert.equal(grouped[0].parameters.turns[1].style,'whispering. Accent: Irish');assert.equal(grouped[0].parameters.speech_style,'');
-  await page.close();console.log(`PASS ${mobile?'mobile':'desktop'} task tabs, keyboard, row layout, persistence and mixed-provider accents`);
+  await showDrawerControl(page,'captureDefaults');await page.locator('[data-et="captureDefaults"]').click();
+  await page.getByRole('dialog',{name:'Set default',exact:true}).getByRole('button',{name:'Save default',exact:true}).click();
+  await page.waitForFunction(()=>document.querySelector('[data-et="defaultStatus"]').textContent==='Default saved. New chats use it.');
+  assert.equal(await page.getByRole('status').filter({hasText:'Default saved. New chats use it.'}).isVisible(),true);
+  await page.locator('[data-et="applyDefaults"]').click();await page.waitForFunction(()=>document.querySelector('[data-et="defaultStatus"]').textContent==='Default applied to this chat.');
+  assert.equal(await page.getByRole('status').filter({hasText:'Default applied to this chat.'}).isVisible(),true);
+  await page.close();console.log(`PASS ${mobile?'mobile':'desktop'} task tabs, keyboard, row layout, persistence, visible feedback and mixed-provider accents`);
  }
  assert.deepEqual(errors,[]);
 }finally{await browser?.close();await new Promise(resolve=>server.close(resolve));}

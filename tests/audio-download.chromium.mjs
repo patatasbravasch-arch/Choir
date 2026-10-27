@@ -17,7 +17,7 @@ try{
  browser=await chromium.launch({headless:true,channel:process.env.CHOIR_BROWSER_CHANNEL || 'chrome',args:['--disable-crash-reporter']});
  const page=await browser.newPage({acceptDownloads:true,viewport:{width:1440,height:1000}});page.on('pageerror',error=>errors.push(error.message));
  await page.goto(`http://127.0.0.1:${server.address().port}`);await page.waitForFunction(()=>window.ready);
- assert.equal(await page.getByRole('heading',{name:'In this reply',exact:true,includeHidden:true}).count(),1);
+ assert.equal(await page.getByRole('heading',{name:'Characters',exact:true}).isVisible(),true);
  assert.equal(await page.getByRole('heading',{name:'NPC Cast',exact:true}).count(),0);
  const download=page.locator('footer [data-choir-download]');assert.equal(await download.isVisible(),false);
  await withDrawerControl(page,'latest',()=>page.locator('[data-et="latest"]').click());await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Ready:'));

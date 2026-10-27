@@ -50,7 +50,6 @@ export async function setup(ctx) {
     .ensemble-tts .et-header{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:12px;margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid rgba(128,128,128,0.2)}
     .ensemble-tts .et-title-group{display:flex;align-items:center;gap:10px}
     .ensemble-tts h2{font-size:1.25em;font-weight:600;margin:0;letter-spacing:-0.01em}
-    .ensemble-tts .et-badge{font-size:0.75em;opacity:0.7;text-transform:uppercase;letter-spacing:0.05em;border:1px solid rgba(128,128,128,0.3);padding:2px 6px;border-radius:4px}
     .ensemble-tts .et-toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;grid-column:1/-1;min-width:0}
     .ensemble-tts .et-save-state{font-size:11px;opacity:.75;text-align:right;overflow-wrap:anywhere}
     .ensemble-tts .et-toolbar button{white-space:nowrap}
@@ -298,7 +297,6 @@ export async function setup(ctx) {
     <div class="et-header">
       <div class="et-title-group">
         <h2>Choir</h2>
-        <span class="et-badge" data-et="branchBadge" hidden>Staging</span>
       </div>
       <span class="et-save-state" data-et="saveState" role="status" aria-live="polite">Settings saved per chat</span>
       <div class="et-toolbar">
@@ -4816,16 +4814,5 @@ export async function setup(ctx) {
   if(disposed)return cleanup;
   applyMixerLayout();
   if(!setupAutoStarted){setupAutoStarted=true;void setupWizard.start();}
-  // Branch metadata is optional UI information; it must not delay startup.
-  const branchLookup=new AbortController();unsubs.push(()=>branchLookup.abort());
-  void (async()=>{
-    const timeout=setTimeout(()=>branchLookup.abort(),5000),badge=$('branchBadge');
-    try{
-      const result=await (await api('/spindle',{signal:branchLookup.signal})).json();
-      const extension=result.extensions?.find(item=>item.identifier==='choir');
-      if(!disposed){const branch=extension?.metadata?.branch;badge.hidden=!['staging','UI-CLEANUP'].includes(branch);badge.textContent=branch==='UI-CLEANUP'?'UI cleanup':'Staging';badge.title=`Choir ${'__CHOIR_VERSION__'} · ${branch || 'unknown branch'}`;}
-    }catch{/* Keep an unknown branch unlabelled without interrupting playback. */}
-    finally{clearTimeout(timeout);}
-  })();
   return cleanup;
 }

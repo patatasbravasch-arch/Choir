@@ -2847,10 +2847,10 @@ function createDrawerNavigation(root) {
   // The host supplies the Choir title. Keep a single persistent setup entry.
   const header=host.querySelector('.et-header');header.querySelector('.et-title-group').hidden=true;
   const setup=move('setupWizard',header);setup.textContent='Setup guide';setup.className='et-setup-link';header.prepend(setup);move('saveState',header);move('save',header);
-  const current=el('div');current.className='et-current-message';header.after(current);el('span','Latest reply',current).dataset.et='currentMessageLabel';
+  const current=el('div');current.className='et-current-message';header.after(current);const currentLabel=el('div','',current);currentLabel.className='et-current-label';el('span','Latest reply',currentLabel).dataset.et='currentMessageLabel';
   const transport=el('div','',current);transport.className='et-btn-group';const start=button('Play',transport);start.dataset.et='drawerPlay';start.disabled=true;start.className='et-btn-primary';
   move('latest',transport);move('stop',transport);move('showMixer',transport);const download=button('↓',transport);download.dataset.et='drawerDownload';download.hidden=true;download.setAttribute('aria-label','Download latest reply audio');
-  const notice=move('latestNotice',current);notice.textContent='Planned';notice.title='Plan latest again to rebuild the plan.';notice.removeAttribute('role');
+  const notice=move('latestNotice',currentLabel);notice.textContent='Planned';notice.title='Plan latest again to rebuild the plan.';
   const reminder=button('Continue setup →',header,()=>setup.click());reminder.dataset.et='continueSetup';reminder.hidden=true;
   // Cast is a filtered list, never an accordion of old characters.
   const castHome=home.get('cast');castHome.querySelector('h3').textContent='Characters';
@@ -2859,7 +2859,7 @@ function createDrawerNavigation(root) {
   const other=field('otherCast');other.querySelector('summary')?.remove();other.querySelector('p')?.remove();
   const casting=button('Automatic voices →',null);casting.className='et-link-row';castHome.append(casting);const castingPage=page('casting','Automatic voices','cast',casting);
   const subhead=castHome.querySelector('.et-subhead');subhead?.remove();castHome.querySelector('.et-hint')?.remove();move('npcPolicyRoot',castingPage);
-  const defaults=el('div','',castingPage);defaults.className='et-default-actions';move('captureDefaults',defaults);move('applyDefaults',defaults);move('defaultStatus',castingPage);
+  const defaults=el('div','',castingPage);defaults.className='et-default-actions';move('captureDefaults',defaults);move('applyDefaults',defaults);
   function updateCastFilter(count=Number(field('otherCastCount').textContent)){filter.options[1].textContent=`All saved${count?` (+${count})`:''}`;other.hidden=filter.value!=='all' || !count;}
   filter.onchange=()=>updateCastFilter();
   function closeCast(){if(!focusedCast)return;const {row,onClose}=focusedCast;focusedCast=null;row.classList.remove('et-focused-cast');cast.removeAttribute('data-editing');updateCastFilter();onClose?.();}
@@ -2890,7 +2890,7 @@ function createDrawerNavigation(root) {
   const performance=field('concurrency').closest('section');for(const name of ['concurrency','chunk','prefetch','apiBase'])moveLabel(name,destinations.performance);destinations.performance.append(field('batchSpeech').closest('.et-row'));for(const hint of [...performance.querySelectorAll(':scope>p')])destinations.performance.append(hint);
   for(const name of ['sectionButtons','abyssalMixerTheme','showAutoPlanAction'])moveLabel(name,destinations.interface);
   move('extraVoicesWrap',destinations.castTools);const castTools=field('castJson').closest('details');castTools.querySelector('summary')?.remove();destinations.castTools.append(...castTools.childNodes);castTools.remove();
-  destinations.castTools.querySelector('.et-pagebar').after(defaults);
+  destinations.castTools.querySelector('.et-pagebar').after(defaults,field('defaultStatus'));
   // Plan and JSON editors are separate destinations too.
   const plan=move('planDetails',playHome);const planLink=button('Speech plan →',plan);planLink.className='et-link-row';const planPage=page('plan','Speech plan','play',planLink);move('planSummary',planPage);move('preview',planPage);const json=field('planJson').closest('details');json.querySelector('summary')?.remove();const jsonLink=button('Edit attribution JSON →',plan);jsonLink.className='et-link-row';const jsonPage=page('attribution','Attribution JSON','play',jsonLink);jsonPage.append(...json.childNodes);json.remove();
   for(const node of originalSettings)if(node.parentElement===settingsHome){if(node.nodeType===1 && (node.matches('[data-et]') || node.querySelector('[data-et]')))node.hidden=true;else node.remove();}
@@ -2904,7 +2904,7 @@ function createDrawerNavigation(root) {
 }
 
 const DRAWER_UI_CSS=`
-.ensemble-tts{padding:12px;max-width:540px}.ensemble-tts .et-header{margin-bottom:10px;padding-bottom:0;border:0;gap:6px}.ensemble-tts .et-badge{display:none}.ensemble-tts h2{font-size:18px}.ensemble-tts .et-save-state{font-size:11px}
+.ensemble-tts{padding:12px;max-width:540px}.ensemble-tts .et-header{margin-bottom:10px;padding-bottom:0;border:0;gap:6px}.ensemble-tts h2{font-size:18px}.ensemble-tts .et-save-state{font-size:11px}
 .ensemble-tts h3,.ensemble-tts h4{font-size:13px;text-transform:none;letter-spacing:0;margin:12px 0 8px}.ensemble-tts .et-task-panel>.et-hint{display:none}
 .ensemble-tts .et-current-message{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px;margin-bottom:8px}.ensemble-tts .et-current-message>span{flex:1}.ensemble-tts .et-current-message .et-btn-group{gap:5px;flex-wrap:wrap;order:2}.ensemble-tts .et-current-message button{font-size:12px;padding:5px 8px}.ensemble-tts [data-et="latestNotice"]{font-size:11px;opacity:.65;margin:0;order:1}
 .ensemble-tts .et-task-tabs{margin:0 0 10px;padding:0;background:none;border:0;border-bottom:1px solid #8884;border-radius:0;gap:0}.ensemble-tts .et-task-tabs button{border-radius:0;min-height:40px;font-size:13px;padding:8px 4px}.ensemble-tts .et-task-tabs button[aria-selected="true"]{background:none;color:inherit;box-shadow:inset 0 -2px var(--lumiverse-primary,#c4b5fd)}
@@ -2926,7 +2926,7 @@ const DRAWER_UI_CSS=`
 /* Flat task pages. Each destination has one return path. */
 .ensemble-tts .et-title-group[hidden],.ensemble-tts .et-toolbar:empty{display:none!important}
 .ensemble-tts .et-header{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin:0 0 8px}.ensemble-tts .et-header .et-save-state{margin-left:auto}.ensemble-tts .et-setup-link{background:transparent;border:0;padding-left:0;font-weight:600}.ensemble-tts [data-et="continueSetup"]{width:100%;text-align:left;border-color:var(--lumiverse-primary,#c4b5fd)}
-.ensemble-tts .et-current-message{align-items:center;gap:4px 8px}.ensemble-tts .et-current-message .et-btn-group{order:0}.ensemble-tts .et-current-message [data-et="latestNotice"]{display:none}
+.ensemble-tts .et-current-message{align-items:center;gap:4px 8px}.ensemble-tts .et-current-label{display:flex;align-items:center;flex:1;gap:6px;white-space:nowrap}.ensemble-tts .et-current-message .et-btn-group{order:0}.ensemble-tts .et-current-message [data-et="latestNotice"]{flex:none;font-size:10px;line-height:1.4;padding:2px 6px;border-radius:4px;background:#8882;opacity:.8}
 .ensemble-tts .et-task-tabs{display:grid;grid-template-columns:repeat(4,minmax(0,1fr))}.ensemble-tts .et-tab-home{min-width:0}.ensemble-tts .et-tab-home>h3{margin-top:0}
 .ensemble-tts .et-control-group{margin:0 0 16px;padding:0 0 12px;border-bottom:1px solid #8883}.ensemble-tts .et-control-group>h4{margin:0 0 8px;font-weight:600}.ensemble-tts .et-control-group>label{margin:8px 0}.ensemble-tts .et-control-group:last-child{border-bottom:0}
 .ensemble-tts .et-action-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:8px}.ensemble-tts .et-action-grid>:last-child:nth-child(odd){grid-column:1 / -1}
@@ -2934,7 +2934,7 @@ const DRAWER_UI_CSS=`
 .ensemble-tts [data-choir-destination]>label{display:block;margin:12px 0}.ensemble-tts [data-choir-destination] p,.ensemble-tts [data-choir-destination] small{font-size:12px;line-height:1.5;overflow-wrap:anywhere}.ensemble-tts [data-choir-destination]>button{margin:4px 6px 4px 0}.ensemble-tts .et-pagebar{border-bottom:1px solid #8883;padding-bottom:10px;align-items:center}.ensemble-tts .et-pagebar button{font-size:12px}.ensemble-tts .et-pagebar h3{font-size:14px;text-align:right;outline:none}
 .ensemble-tts [data-et="castFilter"]{width:100%;margin-bottom:6px}.ensemble-tts [data-editing="true"] .et-tab-home>:not(:has(.et-focused-cast)){display:none!important}.ensemble-tts .et-cast-row.et-focused-cast{padding-top:0}.ensemble-tts .et-focused-cast .et-cast-editor .et-control-group{padding-top:12px;border-top:1px solid #8883;border-bottom:0}.ensemble-tts [data-choir-pronunciation-page]>label{display:grid;gap:4px}
 .ensemble-tts .et-volume-limits>.et-pagebar{display:flex}.ensemble-tts .et-volume-limits>label{display:flex}.ensemble-tts .et-volume-limits input{width:76px}.ensemble-tts [data-et="planDetails"]{padding-top:10px;border-top:1px solid #8883}
-@media(max-width:400px){.ensemble-tts .et-current-message>.et-btn-group{width:100%}.ensemble-tts .et-settings-link{padding:14px 2px}.ensemble-tts .et-edit-pair{grid-template-columns:1fr}}
+@media(max-width:400px){.ensemble-tts .et-current-message>.et-btn-group{width:100%}.ensemble-tts .et-settings-link{padding:14px 2px}.ensemble-tts .et-edit-pair,.ensemble-tts .et-tuning-grid{grid-template-columns:1fr}}
 `;
 
 // Provider adapters keep acting instructions out of the spoken transcript.
@@ -3055,7 +3055,6 @@ export async function setup(ctx) {
     .ensemble-tts .et-header{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:12px;margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid rgba(128,128,128,0.2)}
     .ensemble-tts .et-title-group{display:flex;align-items:center;gap:10px}
     .ensemble-tts h2{font-size:1.25em;font-weight:600;margin:0;letter-spacing:-0.01em}
-    .ensemble-tts .et-badge{font-size:0.75em;opacity:0.7;text-transform:uppercase;letter-spacing:0.05em;border:1px solid rgba(128,128,128,0.3);padding:2px 6px;border-radius:4px}
     .ensemble-tts .et-toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;grid-column:1/-1;min-width:0}
     .ensemble-tts .et-save-state{font-size:11px;opacity:.75;text-align:right;overflow-wrap:anywhere}
     .ensemble-tts .et-toolbar button{white-space:nowrap}
@@ -3303,7 +3302,6 @@ export async function setup(ctx) {
     <div class="et-header">
       <div class="et-title-group">
         <h2>Choir</h2>
-        <span class="et-badge" data-et="branchBadge" hidden>Staging</span>
       </div>
       <span class="et-save-state" data-et="saveState" role="status" aria-live="polite">Settings saved per chat</span>
       <div class="et-toolbar">
@@ -7821,16 +7819,5 @@ export async function setup(ctx) {
   if(disposed)return cleanup;
   applyMixerLayout();
   if(!setupAutoStarted){setupAutoStarted=true;void setupWizard.start();}
-  // Branch metadata is optional UI information; it must not delay startup.
-  const branchLookup=new AbortController();unsubs.push(()=>branchLookup.abort());
-  void (async()=>{
-    const timeout=setTimeout(()=>branchLookup.abort(),5000),badge=$('branchBadge');
-    try{
-      const result=await (await api('/spindle',{signal:branchLookup.signal})).json();
-      const extension=result.extensions?.find(item=>item.identifier==='choir');
-      if(!disposed){const branch=extension?.metadata?.branch;badge.hidden=!['staging','UI-CLEANUP'].includes(branch);badge.textContent=branch==='UI-CLEANUP'?'UI cleanup':'Staging';badge.title=`Choir ${"1.1.6-staging.52"} · ${branch || 'unknown branch'}`;}
-    }catch{/* Keep an unknown branch unlabelled without interrupting playback. */}
-    finally{clearTimeout(timeout);}
-  })();
   return cleanup;
 }

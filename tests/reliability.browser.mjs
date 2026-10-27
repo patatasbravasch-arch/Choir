@@ -662,15 +662,13 @@ test('teardown releases playback after the host invalidates the message bridge',
  }finally{if(!closed)await h.close();}
 });
 
-test('the staging badge follows the installed Choir branch and unavailable branch information never breaks the drawer',async()=>{
+test('the drawer starts without branch badges or branch metadata requests',async()=>{
  const h=await harness();try{
-  await until(()=>!h.$('branchBadge').hidden);assert.equal(h.$('branchBadge').textContent,'Staging');
-  for(const branch of ['main',null,'feature-test']){
-   h.state.extensionBranch=branch;const lookups=h.state.branchLookups;await h.reload();await until(()=>h.state.branchLookups>lookups);await tick();
-   assert.equal(h.$('branchBadge').hidden,true);assert.ok(h.root.querySelector('.ensemble-tts'));
+  for(const branch of ['staging','main',null,'feature-test']){
+   h.state.extensionBranch=branch;await h.reload();await tick();
+   assert.equal(h.$('branchBadge'),null);assert.equal(h.state.branchLookups ?? 0,0);assert.ok(h.root.querySelector('.ensemble-tts'));
   }
-  h.state.extensionBranch='staging';await h.reload();await until(()=>!h.$('branchBadge').hidden);
-  h.state.branchLookupFails=true;await h.reload();await tick();assert.equal(h.$('branchBadge').hidden,true);assert.ok(h.root.querySelector('.ensemble-tts'));await h.plan();
+  h.state.branchLookupFails=true;await h.reload();await h.plan();assert.equal(h.state.branchLookups ?? 0,0);
   assert.equal(h.synthesis.length,0);
  }finally{await h.close();}
 });
@@ -725,7 +723,7 @@ test('cast defaults contain only lead and NPC choices; cancel and navigation dis
  const h=await harness();try{
   const current=structuredClone(h.store.get('chat:chat-a')),get=()=>document.querySelector('[role="dialog"][aria-label="Set default"]'),button=name=>[...get().querySelectorAll('button')].find(item=>item.textContent===name);
   h.$('captureDefaults').click();assert.ok(get());assert.equal(get().querySelectorAll('[role="tab"]').length,2);assert.equal(get().querySelector('[data-default-field]'),null);
-  assert.equal(h.$('captureDefaults').closest('[data-choir-panel]').dataset.choirPanel,'cast');
+  assert.equal(h.$('captureDefaults').closest('[data-choir-panel]').dataset.choirPanel,'settings');
   assert.equal(h.$('captureNpcDefaults'),null);
   const voice=get().querySelector('[aria-label="Default {{char}} voice"]');voice.value='';voice.dispatchEvent(new h.dom.window.Event('change'));
   button('Voices').focus();get().dispatchEvent(new h.dom.window.KeyboardEvent('keydown',{key:'Tab',shiftKey:true,bubbles:true}));assert.equal(document.activeElement,button('Save default'));
@@ -3285,7 +3283,7 @@ test('drawer Stop shares the mixer transport; legacy solo and passage selections
     for(const name of ['play','pause','next','previous','playSelected','resumePosition','seekHost'])assert.equal(h.root.querySelector('[data-et="'+name+'"]'),null);
     assert.equal(h.root.querySelector('[data-et="stop"]').disabled,true);
     assert.equal(h.root.querySelector('[aria-label^="Select passage"]'),null);assert.equal(h.root.querySelector('[aria-label^="Exclude passage"]'),null);
-    assert.equal(h.root.querySelector('[data-et="planDetails"]').open,false);assert.equal(h.footer.querySelector('[aria-label="Next spoken block"]'),null);assert.equal(h.footer.querySelector('input[type="range"]'),null);
+    assert.equal(h.root.querySelector('[data-et="planDetails"]').hidden,true);assert.equal(h.footer.querySelector('[aria-label="Next spoken block"]'),null);assert.equal(h.footer.querySelector('input[type="range"]'),null);
     assert.equal(document.querySelectorAll('[aria-label="Next spoken block"]').length,1);assert.equal(document.querySelector('[aria-label="Mira solo"]'),null);
     h.state.blockAudio=true;h.$('play').click();await until(()=>h.audios.at(-1)?.paused===false);assert.equal(h.audios.at(-1).volume,1);
     document.querySelector('[aria-label="Narrator silent"]').click();assert.equal(h.audios.at(-1).volume,0);h.$('stop').click();await tick();await h.reload();

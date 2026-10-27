@@ -4,14 +4,16 @@
 
 # Choir
 
-[![Version](https://img.shields.io/badge/version-1.1.6--staging.52-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/lunch-test)
+[![Version](https://img.shields.io/badge/version-1.1.6--staging.53-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/lunch-test)
 [![Platform](https://img.shields.io/badge/platform-Lumiverse%20Spindle-purple.svg)](https://docs.lumiverse.chat/)
-[![Tests](https://img.shields.io/badge/tests-590%20tests-blue.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-606%20tests-blue.svg)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 An installable Lumiverse Spindle extension for multi-voice narration, dialogue attribution, sound effects, ambience and background music.
 
 </div>
+
+Version **1.1.6-staging.53** keeps default save/apply feedback beside its actions, shows a compact Planned status beside the message number, and fits Playback speed/gap controls on narrow screens. The unused branch badge and its metadata lookup are removed. Regression tests follow the current drawer navigation and verify real browser visibility.
 
 Version **1.1.6-staging.52** puts **Open mixer / Close mixer** beside the drawer's Play, Plan latest and Stop controls, reachable from every drawer tab. The button stays in sync with the floating mixer's own open and collapse controls.
 

@@ -31,7 +31,7 @@ try{
     const remove=row.getByRole('button',{name:'Remove character',exact:true});assert.equal(await remove.textContent(),'Remove');assert.equal(await remove.isVisible(),true);await fits();
     const bounds=await remove.boundingBox(),viewport=page.viewportSize();assert.ok(bounds.x>=0 && bounds.x+bounds.width<=viewport.width+1);
     if(mobile)assert.ok(bounds.width>=44 && bounds.height>=44,JSON.stringify(bounds));
-    assert.equal(await row.locator('[data-choir-pronunciation-page]').isVisible(),false);await shot('editor');await remove.click();
+    assert.equal(await row.locator('[data-choir-pronunciation-page]').isVisible(),true);await shot('editor');await remove.click();
     await page.waitForFunction(()=>document.querySelector('[data-et="saveState"]').textContent==='Saved automatically');
     assert.equal(await page.evaluate(()=>window.fixtureStore.get('chat:fixture').fixed.some(actor=>actor.speaker==='Mira')),false);
     await page.evaluate(async()=>{window.cleanup();window.cleanup=await window.mountChoir();});

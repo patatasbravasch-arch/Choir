@@ -3,6 +3,7 @@ export async function showDrawerControl(page, name) {
  const field=page.locator(`[data-et="${name}"]`);
  const key=await field.evaluate(node=>node.closest('[data-choir-panel]')?.dataset.choirPanel);
  if(key)await page.locator(`[data-choir-tab="${key}"]`).click();
+ if(key==='cast' && await field.evaluate(node=>Boolean(node.closest('[data-et="otherCast"]'))))await page.locator('[data-et="castFilter"]').selectOption('all');
  const destination=await field.evaluate(node=>node.closest('[data-choir-destination]')?.dataset.choirDestination);
  if(destination)await page.locator(`[data-choir-open="${destination}"]`).click();
  const details=page.locator('details').filter({has:field});

@@ -105,7 +105,7 @@ try{
   await httpPage.goto(`http://choir-http.test:${server.address().port}`);
   assert.deepEqual(await httpPage.evaluate(()=>({secure:isSecureContext,uuid:typeof crypto.randomUUID,subtle:typeof crypto.subtle,random:typeof crypto.getRandomValues})),{secure:false,uuid:'undefined',subtle:'undefined',random:'function'});
   await httpPage.waitForFunction(()=>window.ready);
-  assert.equal(await httpPage.getByRole('heading',{name:'Choir',exact:true}).isVisible(),true);
+  assert.equal(await httpPage.getByRole('button',{name:'Setup guide',exact:true}).isVisible(),true);
   assert.equal(await httpPage.getByRole('button',{name:'Open Choir voice mixer',exact:true}).isVisible(),true);
   await httpPage.getByRole('button',{name:'Open Choir voice mixer',exact:true}).click();
   await withDrawerControl(httpPage,'latest',()=>httpPage.locator('[data-et="latest"]').click());await httpPage.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Ready:'));
@@ -116,12 +116,9 @@ try{
   await httpPage.getByRole('button',{name:'Open Choir voice mixer',exact:true}).click();
   await httpPage.locator('[data-choir-action="playback"]').click();await httpPage.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.includes('Playback finished'));
   assert.deepEqual(await httpPage.evaluate(()=>({namespace:window.fixtureStore.get('audio:namespace'),plans:window.plans,speech:window.calls.length})),{namespace:httpSaved.namespace,plans:httpSaved.plans,speech:httpSaved.speech});
-  assert.equal(await httpPage.getByRole('heading',{name:'Choir',exact:true}).isVisible(),true);assert.equal(await httpPage.locator('[data-choir-mixer]').count(),1);
-  await httpPage.waitForFunction(()=>!document.querySelector('[data-et="branchBadge"]').hidden);
-  await httpPage.evaluate(async()=>{window.fixtureBranch='main';window.cleanup();window.cleanup=await window.mountChoir();});
-  await httpPage.waitForFunction(()=>window.branchRequest==='main');assert.equal(await httpPage.locator('[data-et="branchBadge"]').isVisible(),false);
-  await httpPage.evaluate(async()=>{window.fixtureBranch='staging';window.cleanup();window.cleanup=await window.mountChoir();});
-  await httpPage.waitForFunction(()=>!document.querySelector('[data-et="branchBadge"]').hidden);
+  assert.equal(await httpPage.getByRole('button',{name:'Setup guide',exact:true}).isVisible(),true);assert.equal(await httpPage.locator('[data-choir-mixer]').count(),1);
+  assert.equal(await httpPage.locator('[data-et="branchBadge"]').count(),0);
+  assert.equal(await httpPage.evaluate(()=>window.branchRequest),undefined);
   await httpPage.evaluate(()=>window.cleanup());await httpPage.close();
   console.log('PASS: Chrome on an insecure HTTP hostname without randomUUID or SubtleCrypto loads the drawer and mixer, plans, plays, and remounts with saved plans and cached audio.');
   const boostPage=await browser.newPage({viewport:{width:1440,height:1000}});boostPage.on('pageerror',error=>errors.push(error.message));
@@ -163,7 +160,7 @@ try{
   await withDrawerControl(speedPage,'enableSfx',()=>speedPage.locator('[data-et="enableSfx"]').uncheck());await withDrawerControl(speedPage,'enableAmbience',()=>speedPage.locator('[data-et="enableAmbience"]').uncheck());
   await withDrawerControl(speedPage,'latest',()=>speedPage.locator('[data-et="latest"]').click());await speedPage.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Ready:'));
   await withDrawerControl(speedPage,'fixed',()=>speedPage.getByRole('button',{name:'Edit Mira',exact:true}).click());
-  await speedPage.getByRole('button',{name:'Pronunciation & voice speed ›',exact:true}).click();await speedPage.getByRole('spinbutton',{name:'Mira speed value',exact:true}).fill('0.75');await speedPage.getByRole('spinbutton',{name:'Mira speed value',exact:true}).blur();
+  await speedPage.getByRole('spinbutton',{name:'Mira speed value',exact:true}).fill('0.75');await speedPage.getByRole('spinbutton',{name:'Mira speed value',exact:true}).blur();
   if(process.env.CHOIR_CHARACTER_SPEED_SCREENSHOT)await speedPage.locator('.et-cast-row').filter({has:speedPage.locator('[aria-label="Mira speed"]')}).screenshot({path:process.env.CHOIR_CHARACTER_SPEED_SCREENSHOT});
   await withDrawerControl(speedPage,'voiceGapMsEntry',()=>speedPage.locator('[data-et="voiceGapMsEntry"]').fill('200'));await speedPage.locator('[data-et="voiceGapMsEntry"]').blur();
   await speedPage.evaluate(()=>{const OriginalAudio=window.Audio;window.Audio=function(url){const audio=new OriginalAudio(url);audio.addEventListener('playing',()=>audio.startedAt=performance.now());audio.addEventListener('ended',()=>audio.endedAt=performance.now());return audio;};});
@@ -181,9 +178,9 @@ try{
   await page.goto(`http://127.0.0.1:${server.address().port}`);await page.waitForFunction(()=>window.ready);
   assert.equal(await page.locator('[data-et="muteNarrator"]').count(),0);assert.equal(await page.getByText('Mute narrator (dialogue only)',{exact:true}).count(),0);
   const saveStatus=await page.locator('[data-et="saveState"]').boundingBox();
-  const titleBounds=await page.getByRole('heading',{name:'Choir',exact:true}).boundingBox();
+  const titleBounds=await page.getByRole('button',{name:'Setup guide',exact:true}).boundingBox();
   assert.ok(Math.abs(saveStatus.y+saveStatus.height/2-titleBounds.y-titleBounds.height/2)<1);
-  const toolbarButtons=await page.locator('.et-toolbar button:visible').all();
+  const toolbarButtons=await page.locator('.et-current-message .et-btn-group button:visible').all();
   assert.equal(await page.getByRole('button',{name:'Retry save',exact:true}).count(),0);
   const toolbarBounds=await Promise.all(toolbarButtons.map(button=>button.boundingBox()));
   assert.ok(toolbarBounds.every(bounds=>bounds.y>=saveStatus.y+saveStatus.height));
@@ -255,7 +252,7 @@ try{
   await page.waitForFunction(()=>document.querySelector('[data-et="saveState"]').textContent==='Saved automatically');
   await page.getByRole('button',{name:'Collapse Choir voice mixer',exact:true}).click();
   await page.locator('main').evaluate(node=>node.style.width='380px');
-  const narrowTitle=await page.getByRole('heading',{name:'Choir',exact:true}).boundingBox(),narrowStatus=await page.locator('[data-et="saveState"]').boundingBox();
+  const narrowTitle=await page.getByRole('button',{name:'Setup guide',exact:true}).boundingBox(),narrowStatus=await page.locator('[data-et="saveState"]').boundingBox();
   assert.ok(Math.abs(narrowTitle.y+narrowTitle.height/2-narrowStatus.y-narrowStatus.height/2)<1);
   assert.ok(narrowStatus.x>=narrowTitle.x+narrowTitle.width);
   assert.equal(await page.locator('.et-header').evaluate(node=>node.scrollWidth<=node.clientWidth+1),true);
@@ -314,7 +311,7 @@ try{
   assert.equal(await cast.locator('[data-choir-route]').evaluateAll(nodes=>nodes.every(node=>node.parentElement.hidden)),true);
   await withDrawerControl(page,'connectionMode',()=>page.locator('[data-et="connectionMode"]').selectOption('several',{force:true}));await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Several TTS restored'));
   assert.equal(await cast.locator('[data-choir-route]').nth(2).inputValue(),'native:b');
-  await withDrawerControl(page,'fixed',()=>cast.getByRole('button',{name:'Edit Narrator',exact:true}).click());await cast.getByRole('button',{name:'Pronunciation & voice speed ›',exact:true}).click();await cast.getByLabel('Aliases (comma separated)',{exact:true}).first().fill('Gentle narration');
+  await withDrawerControl(page,'fixed',()=>cast.getByRole('button',{name:'Edit Narrator',exact:true}).click());await cast.getByLabel('Aliases (comma separated)',{exact:true}).first().fill('Gentle narration');
   await page.waitForFunction(()=>document.querySelector('[data-et="saveState"]').textContent==='Saved automatically');
   assert.deepEqual(await page.evaluate(()=>window.fixtureStore.get('chat:fixture').fixed[0].aliases),['Gentle narration']);
   await page.evaluate(async()=>{window.cleanup();const config=window.fixtureStore.get('chat:fixture');for(let index=0;index<20;index++)config.fixed.push({speaker:index===0?'A character with a very long name that must fit without hiding controls':`Cast member ${index}`,voice:'n',style:''});window.cleanup=await window.mountChoir();});
@@ -469,11 +466,12 @@ try{
   await page.evaluate(()=>window.cleanup());assert.equal(await page.locator('[data-choir-mixer]').count(),0);
   const touch=await browser.newPage({viewport:{width:320,height:640},isMobile:true,hasTouch:true});touch.on('pageerror',error=>errors.push(error.message));await touch.goto(`http://127.0.0.1:${server.address().port}`);await touch.waitForFunction(()=>window.ready);
   assert.equal(await touch.getByRole('spinbutton',{name:'Mira speed value',exact:true}).isVisible(),false);
-  await showDrawerControl(touch,'fixed');await touch.getByRole('button',{name:'Edit Mira',exact:true}).tap();await touch.getByRole('button',{name:'Pronunciation & voice speed ›',exact:true}).tap();assert.equal(await touch.getByRole('spinbutton',{name:'Mira speed value',exact:true}).isVisible(),true);
+  await showDrawerControl(touch,'fixed');await touch.getByRole('button',{name:'Edit Mira',exact:true}).tap();assert.equal(await touch.getByRole('spinbutton',{name:'Mira speed value',exact:true}).isVisible(),true);
   assert.equal(await touch.locator('.et-character-speed').evaluateAll(nodes=>nodes.every(node=>node.scrollWidth<=node.clientWidth+1)),true);
   if(process.env.CHOIR_CHARACTER_SPEED_MOBILE_SCREENSHOT)await touch.locator('.et-cast-row').filter({has:touch.locator('[aria-label="Mira speed"]')}).screenshot({path:process.env.CHOIR_CHARACTER_SPEED_MOBILE_SCREENSHOT});
-  await touch.getByRole('button',{name:'Close Mira editor',exact:true}).tap();await touch.getByRole('button',{name:'Open Choir voice mixer',exact:true}).tap();
+  await touch.getByRole('button',{name:'Close Mira editor',exact:true}).tap();
   await showDrawerControl(touch,'abyssalMixerTheme');await touch.getByRole('checkbox',{name:'Match Abyssal Constellation',exact:true}).check();
+  await touch.getByRole('button',{name:'Open Choir voice mixer',exact:true}).tap();
   assert.equal(await touch.locator('[data-choir-mixer]').evaluate(node=>getComputedStyle(node).getPropertyValue('--cm-bg').trim()),'#061323');
   const targets=await touch.locator('.cm-transport button').evaluateAll(nodes=>nodes.map(node=>{const rect=node.getBoundingClientRect();return {x:rect.x,width:rect.width,height:rect.height};}));assert.equal(targets.length,5);assert.ok(targets.every((rect,index)=>rect.width>=44 && rect.height>=44 && (!index || rect.x>=targets[index-1].x+targets[index-1].width)));
   const touchMixer=touch.locator('[data-choir-mixer]');assert.equal(await touch.getByRole('slider',{name:'Master volume',exact:true}).isVisible(),false);
