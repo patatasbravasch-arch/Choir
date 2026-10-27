@@ -1,5 +1,5 @@
 import { characterCardRoleDiscovery, namePronunciation, namePronunciationTarget, namePronunciations, respellNames, mergeSettingsChanges, reconcileCastDuplicates } from './core.js';
-import { createSetupWizard, saveSetupSettings } from './setup.js';
+import { createSetupWizard, saveSetupSettings, ONBOARDING_KEY } from './setup.js';
 import { ABYSSAL_THEME_CSS } from './abyssal-theme.js';
 import { randomUuid, sha256Hex, GEMINI_VOICES, OPENAI_VOICES, additionalVoices, apiErrorMessage, MAX_SPEECH_CHARS, MAX_CHANNEL_VOLUME, speechProviderFamily, speechRequestLimits, normalizeName, normalizeVoiceCatalogue, characterCardRoles, validateCardRoles, reconcileCardCast, unisonSpeakers, speechSourceUnits, mixUnisonAudio, speechDownloadWav, transcriptFromMessage, readableText, readAlongIndex, locatePassages, spokenLength, validateCastConfig, validatePlan, npcCastActor, parsePlanJson, speechBatches, groupedSpeechBatches, audioBytes, fastClassifyPlan, resolvePlannerMode, attributionPlan, restoreAttribution, passageKey, mixerVolume, loudnessGain, castExport, castImport, applySoundCues, cueOffset, sfxCueOffset, transcriptLines, withoutLines } from './core.js';
 import { normalizeSpeedSliderMax, normalizePlaybackRate, normalizeVoiceGap, speakerPlaybackRate, effectivePlaybackRate, browserPlaybackRate, PLAYBACK_RATE_LIMITS, VOICE_GAP_LIMITS } from './core.js';
@@ -325,7 +325,7 @@ export async function setup(ctx) {
     <div data-et="fixed"></div>
 
     <div data-et="npcs"></div>
-    <details data-et="otherCast" hidden><summary>Other characters (<span data-et="otherCastCount">0</span>)</summary><p style="font-size:.85em;opacity:.75">Not used in the current reply. Their voices and settings stay saved; they appear above again when used.</p><div data-et="otherCastRows"></div></details>
+    <section data-et="otherCast" hidden><span data-et="otherCastCount" hidden>0</span><div data-et="otherCastRows"></div></section>
     <h4 class="et-subhead">Automatic casting</h4><p class="et-hint">Voice selection for characters discovered in the story.</p><div data-et="npcPolicyRoot" class="et-npc-policy"></div>
     <p data-et="defaultStatus" role="status" aria-live="polite" style="font-size:.85em;opacity:.8"></p>
     </section><section data-choir-page="settings">
@@ -359,7 +359,7 @@ export async function setup(ctx) {
     </div>
     </section><section data-choir-page="play"><h4 class="et-subhead">Sound</h4>
     <div class="et-row">
-      <label class="et-check" title="Foley cues from Freesound (key in Advanced Settings)"><input data-et="enableSfx" type="checkbox" checked> Sound effects</label>
+      <label class="et-check" title="Foley cues from Freesound (key in Playback → Soundscape)"><input data-et="enableSfx" type="checkbox" checked> Sound effects</label>
       <label class="et-check" title="Ambient background sound from Freesound"><input data-et="enableAmbience" type="checkbox" checked> Ambience</label>
       <label class="et-check" title="Kevin MacLeod's incompetech tracks, CC BY 4.0"><input data-et="enableMusic" type="checkbox"> Music</label>
       <label class="et-check" data-et="loopMusicWrap" title="Keep the track playing between replies until another music cue replaces it. Stop, music off, or changing chats ends playback."><input data-et="loopMusic" type="checkbox"> Loop music</label>
@@ -418,13 +418,13 @@ export async function setup(ctx) {
       </div>
       <label data-et="extraVoicesWrap" style="margin-top:10px"><span data-et="extraVoicesLabel">Additional voices & community models (ID | description)</span><textarea data-et="extraVoices" rows="2" placeholder="voice_id | description (e.g. Fish Audio community model ID or Gemini voice)"></textarea></label>
     </section></section>
-    <details data-et="planDetails" hidden><summary data-et="planSummary">Speech plan</summary>
+    <section data-et="planDetails" hidden><h4 data-et="planSummary">Speech plan</h4>
     <div data-et="preview"></div>
     <details>
       <summary>Edit attribution JSON</summary>
       <textarea data-et="planJson" rows="6" spellcheck="false" style="margin-top:8px"></textarea>
       <button data-et="apply" style="margin-top:8px">Apply JSON</button>
-    </details></details>
+    </details></section>
     <details hidden><summary>Import / export cast</summary><p>Exports include routes and preferences, never credentials. Imported routes must exist on this host.</p>
       <textarea data-et="castJson" aria-label="Cast JSON"></textarea><button data-et="exportCast">Export cast</button><button data-et="importCast">Validate and import cast</button>
     </details>
@@ -945,7 +945,7 @@ export async function setup(ctx) {
   const mixerQuickButtons=new Map(quickButtonKeys.map((key,index)=>[key,[mixerAutoPlan,mixerAutoPlay,mixerSfx,mixerAmbience,mixerMusic,mixerFollow,mixerMessages][index]]));
   const customizePanel=$('mixerLayoutOptions'),layoutPanel=$('mixerLayout');layoutPanel.id=`choir-mixer-layout-${randomUuid()}`;$('customizeMixer').setAttribute('aria-controls',layoutPanel.id);
   const showMixerLayout=open=>{layoutPanel.hidden=!open;$('customizeMixer').setAttribute('aria-expanded',String(open));drawerNavigation.showMixer(open);if(open)refreshMixerLayoutEditor();};
-  const layoutBar=document.createElement('div');layoutBar.className='et-pagebar';const layoutTitle=layoutPanel.querySelector('h3');layoutTitle.textContent='Customize mixer';$('closeMixerLayout').textContent='←';$('closeMixerLayout').setAttribute('aria-label','Back to sound');layoutBar.append($('closeMixerLayout'),layoutTitle);layoutPanel.prepend(layoutBar);
+  const layoutBar=document.createElement('div');layoutBar.className='et-pagebar';const layoutTitle=layoutPanel.querySelector('h3');layoutTitle.textContent='Customize mixer';$('closeMixerLayout').textContent='←';$('closeMixerLayout').setAttribute('aria-label','Back to playback');layoutBar.append($('closeMixerLayout'),layoutTitle);layoutPanel.prepend(layoutBar);
   $('customizeMixer').onclick=()=>showMixerLayout(layoutPanel.hidden);
   $('closeMixerLayout').onclick=()=>{showMixerLayout(false);$('customizeMixer').focus();};
   layoutPanel.addEventListener('keydown',event=>{if(event.key==='Escape'){event.preventDefault();showMixerLayout(false);$('customizeMixer').focus();}});
@@ -968,8 +968,7 @@ export async function setup(ctx) {
     const move=offset=>{const order=mixerState.quickButtonOrder,index=order.indexOf(key),next=index+offset;if(next<0 || next>=order.length)return;[order[index],order[next]]=[order[next],order[index]];refreshMixerLayoutEditor();applyMixerLayout();void persistMixer();(offset<0?up:down).disabled?layoutChecks.get(key).focus():(offset<0?up:down).focus();};up.onclick=()=>move(-1);down.onclick=()=>move(1);row.append(up,down);quickLayoutRows.set(key,{row,up,down});
   }
   const resetMixerLayout=document.createElement('button');resetMixerLayout.type='button';resetMixerLayout.className='cm-reset-layout';resetMixerLayout.textContent='Reset mixer layout';resetMixerLayout.onclick=()=>{mixerState.layout={...mixerLayoutDefaults};mixerState.quickButtonOrder=[...quickButtonKeys];mixerState.quickButtonColumns=0;refreshMixerLayoutEditor();applyMixerLayout();void persistMixer();};customizePanel.append(resetMixerLayout);
-  const volumeLimits=document.createElement('section');volumeLimits.className='et-volume-limits';volumeLimits.setAttribute('aria-label','Volume limits');volumeLimits.hidden=true;const limitsHeading=document.createElement('h3');limitsHeading.textContent='Volume limits';const limitsBar=document.createElement('div');limitsBar.className='et-pagebar';const limitsBack=document.createElement('button');limitsBack.type='button';limitsBack.textContent='←';limitsBack.setAttribute('aria-label','Back to mixer customization');limitsBar.append(limitsBack,limitsHeading);volumeLimits.append(limitsBar);layoutPanel.append(volumeLimits);
-  const limitsLink=document.createElement('button');limitsLink.type='button';limitsLink.className='et-link-row';limitsLink.dataset.choirVolumeLimits='';limitsLink.textContent='Volume limits ›';customizePanel.append(limitsLink);limitsLink.onclick=()=>{customizePanel.hidden=true;layoutBar.hidden=true;volumeLimits.hidden=false;limitsBack.focus();};limitsBack.onclick=()=>{volumeLimits.hidden=true;customizePanel.hidden=false;layoutBar.hidden=false;limitsLink.focus();};
+  const volumeLimits=drawerNavigation.volumePage;volumeLimits.classList.add('et-volume-limits');volumeLimits.setAttribute('aria-label','Volume limits');
   for(const [kind,label] of [['master','Master'],['voices','Voices'],['music','Music'],['ambience','Ambience'],['sfx','Sound effects']]){
     const field=document.createElement('label'),name=document.createElement('span'),number=document.createElement('input'),unit=document.createElement('span');name.textContent=label;number.type='number';number.min='1';number.max=kind==='master'?'100':'300';number.step='1';number.value=String(Math.round(mixerState.volumeLimits[kind]*100));number.setAttribute('aria-label',`${label} maximum percent`);number.dataset.choirVolumeLimit=kind;unit.textContent='%';field.append(name,number,unit);volumeLimits.append(field);
     number.onchange=()=>{mixerState.volumeLimits=normalizeMixerVolumeLimits({...mixerState.volumeLimits,[kind]:Number(number.value)/100});number.value=String(Math.round(mixerState.volumeLimits[kind]*100));mixerState.master=Math.min(mixerState.master,mixerState.volumeLimits.master);for(const effect of ['music','ambience','sfx'])mixerState[effect]=Math.min(mixerState[effect],mixerState.volumeLimits[effect]);for(const channel of Object.values(mixerState.channels))channel.volume=Math.min(channel.volume,mixerState.volumeLimits.voices);masterVolume.setVolumeMaximum(mixerState.volumeLimits.master,mixerState.master);applyVolume();renderMixer();refreshSectionControls();void persistMixer();};
@@ -1506,6 +1505,7 @@ export async function setup(ctx) {
   }
   const setupWizard=createSetupWizard(ctx,{
     report:message=>status(message,true),
+    onState:state=>drawerNavigation.setSetupReminder(!state?.completed && Boolean(state?.deferred)),
     session:()=>({jev:$('jevKey').value.trim()}),
     setSession:(kind,value)=>{if(kind==='jev')$('jevKey').value=value;},
     connections:signal=>wizardConnections(signal,true),
@@ -1581,6 +1581,7 @@ export async function setup(ctx) {
     }
   });
   $('setupWizard').onclick=()=>void setupWizard.open();
+  void ctx.settings.get(ONBOARDING_KEY).then(state=>{if(!disposed)drawerNavigation.setSetupReminder(!state?.completed && Boolean(state?.deferred));}).catch(()=>{});
   unsubs.push(()=>setupWizard.dispose());
   function refreshDefaultControls(){
     $('captureDefaults').disabled=busy || defaultOperation || !chatId || !castRows.length;
@@ -1787,7 +1788,7 @@ export async function setup(ctx) {
       }
       validateNumericSettings(candidate);
       for(const name of ['chunk','plannerTokens','prefetch'])if(!$(name).value.trim())throw new Error('Enter a value for '+$(name).parentElement.firstChild.textContent.trim()+'.');
-    }catch(error){++settingsEdit;pendingSettings=null;clearTimeout(autosaveTimer);autosaveTimer=null;saveState(castConflict?'Not saved · duplicate character name':'Not saved · check Advanced Settings',true);status(error.message,true);return false;}
+    }catch(error){++settingsEdit;pendingSettings=null;clearTimeout(autosaveTimer);autosaveTimer=null;saveState(castConflict?'Not saved · duplicate character name':'Not saved · check Settings',true);status(error.message,true);return false;}
     if(candidate.ignoredTags!==config.ignoredTags){stop(false);clearPlan();paragraphCues.clear();renderMessages();}
     if(JSON.stringify(namePronunciations(pronunciationActors(candidate)))!==JSON.stringify(namePronunciations(pronunciationActors(config))))stop(false);
     $('readingPreview').hidden=true;
@@ -2248,7 +2249,7 @@ export async function setup(ctx) {
       rowVoices=addExtraVoice(id,description,selectedRoute);
       if(![...voice.options].some(item=>item.value===id))option(voice,id,id);
       voice.value=id;searchFilter='';voiceSearchInput.value='';filterVoices();
-      if(!scheduleSettingsSave())throw new Error('Voice ID could not be saved. Check Advanced Settings first.');
+      if(!scheduleSettingsSave())throw new Error('Voice ID could not be saved. Check Settings first.');
       await flushSettings();
       if(disposed || chatId!==targetChat || version!==loadVersion || !root.contains(row))return;
       closeVoiceIdEditor();renderCast();status(`Voice ID saved for ${name.value || 'character'}. Use the preview button to test it.`);
@@ -2354,13 +2355,11 @@ export async function setup(ctx) {
 
     auditionRowBtn.setAttribute('aria-label',`Audition ${actor.speaker}`);header.append(auditionRowBtn);auditionRowBtn.classList.add('et-cast-audition');
     const summary=document.createElement('span');summary.className='et-cast-summary';header.append(summary);
-    const refreshSummary=()=>{const selected=rowVoices.find(item=>item.id===voice.value),provider=detectProvider(route.value || scope(config)),label={fish_audio:'Fish',gemini:'Gemini',google_tts:'Gemini',openai_tts:'OpenAI',openrouter_tts:'OpenRouter'}[provider] || provider;summary.textContent=`${selected?.name || voice.value || 'Automatic'} · ${label}`;};refreshSummary();voice.addEventListener('change',refreshSummary);route.addEventListener('change',refreshSummary);
+    const refreshSummary=()=>{const selected=rowVoices.find(item=>item.id===voice.value),provider=detectProvider(route.value || scope(config)),label={fish_audio:'Fish',gemini:'Gemini',google_tts:'Gemini',openai_tts:'OpenAI',openrouter_tts:'OpenRouter'}[provider] || provider;const display=selected?.name && selected.name!==voice.value?selected.name:selected?.description?.split(/[.;\n]/)[0]?.slice(0,48) || (voice.value && /^[a-f0-9]{20,}$/i.test(voice.value)?'Saved voice':voice.value) || 'Automatic';summary.textContent=`${display} · ${label}`;summary.title=voice.value || 'Chosen during planning';};refreshSummary();voice.addEventListener('change',refreshSummary);route.addEventListener('change',refreshSummary);
     voiceSearchRow.append(voiceSearchInput,searchCommBtn,voiceIdBtn);
     const browse=document.createElement('button');browse.type='button';browse.textContent='Find a voice';browse.setAttribute('aria-expanded','false');voiceSearchRow.hidden=true;browse.onclick=()=>{voiceSearchRow.hidden=!voiceSearchRow.hidden;browse.setAttribute('aria-expanded',String(!voiceSearchRow.hidden));if(!voiceSearchRow.hidden)voiceSearchInput.focus();};
     voiceWrap.append(voice,browse,voiceSearchRow,voiceIdEditor);
-    const secondary=document.createElement('section');secondary.hidden=true;secondary.dataset.choirPronunciationPage='';const primary=document.createElement('div');primary.dataset.choirVoicePage='';editor.append(primary,secondary);
-    const secondaryLink=document.createElement('button');secondaryLink.type='button';secondaryLink.className='et-link-row';secondaryLink.textContent='Pronunciation & voice speed ›';
-    const backVoice=document.createElement('button');backVoice.type='button';backVoice.textContent='←';backVoice.setAttribute('aria-label','Back to voice');const secondaryBar=document.createElement('div');secondaryBar.className='et-pagebar';const secondaryTitle=document.createElement('h3');secondaryTitle.textContent='Pronunciation & speed';secondaryBar.append(backVoice,secondaryTitle);secondary.append(secondaryBar);secondaryLink.onclick=()=>{primary.hidden=true;secondary.hidden=false;backVoice.focus();};backVoice.onclick=()=>{secondary.hidden=true;primary.hidden=false;secondaryLink.focus();};
+    const primary=document.createElement('div');primary.dataset.choirVoicePage='';const secondary=document.createElement('section');secondary.dataset.choirPronunciationPage='';secondary.className='et-control-group';const pronunciationTitle=document.createElement('h4');pronunciationTitle.textContent='Pronunciation & speed';secondary.append(pronunciationTitle);editor.append(primary,secondary);
     name.style.display='';const nameLabel=document.createElement('label');nameLabel.textContent='Name';nameLabel.className='et-inline-field';nameLabel.append(name);primary.append(nameLabel);
     const deliveryPair=document.createElement('div');deliveryPair.className='et-edit-pair';
 
@@ -2375,7 +2374,7 @@ export async function setup(ctx) {
       if(node===accent)wrap.title='Requested on every passage. The model and selected voice determine how convincingly it can produce the accent. Fish S1 uses the voice’s recorded accent.';
       if(node===voiceWrap)wrap.style.cssText='grid-column:1 / -1;margin-top:2px';
     }
-    style.closest('label').before(deliveryPair);primary.append(secondaryLink);
+    style.closest('label').before(deliveryPair);
     const speedSection=document.createElement('div');speedSection.className='et-tuning et-character-speed';
     const speedHeading=document.createElement('span');speedHeading.className='et-tuning-title';speedHeading.textContent='Voice speed';
     const speedSlot=document.createElement('div');speedSlot.className='et-tuning-slot';
@@ -2419,9 +2418,8 @@ export async function setup(ctx) {
     });
     const focused=document.activeElement;let restoreFocus=false;
     for(const [target,rows] of buckets)rows.forEach((row,index)=>{if(target.children[index]!==row){if(row.contains(focused))restoreFocus=true;target.insertBefore(row,target.children[index] || null);}});
-    const count=buckets.get(otherRows).length;other.hidden=!count;$('otherCastCount').textContent=String(count);
-    if(!count || previous && previous.id!==latest?.id && !other.contains(focused))other.open=false;
-    if(restoreFocus)(otherRows.contains(focused) && !other.open?other.querySelector('summary'):focused)?.focus({preventScroll:true});
+    const count=buckets.get(otherRows).length;$('otherCastCount').textContent=String(count);drawerNavigation.updateCastFilter(count);
+    if(restoreFocus)(otherRows.contains(focused) && other.hidden?$('castFilter'):focused)?.focus({preventScroll:true});
   }
   function renderCast() {
     drawerNavigation.closeCast();
@@ -3483,7 +3481,7 @@ export async function setup(ctx) {
   const freesoundKey=snapshot=>(snapshot.freesoundApiKey || $('freesoundApiKey')?.value || '').trim();
   const soundsEnabled=snapshot=>snapshot.enableSfx!==false || snapshot.enableAmbience!==false;
   const soundCuesWanted=snapshot=>soundsEnabled(snapshot) && Boolean(freesoundKey(snapshot)) || snapshot.enableMusic===true;
-  const missingFoleyKey=snapshot=>soundsEnabled(snapshot) && !freesoundKey(snapshot)?'Sound effects and ambience need a Freesound API key in Advanced settings. Speech continues.':'';
+  const missingFoleyKey=snapshot=>soundsEnabled(snapshot) && !freesoundKey(snapshot)?'Sound effects and ambience need a Freesound API key in Playback → Soundscape. Speech continues.':'';
   async function chooseSoundCues(segments,signal,onStage=status,currentMusic){
     onStage('Choosing sound effects…');
     const result=await rpc('sfx',{segments:segments.map(({speaker,text})=>({speaker,text})),connectionId:config.planner,music:config.enableMusic===true,...(currentMusic?{currentMusic}:{})},signal,60000,
@@ -4469,7 +4467,7 @@ export async function setup(ctx) {
     const sourceKey=`${seg.kind}:${foleyKey(sfx)}`,key=volatileKey(sourceKey,snapshot);
     return loadVolatileAudio(foleyCache,key,sourceKey,snapshot,signal,async()=>{
     const apiKey = snapshot.freesoundApiKey || $('freesoundApiKey')?.value?.trim() || '';
-    if(!apiKey)throw new Error('Configure a Freesound API key in Advanced Settings');
+    if(!apiKey)throw new Error('Configure a Freesound API key in Playback → Soundscape');
     let previewUrl;
     // Freesound requires every search word to match, so drop trailing words until one matches.
     for(let words=query.split(' ');!previewUrl && words.length;words=words.slice(0,-1)){

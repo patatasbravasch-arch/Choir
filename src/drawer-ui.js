@@ -1,82 +1,85 @@
-// Arrange existing controls without changing their listeners or saved settings.
+// Move the existing controls; their listeners and persistence remain shared.
 export function createDrawerNavigation(root) {
-  const host = root.querySelector('.ensemble-tts'), document = root.ownerDocument;
-  const navigation = document.createElement('nav');
-  navigation.className = 'et-task-tabs'; navigation.setAttribute('role', 'tablist'); navigation.setAttribute('aria-label', 'Choir tasks');
-  const panels = new Map(), buttons = new Map();let focusedCast;
-  for (const [key, title, hint] of [
-    ['cast','Cast','Choose a voice, accent and delivery for each character.'],
-    ['play','Sound',''],
-    ['recordings','Saved',''],
-    ['settings','Setup','']
-  ]) {
-    const button = document.createElement('button'), panel = document.createElement('section'), intro = document.createElement('p');
-    button.type = 'button'; button.textContent = title; button.id = `choir-tab-${key}`; button.dataset.choirTab = key;
-    button.setAttribute('role', 'tab'); button.setAttribute('aria-controls', `choir-panel-${key}`);
-    panel.id = `choir-panel-${key}`; panel.className = 'et-task-panel'; panel.dataset.choirPanel = key;
-    panel.setAttribute('role', 'tabpanel'); panel.setAttribute('aria-labelledby', button.id); panel.tabIndex = 0;
-    intro.className = 'et-hint'; intro.textContent = hint; panel.append(intro);
-    for (const fragment of [...host.querySelectorAll(`[data-choir-page="${key}"]`)]) panel.append(...fragment.childNodes), fragment.remove();
-    panels.set(key, panel); buttons.set(key, button); navigation.append(button); host.append(panel);
-  }
-  host.querySelector('[data-et="feedback"]').after(navigation);
-  const select = (key, focus = false) => {
-    if (!panels.has(key)) return;
-    if(key!=='cast')closeCast();
-    for (const [id, panel] of panels) { panel.hidden = id !== key; buttons.get(id).setAttribute('aria-selected', String(id === key)); buttons.get(id).tabIndex = id === key ? 0 : -1; }
-    if (focus) buttons.get(key).focus();
-  };
-  for (const [key, button] of buttons) {
-    button.onclick = () => {if(key==='cast')closeCast();select(key);};
-    button.onkeydown = event => {
-      const keys = [...buttons.keys()], index = keys.indexOf(key);
-      const next = event.key === 'ArrowRight' ? (index + 1) % keys.length : event.key === 'ArrowLeft' ? (index + keys.length - 1) % keys.length : event.key === 'Home' ? 0 : event.key === 'End' ? keys.length - 1 : -1;
-      if (next >= 0) { event.preventDefault(); select(keys[next], true); }
-    };
-  }
-  const move = (name, key) => { const node = host.querySelector(`[data-et="${name}"]`); if (node) panels.get(key).append(node); };
-  const playActions = document.createElement('div'); playActions.className = 'et-row';
-  const play = document.createElement('button'); play.type = 'button'; play.dataset.et = 'drawerPlay'; play.textContent = 'Play latest reply'; play.className = 'et-btn-primary'; play.disabled = true; playActions.append(play);
-  for (const name of ['latest', 'showMixer']) playActions.append(host.querySelector(`[data-et="${name}"]`));
-  panels.get('play').querySelector('.et-hint').after(playActions);
-  playActions.after(host.querySelector('[data-et="latestNotice"]'));
-  const settingsActions = document.createElement('div'); settingsActions.className = 'et-row';
-  for (const name of ['setupWizard', 'customizeMixer']) settingsActions.append(host.querySelector(`[data-et="${name}"]`));
-  panels.get('settings').querySelector('.et-hint').after(settingsActions);
-  settingsActions.after(host.querySelector('[data-et="mixerLayout"]'));
-  const recordings = host.querySelector('[data-et="messages"]').closest('details');
-  recordings.querySelector('summary').remove(); panels.get('recordings').append(...recordings.childNodes); recordings.remove();
-  const retention = host.querySelector('[data-et="retention"]').closest('label'); panels.get('recordings').querySelector('.et-hint').after(retention);
-  move('planDetails', 'play');
+  const host=root.querySelector('.ensemble-tts'),doc=root.ownerDocument;
   const field=name=>host.querySelector(`[data-et="${name}"]`);
-  const current=document.createElement('div');current.className='et-current-message';
-  const label=document.createElement('span');label.dataset.et='currentMessageLabel';label.textContent='Latest reply';
-  const download=document.createElement('button');download.type='button';download.dataset.et='drawerDownload';download.textContent='↓';download.setAttribute('aria-label','Download latest reply audio');download.hidden=true;
-  playActions.append(download);playActions.className='et-btn-group';current.append(label,playActions,field('latestNotice'));host.querySelector('.et-header').after(current);
-  field('latestNotice').textContent='Planned';field('latestNotice').title='Use Plan latest again to rebuild the plan. Saved audio remains reusable.';field('latestNotice').removeAttribute('role');
-  const cast=panels.get('cast'),sound=panels.get('play'),settings=panels.get('settings'),saved=panels.get('recordings');
-  cast.querySelector('h3').textContent='In this reply';cast.querySelector('.et-subhead').textContent='New characters';cast.querySelector('[data-et="otherCast"] p')?.remove();
-  const defaults=document.createElement('div');defaults.className='et-default-actions';defaults.append(field('captureDefaults'),field('applyDefaults'));field('npcPolicyRoot').after(defaults);
-  function closeCast(){if(!focusedCast)return;const {row,details,wasOpen,onClose}=focusedCast;focusedCast=null;row.classList.remove('et-focused-cast');if(details)details.open=wasOpen;cast.removeAttribute('data-editing');onClose?.();}
-  const soundActions=document.createElement('div');soundActions.className='et-row';soundActions.append(field('customizeMixer'));sound.prepend(soundActions);sound.append(field('mixerLayout'));
-  field('mixerLayout').classList.remove('et-card');
-  const savedHeading=document.createElement('div');savedHeading.className='et-section-header';const heading=document.createElement('h3');heading.textContent='This chat';const all=document.createElement('button');all.type='button';all.dataset.et='downloadAll';all.textContent='Download all';all.disabled=true;savedHeading.append(heading,all);saved.prepend(savedHeading);saved.append(field('retention').closest('label'),field('deleteChatAudio').parentElement);
-  const advanced=document.createElement('section');advanced.hidden=true;advanced.dataset.choirAdvanced='';
-  const bar=document.createElement('div');bar.className='et-pagebar';const back=document.createElement('button');back.type='button';back.textContent='←';back.setAttribute('aria-label','Back to setup');const title=document.createElement('h3');title.textContent='Advanced settings';bar.append(back,title);advanced.append(bar);
-  const performance=field('concurrency').closest('section');performance.querySelector('h4')?.remove();advanced.append(performance);
-  for(const details of [...settings.querySelectorAll(':scope>details')])advanced.append(details);
-  const importCast=field('castJson').closest('details');importCast.hidden=false;advanced.append(importCast);
-  const advancedButton=document.createElement('button');advancedButton.type='button';advancedButton.className='et-link-row';advancedButton.dataset.et='advancedSettings';advancedButton.textContent='Advanced settings ›';settings.append(advancedButton,advanced);
-  const showAdvanced=open=>{settings.dataset.advanced=String(open);advanced.hidden=!open;};advancedButton.onclick=()=>showAdvanced(true);back.onclick=()=>showAdvanced(false);
-  const interfaceOptions=document.createElement('div');interfaceOptions.className='et-check-grid';for(const key of ['sectionButtons','enableMixer','abyssalMixerTheme','showAutoPlanAction'])interfaceOptions.append(field(key).closest('label'));sound.append(interfaceOptions);
-  for(const key of ['enableSfx','followNarration'])field(key).closest('.et-row')?.classList.add('et-check-grid');
-  field('readAlong').closest('label').classList.remove('et-check');field('readAlong').closest('label').classList.add('et-inline-field');
-  settingsActions.className='et-setup-actions';settings.querySelector('h3').textContent='Connections';settings.querySelector('.et-section-header').after(settingsActions);
-  const savedHint=document.createElement('p');savedHint.className='et-hint';savedHint.textContent='Recent messages below. Download all includes complete recordings throughout this chat.';savedHeading.after(savedHint);
-  const auto=document.createElement('div');auto.className='et-check-grid';auto.append(field('auto').closest('label'));const autoPlan=document.createElement('label');autoPlan.className='et-check';const input=document.createElement('input');input.type='checkbox';input.dataset.et='drawerAutoPlan';autoPlan.append(input,document.createTextNode('Auto-plan new replies'));auto.prepend(autoPlan);advancedButton.before(auto);
+  const el=(tag,text,parent)=>{const node=doc.createElement(tag);if(text)node.textContent=text;parent?.append(node);return node;};
+  const button=(text,parent,action)=>{const node=el('button',text,parent);node.type='button';node.onclick=action;return node;};
+  const panels=new Map(),buttons=new Map(),pages=new Map();let focusedCast;
+  const nav=el('nav');nav.className='et-task-tabs';nav.setAttribute('role','tablist');nav.setAttribute('aria-label','Choir tasks');
+  for(const [key,title] of [['cast','Cast'],['play','Playback'],['recordings','Saved'],['settings','Settings']]){
+    const tab=button(title,nav,()=>{closeCast();closePages();select(key);});tab.dataset.choirTab=key;tab.id=`choir-tab-${key}`;tab.setAttribute('role','tab');tab.setAttribute('aria-controls',`choir-panel-${key}`);
+    const panel=el('section','',host);panel.className='et-task-panel';panel.dataset.choirPanel=key;panel.id=`choir-panel-${key}`;panel.setAttribute('role','tabpanel');panel.setAttribute('aria-labelledby',tab.id);
+    for(const source of [...host.querySelectorAll(`[data-choir-page="${key}"]`)]){panel.append(...source.childNodes);source.remove();}
+    buttons.set(key,tab);panels.set(key,panel);
+    tab.onkeydown=event=>{const keys=[...buttons.keys()],i=keys.indexOf(key),next=event.key==='ArrowRight'?(i+1)%4:event.key==='ArrowLeft'?(i+3)%4:event.key==='Home'?0:event.key==='End'?3:-1;if(next>=0){event.preventDefault();buttons.get(keys[next]).click();buttons.get(keys[next]).focus();}};
+  }
+  host.querySelector('[data-et="feedback"]').after(nav);
+  const cast=panels.get('cast'),playback=panels.get('play'),saved=panels.get('recordings'),settings=panels.get('settings');
+  const home=new Map();for(const [key,panel] of panels){const content=el('div');content.className='et-tab-home';content.append(...panel.childNodes);panel.append(content);home.set(key,content);}
+  function select(key,focus=false){if(!panels.has(key))return;if(key!=='cast')closeCast();for(const [id,panel] of panels){panel.hidden=id!==key;buttons.get(id).setAttribute('aria-selected',String(id===key));buttons.get(id).tabIndex=id===key?0:-1;}if(focus)buttons.get(key).focus();}
+  function closePages(){for(const page of pages.values())page.hidden=true;for(const content of home.values())content.hidden=false;field('customizeMixer')?.setAttribute('aria-expanded','false');}
+  function openPage(key){const page=pages.get(key);if(!page)return;closeCast();closePages();select(page.closest('[data-choir-panel]').dataset.choirPanel);home.get(page.closest('[data-choir-panel]').dataset.choirPanel).hidden=true;page.hidden=false;if(key==='mixer')field('customizeMixer').setAttribute('aria-expanded','true');page.querySelector('h3')?.focus();}
+  function page(key,title,tab,trigger){const node=el('section','',panels.get(tab));node.dataset.choirDestination=key;node.hidden=true;const bar=el('div','',node);bar.className='et-pagebar';const back=()=>{closePages();trigger?.focus();};button(`← ${buttons.get(tab).textContent}`,bar,back);node.onkeydown=event=>{if(event.key==='Escape'){event.preventDefault();back();}};const heading=el('h3',title,bar);heading.tabIndex=-1;pages.set(key,node);if(trigger){trigger.dataset.choirOpen=key;trigger.onclick=()=>openPage(key);}return node;}
+  const move=(name,parent)=>{const node=field(name);if(node)parent.append(node);return node;};
+  const moveLabel=(name,parent)=>{const node=field(name);if(node)parent.append(node.closest('label') || node);};
+  const group=(title,parent)=>{const section=el('section','',parent);section.className='et-control-group';el('h4',title,section);return section;};
+  // The host supplies the Choir title. Keep a single persistent setup entry.
+  const header=host.querySelector('.et-header');header.querySelector('.et-title-group').hidden=true;
+  const setup=move('setupWizard',header);setup.textContent='Setup guide';setup.className='et-setup-link';header.prepend(setup);move('saveState',header);move('save',header);
+  const current=el('div');current.className='et-current-message';header.after(current);el('span','Latest reply',current).dataset.et='currentMessageLabel';
+  const transport=el('div','',current);transport.className='et-btn-group';const start=button('Play',transport);start.dataset.et='drawerPlay';start.disabled=true;start.className='et-btn-primary';
+  move('latest',transport);move('stop',transport);const download=button('↓',transport);download.dataset.et='drawerDownload';download.hidden=true;download.setAttribute('aria-label','Download latest reply audio');
+  const notice=move('latestNotice',current);notice.textContent='Planned';notice.title='Plan latest again to rebuild the plan.';notice.removeAttribute('role');
+  const reminder=button('Continue setup →',header,()=>setup.click());reminder.dataset.et='continueSetup';reminder.hidden=true;
+  // Cast is a filtered list, never an accordion of old characters.
+  const castHome=home.get('cast');castHome.querySelector('h3').textContent='Characters';
+  const filter=el('select');filter.dataset.et='castFilter';filter.setAttribute('aria-label','Show characters');for(const [value,title] of [['current','In this reply'],['all','All saved']]){const option=el('option',title,filter);option.value=value;}
+  castHome.querySelector('.et-section-header').after(filter);
+  const other=field('otherCast');other.querySelector('summary')?.remove();other.querySelector('p')?.remove();
+  const casting=button('Automatic voices →',null);casting.className='et-link-row';castHome.append(casting);const castingPage=page('casting','Automatic voices','cast',casting);
+  const subhead=castHome.querySelector('.et-subhead');subhead?.remove();castHome.querySelector('.et-hint')?.remove();move('npcPolicyRoot',castingPage);
+  const defaults=el('div','',castingPage);defaults.className='et-default-actions';move('captureDefaults',defaults);move('applyDefaults',defaults);move('defaultStatus',castingPage);
+  function updateCastFilter(count=Number(field('otherCastCount').textContent)){filter.options[1].textContent=`All saved${count?` (+${count})`:''}`;other.hidden=filter.value!=='all' || !count;}
+  filter.onchange=()=>updateCastFilter();
+  function closeCast(){if(!focusedCast)return;const {row,onClose}=focusedCast;focusedCast=null;row.classList.remove('et-focused-cast');cast.removeAttribute('data-editing');updateCastFilter();onClose?.();}
+  // Playback groups hold everyday settings; both mixer editors are peers.
+  const playHome=home.get('play'),originalPlay=[...playHome.childNodes];
+  const automation=group('New replies',playHome),checks=el('div','',automation);checks.className='et-check-grid';
+  const autoLabel=el('label','',checks);autoLabel.className='et-check';const auto=el('input','',autoLabel);auto.type='checkbox';auto.dataset.et='drawerAutoPlan';autoLabel.append(doc.createTextNode('Auto-plan'));moveLabel('auto',checks);
+  const tuning=group('Playback',playHome);tuning.append(field('playbackSpeedSlot').closest('.et-tuning-grid'));moveLabel('normalizeLoudness',tuning);
+  const reading=group('Reading',playHome);moveLabel('readAlong',reading);moveLabel('followNarration',reading);
+  const sound=group('Soundscape',playHome),soundChecks=el('div','',sound);soundChecks.className='et-check-grid';for(const name of ['enableSfx','enableAmbience','enableMusic','loopMusic'])moveLabel(name,soundChecks);moveLabel('freesoundApiKey',sound);field('enableSfx').closest('label').title='Freesound sound effects; requires the key below.';
+  const mixer=group('Mixer',playHome);moveLabel('enableMixer',mixer);const mixerActions=el('div','',mixer);mixerActions.className='et-action-grid';move('showMixer',mixerActions);move('customizeMixer',mixerActions);
+  const limits=button('Volume limits',mixerActions);limits.dataset.choirVolumeLimits='';
+  // Keep hidden compatibility inputs, discard only emptied display wrappers.
+  for(const node of originalPlay)if(node.parentElement===playHome){if(node.nodeType===1 && node.querySelector('[data-et]'))node.hidden=true;else node.remove();}
+  const layout=move('mixerLayout',playback);layout.dataset.choirDestination='mixer';pages.set('mixer',layout);field('customizeMixer').dataset.choirOpen='mixer';
+  const volumePage=page('volume','Volume limits','play',limits);volumePage.dataset.choirVolumePage='';
+  // Saved recordings and their lifetime belong together.
+  const recent=field('messages').closest('details');recent.querySelector('summary')?.remove();home.get('recordings').append(...recent.childNodes);recent.remove();
+  const savedHome=home.get('recordings'),savedTitle=el('div');savedTitle.className='et-section-header';el('h3','This chat',savedTitle);const all=button('Download all',savedTitle);all.dataset.et='downloadAll';all.disabled=true;savedHome.prepend(savedTitle);moveLabel('retention',savedHome);savedHome.append(field('deleteChatAudio').parentElement);
+  // Settings is a short directory of peer pages, with no advanced-settings nesting.
+  const settingsHome=home.get('settings'),originalSettings=[...settingsHome.childNodes];
+  const destinations={};for(const [key,title,description] of [['connections','Connections','Speech provider and voice sources'],['planner','Planner','Speaker detection and fallback'],['filters','Text filters','Choose what gets read aloud'],['performance','Performance','Buffering and request sizes'],['interface','Interface','Message buttons and mixer appearance'],['castTools','Cast tools','Defaults, additional voices and import / export']]){
+    const link=button('',settingsHome);link.className='et-settings-link';el('strong',title,link);el('small',description,link);el('span','›',link);destinations[key]=page(key,title,'settings',link);
+  }
+  for(const name of ['connectionMode','connection','styleParam','fishVoiceSource'])moveLabel(name,destinations.connections);move('testTts',destinations.connections);move('load',destinations.connections);
+  for(const name of ['plannerMode','planner','decisionConnection','allowLlmFallback','plannerTokens'])moveLabel(name,destinations.planner);for(const name of ['jevKey','jevEndpoint','plannerHint','testPlanner'])move(name,destinations.planner);
+  const filters=field('ignoredTags').closest('details');filters.querySelector('summary')?.remove();destinations.filters.append(...filters.childNodes);filters.remove();
+  const performance=field('concurrency').closest('section');for(const name of ['concurrency','chunk','prefetch','apiBase'])moveLabel(name,destinations.performance);destinations.performance.append(field('batchSpeech').closest('.et-row'));for(const hint of [...performance.querySelectorAll(':scope>p')])destinations.performance.append(hint);
+  for(const name of ['sectionButtons','abyssalMixerTheme','showAutoPlanAction'])moveLabel(name,destinations.interface);
+  move('extraVoicesWrap',destinations.castTools);const castTools=field('castJson').closest('details');castTools.querySelector('summary')?.remove();destinations.castTools.append(...castTools.childNodes);castTools.remove();
+  destinations.castTools.querySelector('.et-pagebar').after(defaults);
+  // Plan and JSON editors are separate destinations too.
+  const plan=move('planDetails',playHome);const planLink=button('Speech plan →',plan);planLink.className='et-link-row';const planPage=page('plan','Speech plan','play',planLink);move('planSummary',planPage);move('preview',planPage);const json=field('planJson').closest('details');json.querySelector('summary')?.remove();const jsonLink=button('Edit attribution JSON →',plan);jsonLink.className='et-link-row';const jsonPage=page('attribution','Attribution JSON','play',jsonLink);jsonPage.append(...json.childNodes);json.remove();
+  for(const node of originalSettings)if(node.parentElement===settingsHome){if(node.nodeType===1 && (node.matches('[data-et]') || node.querySelector('[data-et]')))node.hidden=true;else node.remove();}
   for(const control of settings.querySelectorAll('select'))control.closest('label')?.classList.add('et-inline-field');
   select('cast');
-  return {select,closeCast,openCast(row,onClose){closeCast();const details=row.closest('details'),wasOpen=details?.open;focusedCast={row,details,wasOpen,onClose};if(details)details.open=true;row.classList.add('et-focused-cast');cast.dataset.editing='true';select('cast');},showMixer(open){sound.dataset.customizing=String(open);select('play');},showAdvanced};
+  return {select,closeCast,openPage,closePages,updateCastFilter,volumePage,
+    setSetupReminder(show){reminder.hidden=!show;},
+    openCast(row,onClose){closeCast();closePages();if(other.contains(row))other.hidden=false;focusedCast={row,onClose};row.classList.add('et-focused-cast');cast.dataset.editing='true';select('cast');},
+    showMixer(open){if(open)openPage('mixer');else closePages();select('play');}
+  };
 }
 
 export const DRAWER_UI_CSS=`
@@ -98,4 +101,17 @@ export const DRAWER_UI_CSS=`
 .ensemble-tts .et-tuning-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.ensemble-tts .et-tuning{padding:8px 0;border:0;background:none}.ensemble-tts .et-tuning-hint{display:none}.ensemble-tts .et-tuning-title{font-size:12px}.ensemble-tts .et-character-speed{margin-top:8px}
 @media(max-width:400px){.ensemble-tts .et-grid:has([data-et="connection"]){grid-template-columns:1fr}.ensemble-tts .et-current-message>.et-btn-group{width:100%}.ensemble-tts .et-cast-header{grid-template-columns:minmax(60px,.8fr) minmax(0,1.2fr) auto auto}.ensemble-tts .et-inline-field{grid-template-columns:72px minmax(0,1fr)}}
 @media(pointer:coarse),(max-width:600px){.ensemble-tts button,.ensemble-tts .et-task-tabs button,.ensemble-tts .cm-customize-row button,.ensemble-tts .et-pagebar button,.ensemble-tts .et-cast-header>[data-choir-edit],.ensemble-tts .et-cast-header>[data-choir-remove]{min-height:44px;min-width:44px}.ensemble-tts .et-check-grid label,.ensemble-tts .cm-customize-row label{min-height:44px;font-size:13px}.ensemble-tts input:not([type="checkbox"]),.ensemble-tts select{font-size:16px;min-height:44px}.ensemble-tts .cm-customize-quick{grid-template-columns:1fr}}
+
+/* Flat task pages. Each destination has one return path. */
+.ensemble-tts .et-title-group[hidden],.ensemble-tts .et-toolbar:empty{display:none!important}
+.ensemble-tts .et-header{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin:0 0 8px}.ensemble-tts .et-header .et-save-state{margin-left:auto}.ensemble-tts .et-setup-link{background:transparent;border:0;padding-left:0;font-weight:600}.ensemble-tts [data-et="continueSetup"]{width:100%;text-align:left;border-color:var(--lumiverse-primary,#c4b5fd)}
+.ensemble-tts .et-current-message{align-items:center;gap:4px 8px}.ensemble-tts .et-current-message .et-btn-group{order:0}.ensemble-tts .et-current-message [data-et="latestNotice"]{display:none}
+.ensemble-tts .et-task-tabs{display:grid;grid-template-columns:repeat(4,minmax(0,1fr))}.ensemble-tts .et-tab-home{min-width:0}.ensemble-tts .et-tab-home>h3{margin-top:0}
+.ensemble-tts .et-control-group{margin:0 0 16px;padding:0 0 12px;border-bottom:1px solid #8883}.ensemble-tts .et-control-group>h4{margin:0 0 8px;font-weight:600}.ensemble-tts .et-control-group>label{margin:8px 0}.ensemble-tts .et-control-group:last-child{border-bottom:0}
+.ensemble-tts .et-action-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:8px}.ensemble-tts .et-action-grid>:last-child:nth-child(odd){grid-column:1 / -1}
+.ensemble-tts .et-settings-link{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:3px 12px;text-align:left;width:100%;background:none;border:0;border-bottom:1px solid #8883;border-radius:0;padding:12px 2px}.ensemble-tts .et-settings-link strong{font-size:13px}.ensemble-tts .et-settings-link small{font-size:11px;opacity:.7;grid-column:1}.ensemble-tts .et-settings-link>span{grid-column:2;grid-row:1 / 3}
+.ensemble-tts [data-choir-destination]>label{display:block;margin:12px 0}.ensemble-tts [data-choir-destination] p,.ensemble-tts [data-choir-destination] small{font-size:12px;line-height:1.5;overflow-wrap:anywhere}.ensemble-tts [data-choir-destination]>button{margin:4px 6px 4px 0}.ensemble-tts .et-pagebar{border-bottom:1px solid #8883;padding-bottom:10px;align-items:center}.ensemble-tts .et-pagebar button{font-size:12px}.ensemble-tts .et-pagebar h3{font-size:14px;text-align:right;outline:none}
+.ensemble-tts [data-et="castFilter"]{width:100%;margin-bottom:6px}.ensemble-tts [data-editing="true"] .et-tab-home>:not(:has(.et-focused-cast)){display:none!important}.ensemble-tts .et-cast-row.et-focused-cast{padding-top:0}.ensemble-tts .et-focused-cast .et-cast-editor .et-control-group{padding-top:12px;border-top:1px solid #8883;border-bottom:0}.ensemble-tts [data-choir-pronunciation-page]>label{display:grid;gap:4px}
+.ensemble-tts .et-volume-limits>.et-pagebar{display:flex}.ensemble-tts .et-volume-limits>label{display:flex}.ensemble-tts .et-volume-limits input{width:76px}.ensemble-tts [data-et="planDetails"]{padding-top:10px;border-top:1px solid #8883}
+@media(max-width:400px){.ensemble-tts .et-current-message>.et-btn-group{width:100%}.ensemble-tts .et-settings-link{padding:14px 2px}.ensemble-tts .et-edit-pair{grid-template-columns:1fr}}
 `;

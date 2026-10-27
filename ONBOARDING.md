@@ -1,38 +1,34 @@
 # First-time setup
 
-Choir opens a five-step native Spindle modal on first enablement for the current
-Lumiverse user: Welcome, Connections, Voices, Playback, Review.
+Choir opens a native Spindle modal on first enablement for the current
+Lumiverse user. Choose Quick start, Guided setup, or Custom setup.
 The host supplies the modal frame, backdrop, theme and viewport bounds through
 `ctx.ui.showModal()`. The wizard keeps its navigation and Skip action visible;
 host support determines other dismissal behavior.
 
-**Set up Choir** in the Choir drawer/settings opens it manually, even
+**Setup guide** at the top of the Choir drawer opens it manually, even
 after completion or skipping. Only one instance is allowed, including during
 asynchronous startup and saving. Closing or **Skip for now** remembers deferral
 and discards the configuration draft. Extension teardown discards the draft
 without marking a new installation as skipped.
 
-## Setup flow
+## Setup modes
 
-- **Welcome** uses Choir's embedded icon and explains the three setup tasks,
-  what will be saved, and whether existing preferences were found.
-- **Connections** separates the speech provider from speaker detection. Select
-  the default TTS connection and either one route for the cast or per-character
-  routes here. Refresh reloads connections and their voice catalogues. The Fish
-  Audio illustrated guide stays available without crowding the form.
-- **Voices** shows one role editor at a time: Narrator, Persona, or Main character.
-  The role buttons summarize saved voice choices. Each editor has voice and gender
-  preference, route when applicable, accent, delivery mode, base style, a provider
-  voice-ID option, and an explicit audition. New-speaker casting stays separate
-  below the role editor. Missing role choices bring that role into view.
-- **Playback** starts with mixer/message controls, loudness, device-local audio
-  retention, highlighting/follow, automation, and soundscape toggles. Freesound
-  credentials and the cue LLM appear only when their sound features need them.
-  **More playback settings** opens buffering, request limits and text filters in
-  a focused view. **Back to playback** returns without losing draft choices.
-- **Review** groups connections, individual voice defaults, and playback
-  preferences in editable rows. Assigned/configured does not imply a successful
-  test. Optional planner and narrator checks can be run here before saving.
+- **Quick start** is one page: select existing speech and planner connections,
+  choose a narrator voice, and optionally enable automatic voices for new speakers.
+  An explicit narrator sample is optional. Finish saves without provider calls.
+- **Guided setup** has three steps: **Connect → Voices → Try it**. It explains
+  speech and speaker detection separately, then offers one role editor at a time
+  for Narrator, Persona and Main character. Try it contains reading, playback,
+  retention and optional connection tests. Soundscape and performance/text filters
+  open as direct pages with a return button.
+- **Custom setup** offers direct category buttons for Connections, Voices,
+  Playback, Soundscape and Performance & filters. No sequential progression is
+  required. Save setup validates all choices before writing.
+
+The mode buttons share one draft: switching modes preserves every choice. The
+Fish and Freesound illustrated guides open as separate help pages, with no nested
+accordions. A **Continue setup** button remains in the drawer after postponing.
 
 The progress navigation and Back/Skip/Next actions remain outside the scrolling
 form. Narrow and touch layouts keep editable text at 16px and controls at least
@@ -58,8 +54,11 @@ extension and current user:
 | `settings:captured-defaults` | Existing version 2 lead-voice, NPC-policy, and route-aware voice-catalogue defaults for future chats. |
 
 The wizard reads existing preferences and captured defaults before opening.
-New installations start with heuristic attribution and all optional features
-off. Existing users keep their choices in the draft. Nothing is applied before
+New installations select an available LLM connection for speaker detection, or
+a Decision connection when no usable LLM is configured; local heuristic is the
+fallback when neither exists. Optional soundscapes and automatic playback start
+off. No model is called to select these defaults. Existing users keep their
+choices in the draft. Nothing is applied before
 Finish. Saving merges shared preferences, preserves unknown default fields,
 writes completion last, and attempts to restore previous values after any
 failure. Incomplete rollback is reported explicitly. Storage has no multi-key
@@ -117,7 +116,7 @@ make no paid synthesis, planning, or voice-design requests. **Test planner
 connection**, each **Test … voice**, and **Test final playback** are explicit
 actions and may incur provider charges. Tests are cancellable, results are
 invalidated by choice changes, and successful speech feedback requires both
-synthesis and playback. Review labels configured choices separately from test
+synthesis and playback. Try it distinguishes configured choices from test
 results; an untested connection is never labelled as a passed test.
 
 Sound effects and ambience require Freesound and an LLM for cues; music needs an

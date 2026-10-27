@@ -31,8 +31,7 @@ try{
       window.cleanup=await window.mountChoir();
     });
     await withDrawerControl(page,'latest',()=>page.locator('[data-et="latest"]').click());await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Ready:'));
-    await page.locator('[data-choir-tab="cast"]').click();assert.equal(await page.locator('[data-et="otherCast"]').isVisible(),true);
-    assert.equal(await page.locator('[data-et="otherCast"]').evaluate(node=>node.open),false);
+    await page.locator('[data-choir-tab="cast"]').click();assert.equal(await page.locator('[data-et="otherCast"]').isVisible(),false);
     assert.equal(await page.locator('[data-et="otherCastRows"] strong').filter({hasText:/^Kova$/}).count(),1);
     await page.locator('[data-choir-tab="settings"]').click();
     await withDrawerControl(page,'chunk',()=>page.locator('[data-et="chunk"]').fill('1700'));await page.locator('[data-et="chunk"]').dispatchEvent('change');
@@ -116,7 +115,7 @@ try{
     await page.getByRole('button',{name:'Close Kova editor',exact:true}).click();
     assert.equal(await page.locator('[data-et="fixed"] strong').filter({hasText:/^Kova$/}).count(),0);
     assert.equal(await page.locator('[data-et="otherCastRows"] strong').filter({hasText:/^Kova$/}).count(),1);
-    assert.equal(await page.locator('[data-et="otherCast"]>summary').evaluate(node=>node===document.activeElement),true);
+    assert.equal(await page.locator('[data-et="castFilter"]').evaluate(node=>node===document.activeElement),true);
     assert.equal(await page.evaluate(()=>window.plans),2,'Reply visibility does not ask for another plan.');
     await page.evaluate(()=>window.cleanup());await page.close();
     console.log(`PASS: ${mobile?'320px touch':'desktop'} cast collapse/restore, preserved voices, saved mixer options, quick button ordering, optional voice speeds and layout reset.`);

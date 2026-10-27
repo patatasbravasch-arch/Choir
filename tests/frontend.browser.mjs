@@ -363,6 +363,7 @@ test('settings saved in the retired Gemini mode load on the Lumiverse connection
     const $ = name => (root.querySelector(`[data-et="${name}"]`) || root.ownerDocument.querySelector(`[data-choir-action="${["play","pause","resumePosition"].includes(name)?"playback":name}"]`));
     await until(() => $('fixed').querySelectorAll('[data-choir-route]').length === 3);
     root.querySelector('[data-choir-tab="settings"]').click();
+    root.querySelector('[data-choir-open="connections"]').click();
     assert.equal($('connection').value, 'google-a');assert.equal($('connection').closest('[hidden]'), null);
     assert.equal(root.querySelector('[data-et="key"]'), null);
     assert.ok(![...root.querySelectorAll('option')].some(option => option.value === 'gemini'));

@@ -55,7 +55,6 @@ async function captureWizard(wizard,name){
 }
 async function checkIllustratedGuide(page,wizard,id,screenshot){
   const guide=wizard.locator(`[data-setup-guide="${id}"]`);
-  if(!await guide.evaluate(node=>node.open))await guide.locator(':scope > summary').click();
   const images=guide.locator('img');assert.equal(await images.count(),6);
   for(const image of await images.all()){
     await image.scrollIntoViewIfNeeded();
@@ -94,11 +93,14 @@ try{
   const wizard=page.getByRole('dialog',{name:'Set up Choir',exact:true});await wizard.waitFor();
   await captureWizard(wizard,'desktop-welcome');
   assert.equal(await wizard.locator('.cs-logo').evaluate(image=>image.complete && image.naturalWidth>0),true);
-  await wizard.getByRole('button',{name:'Next',exact:true}).click();await wizard.getByText('How to connect Fish Audio',{exact:true}).click();
+  await wizard.getByRole('button',{name:'Quick start',exact:true}).click();await wizard.getByLabel('Narrator voice',{exact:true}).selectOption('e');await captureWizard(wizard,'desktop-quick');
+  await wizard.getByRole('button',{name:'Custom',exact:true}).click();await wizard.getByRole('button',{name:'Voices',exact:true}).click();assert.equal(await wizard.getByLabel('Narrator voice',{exact:true}).inputValue(),'e');await wizard.getByLabel('Narrator voice',{exact:true}).selectOption('n');
+  await wizard.getByRole('button',{name:'Soundscape',exact:true}).click();await captureWizard(wizard,'desktop-custom');assert.equal(await wizard.locator('details details').count(),0);
+  await wizard.getByRole('button',{name:'Quick start',exact:true}).click();assert.equal(await wizard.getByLabel('Narrator voice',{exact:true}).inputValue(),'n');await wizard.getByRole('button',{name:'Guided',exact:true}).click();await wizard.getByRole('button',{name:'How to connect Fish Audio →',exact:true}).click();
   assert.equal(await wizard.getByRole('link',{name:'Open API Keys',exact:true}).getAttribute('href'),'https://fish.audio/app/api-keys');
   assert.equal(await wizard.getByLabel('Speech mode',{exact:true}).count(),0);assert.equal(await page.evaluate(()=>window.calls.length),0);
   await checkIllustratedGuide(page,wizard,'fish',process.env.CHOIR_SETUP_SCREENSHOT);
-  await wizard.getByText('How to connect Fish Audio',{exact:true}).click();await wizard.locator('[data-setup-body]').evaluate(node=>node.scrollTop=0);await captureWizard(wizard,'desktop-connections');
+  await wizard.getByRole('button',{name:'← Back to setup',exact:true}).click();await wizard.locator('[data-setup-body]').evaluate(node=>node.scrollTop=0);await captureWizard(wizard,'desktop-connections');
   await wizard.getByRole('button',{name:'Next',exact:true}).click();await wizard.getByLabel('Narrator voice gender',{exact:true}).selectOption('female');
   await captureWizard(wizard,'desktop-voices');
   await wizard.getByRole('button',{name:'Edit main character setup voice',exact:true}).click();
@@ -109,8 +111,8 @@ try{
   assert.equal(await wizard.getByLabel('Voices the planner picks from',{exact:true}).inputValue(),'community');
   await wizard.getByRole('button',{name:'Next',exact:true}).click();
   await captureWizard(wizard,'desktop-playback');
-  await checkIllustratedGuide(page,wizard,'freesound',process.env.CHOIR_FREESOUND_SCREENSHOT);
-  await wizard.getByRole('button',{name:'More playback settings',exact:true}).click();
+  await wizard.getByRole('button',{name:'Soundscape →',exact:true}).click();await wizard.getByRole('button',{name:'How to get a Freesound API key →',exact:true}).click();await checkIllustratedGuide(page,wizard,'freesound',process.env.CHOIR_FREESOUND_SCREENSHOT);
+  await wizard.getByRole('button',{name:'← Back to setup',exact:true}).click();await wizard.getByRole('button',{name:'← Back to playback',exact:true}).click();await wizard.getByRole('button',{name:'Performance & text filters →',exact:true}).click();
   await wizard.getByLabel('Prefetch passages',{exact:true}).fill('2');await wizard.getByLabel('Concurrent TTS requests',{exact:true}).fill('2');
   await wizard.getByLabel('Skip tags and blocks',{exact:true}).fill('.tracker');
   await captureWizard(wizard,'desktop-details');await wizard.getByRole('button',{name:'Back to playback',exact:true}).click();
@@ -118,15 +120,13 @@ try{
   await wizard.getByText('Playback & saved audio',{exact:true}).scrollIntoViewIfNeeded();
   if(process.env.CHOIR_WIZARD_PLAYBACK_SCREENSHOT)await wizard.screenshot({path:process.env.CHOIR_WIZARD_PLAYBACK_SCREENSHOT});
   await wizard.getByLabel('Highlight spoken text',{exact:true}).selectOption('word');
-  await wizard.getByRole('button',{name:'Next',exact:true}).click();await captureWizard(wizard,'desktop-review');
-  await wizard.getByRole('button',{name:'Edit reading',exact:true}).click();assert.equal(await wizard.getByLabel('Highlight spoken text',{exact:true}).isVisible(),true);assert.equal(await page.evaluate(()=>document.activeElement.textContent),'Reading');
-  await wizard.getByRole('button',{name:'Next',exact:true}).click();await wizard.getByRole('button',{name:'Finish setup',exact:true}).click();
+  await wizard.getByRole('button',{name:'Finish setup',exact:true}).click();
   await wizard.getByText('Setup completed successfully.',{exact:true}).waitFor();await captureWizard(wizard,'desktop-done');
   await wizard.getByText('Setup completed successfully.',{exact:true}).waitFor();await wizard.getByRole('button',{name:'Close',exact:true}).click();
   assert.equal(await page.evaluate(()=>window.fixtureStore.get('settings:global').ignoredTags),'.tracker');assert.equal(await page.evaluate(()=>window.calls.length),0);
   assert.equal(await page.evaluate(()=>window.fixtureStore.get('settings:global').prefetch),2);assert.equal(await page.evaluate(()=>window.fixtureStore.get('settings:global').concurrency),2);
   assert.equal(await page.evaluate(()=>window.fixtureStore.get('settings:global').retention),'7');assert.equal(await page.evaluate(()=>window.fixtureStore.get('settings:captured-defaults').leadVoices[0].gender),'female');
-  await withDrawerControl(page,'fixed',()=>page.getByRole('button',{name:'Edit Eliza',exact:true}).click());await page.getByRole('button',{name:'Pronunciation & voice speed ›',exact:true}).click();const spelling=page.locator('[data-et="fixed"] [data-choir-say-as]').nth(2);await spelling.fill('Eh-Lee-Zah');
+  await withDrawerControl(page,'fixed',()=>page.getByRole('button',{name:'Edit Eliza',exact:true}).click());const spelling=page.locator('[data-et="fixed"] [data-choir-say-as]').nth(2);await spelling.fill('Eh-Lee-Zah');
   await page.waitForFunction(()=>document.querySelector('[data-et="saveState"]').textContent==='Saved automatically');
   await page.getByRole('button',{name:'Test pronunciation of Eliza',exact:true}).click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent==='Audition finished.');
   assert.match(await page.evaluate(()=>window.calls[0].text),/Eh-Lee-Zah opened the door/);
@@ -146,7 +146,7 @@ try{
   await rich.getByRole('button',{name:'Skip for now',exact:true}).click();
   await withDrawerControl(rich,'fixed',()=>rich.getByRole('button',{name:'Edit Richter Vane (Callsign: Grim)',exact:true}).click());
   const richRow=rich.locator('[data-et="fixed"] .et-card').nth(2);
-  await richRow.getByRole('button',{name:'Pronunciation & voice speed ›',exact:true}).click();await richRow.locator('[data-choir-say-as]').fill('Rish-ter');await richRow.getByLabel('Name spelling to pronounce',{exact:true}).selectOption('Richter');
+  await richRow.locator('[data-choir-say-as]').fill('Rish-ter');await richRow.getByLabel('Name spelling to pronounce',{exact:true}).selectOption('Richter');
   await rich.waitForFunction(()=>document.querySelector('[data-et="saveState"]').textContent==='Saved automatically');
   assert.equal(await rich.evaluate(()=>window.fixtureStore.get('chat:fixture').fixed[2].sayAsName),'Richter');
   await richRow.getByRole('button',{name:'Test pronunciation of Richter Vane (Callsign: Grim)',exact:true}).click();
@@ -161,18 +161,18 @@ try{
   assert.equal(await rich.evaluate(()=>window.fixtureMessage.name),'Richter Vane (Callsign: Grim)');assert.equal(await rich.evaluate(()=>window.plans),1);
   await rich.evaluate(()=>window.cleanup());await rich.close();
   const mobile=await browser.newPage({viewport:{width:320,height:700},isMobile:true,hasTouch:true});mobile.on('pageerror',error=>errors.push(error.message));await mobile.goto(`http://127.0.0.1:${server.address().port}`);await mobile.waitForFunction(()=>window.ready);
-  const compact=mobile.getByRole('dialog',{name:'Set up Choir',exact:true});await captureWizard(compact,'touch-welcome');await compact.getByRole('button',{name:'Next',exact:true}).click();await captureWizard(compact,'touch-connections');await compact.getByText('How to connect Fish Audio',{exact:true}).click();
+  const compact=mobile.getByRole('dialog',{name:'Set up Choir',exact:true});await captureWizard(compact,'touch-welcome');await compact.getByRole('button',{name:'Guided setup',exact:true}).click();await captureWizard(compact,'touch-connections');await compact.getByRole('button',{name:'How to connect Fish Audio →',exact:true}).click();
   await checkIllustratedGuide(mobile,compact,'fish',process.env.CHOIR_SETUP_MOBILE_SCREENSHOT);
   assert.equal(await compact.evaluate(node=>node.scrollWidth<=node.clientWidth+1),true);
   const actions=await compact.locator('.cs-actions button').evaluateAll(nodes=>nodes.map(node=>{const rect=node.getBoundingClientRect();return {left:rect.left,right:rect.right,height:rect.height};}));assert.ok(actions.every(rect=>rect.left>=0 && rect.right<=320 && rect.height<=50),JSON.stringify(actions));
-  await compact.getByRole('button',{name:'Next',exact:true}).click();await captureWizard(compact,'touch-voices');await compact.getByRole('button',{name:'Next',exact:true}).click();await captureWizard(compact,'touch-playback');
-  await checkIllustratedGuide(mobile,compact,'freesound',process.env.CHOIR_FREESOUND_MOBILE_SCREENSHOT);
-  await compact.getByRole('button',{name:'More playback settings',exact:true}).click();
+  await compact.getByRole('button',{name:'← Back to setup',exact:true}).click();await compact.getByRole('button',{name:'Next',exact:true}).click();await captureWizard(compact,'touch-voices');await compact.getByRole('button',{name:'Next',exact:true}).click();await captureWizard(compact,'touch-playback');
+  await compact.getByRole('button',{name:'Soundscape →',exact:true}).click();await compact.getByRole('button',{name:'How to get a Freesound API key →',exact:true}).click();await checkIllustratedGuide(mobile,compact,'freesound',process.env.CHOIR_FREESOUND_MOBILE_SCREENSHOT);
+  await compact.getByRole('button',{name:'← Back to setup',exact:true}).click();await compact.getByRole('button',{name:'← Back to playback',exact:true}).click();await compact.getByRole('button',{name:'Performance & text filters →',exact:true}).click();
   await compact.getByLabel('Prefetch passages',{exact:true}).scrollIntoViewIfNeeded();
   assert.equal(await compact.evaluate(node=>node.scrollWidth<=node.clientWidth+1 && [...node.querySelectorAll('input,select,textarea')].every(field=>field.getBoundingClientRect().right<=320)),true);
   const footer=await compact.locator('.cs-actions').boundingBox();assert.ok(footer.y>=0 && footer.y+footer.height<=700,JSON.stringify(footer));
   if(process.env.CHOIR_WIZARD_MOBILE_SCREENSHOT)await compact.screenshot({path:process.env.CHOIR_WIZARD_MOBILE_SCREENSHOT});
-  await captureWizard(compact,'touch-details');await compact.getByRole('button',{name:'Next',exact:true}).click();await captureWizard(compact,'touch-review');
+  await captureWizard(compact,'touch-details');await compact.getByRole('button',{name:'Back to playback',exact:true}).click();await captureWizard(compact,'touch-try-it');
   await compact.getByRole('button',{name:'Test narrator voice',exact:true}).click();
   await compact.getByRole('button',{name:'Cancel',exact:true}).waitFor({state:'visible'});
   const busyActions=await compact.locator('.cs-actions button:visible').evaluateAll(nodes=>nodes.map(node=>{const rect=node.getBoundingClientRect();return {left:rect.left,right:rect.right,height:rect.height};}));assert.ok(busyActions.every(rect=>rect.left>=0 && rect.right<=320 && rect.height>=44),JSON.stringify(busyActions));

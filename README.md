@@ -4,7 +4,7 @@
 
 # Choir
 
-[![Version](https://img.shields.io/badge/version-1.1.6--staging.49-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/lunch-test)
+[![Version](https://img.shields.io/badge/version-1.1.6--staging.50-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/lunch-test)
 [![Platform](https://img.shields.io/badge/platform-Lumiverse%20Spindle-purple.svg)](https://docs.lumiverse.chat/)
 [![Tests](https://img.shields.io/badge/tests-590%20tests-blue.svg)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -12,6 +12,8 @@
 An installable Lumiverse Spindle extension for multi-voice narration, dialogue attribution, sound effects, ambience and background music.
 
 </div>
+
+Version **1.1.6-staging.50** on **lunch-test** flattens the drawer into **Cast / Playback / Saved / Settings**, with direct settings pages, one character editor, and separate Mixer layout and Volume limits actions. **Setup guide** stays in the header and offers **Quick start**, three-step **Guided**, or direct-category **Custom** setup. Switching modes keeps the draft; finishing preserves existing chat casts. Inactive cast use an **In this reply / All saved** selector. See [drawer navigation](docs/drawer-navigation.md) and [setup guide](ONBOARDING.md).
 
 Version **1.1.6-staging.49** on **lunch-test** merges automatic Fish S2/S2.1 emotion cues from **emotion-fish-audio**. The existing LLM or Jev planner supplies the passage delivery; Choir injects separate bracket cues when preparing the TTS request, including Jev's cheerful → happy and sigh → sighing. Explicit preset cues take priority. Grouped Fish turns carry their own cues, while Gemini retains its existing instructions. No new drawer controls or model calls are added. See [Fish delivery flow](docs/fish-emotions.md).
 

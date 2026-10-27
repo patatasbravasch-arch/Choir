@@ -34,7 +34,7 @@ test('visible cast removal persists for card characters without opening pronunci
   h.state.character={name:'Mira',description:'# Mira\nA captain.'};await h.reload();
   const row=[...h.root.querySelectorAll('.et-cast-row')].find(row=>row.querySelector('strong').textContent==='Mira');
   row.querySelector('[data-choir-edit]').click();const remove=row.querySelector('[data-choir-remove]');
-  assert.equal(remove.textContent,'Remove');assert.equal(row.querySelector('[data-choir-pronunciation-page]').hidden,true);
+  assert.equal(remove.textContent,'Remove');assert.equal(row.querySelector('[data-choir-pronunciation-page]').hidden,false);
   remove.click();await until(()=>h.$('saveState').textContent==='Saved automatically');
   assert.equal(h.store.get('chat:chat-a').fixed.some(actor=>actor.speaker==='Mira'),false);
   await h.reload();assert.equal(h.store.get('chat:chat-a').fixed.some(actor=>actor.speaker==='Mira'),false);
@@ -87,14 +87,15 @@ test('inactive cast collapses without losing fixed or discovered voice settings 
    const saved=h.store.get('chat:chat-a');saved.connectionMode=mode;saved.fixed.push({speaker:'Kova',voice:'new',route:'native:a',aliases:['Armand'],sayAs:'KO-vah',accent:'Irish'});saved.casts['native:a'].push({speaker:'Viktor',voice:'g',aliases:['The visitor']});h.store.set('chat:chat-a',saved);await h.reload();
    h.message.content='At dawn, Kovacs arrived. "Hello." "Wait." The gate closed.';await h.plan();
    const inOther=name=>[...h.$('otherCastRows').querySelectorAll('.et-cast-row')].some(row=>row.querySelector('strong').textContent===name);
-   assert.equal(h.$('otherCast').hidden,false);assert.equal(h.$('otherCast').open,false);assert.ok(inOther('Kova'),'a partial name match must not keep Kova active');assert.ok(inOther('Viktor'));
+   assert.equal(h.$('otherCast').hidden,true);assert.ok(inOther('Kova'),'a partial name match must not keep Kova active');assert.ok(inOther('Viktor'));
+   h.$('castFilter').value='all';h.$('castFilter').dispatchEvent(new h.dom.window.Event('change'));assert.equal(h.$('otherCast').hidden,false);h.$('castFilter').value='current';h.$('castFilter').dispatchEvent(new h.dom.window.Event('change'));assert.equal(h.$('otherCast').hidden,true);
    h.$('chunk').value='1700';h.$('chunk').dispatchEvent(new h.dom.window.Event('change'));await until(()=>h.$('saveState').textContent==='Saved automatically');
    const kept=h.store.get('chat:chat-a');assert.equal(kept.fixed.find(actor=>actor.speaker==='Kova').voice,'new');assert.equal(kept.fixed.find(actor=>actor.speaker==='Kova').sayAs,'KO-vah');assert.ok(kept.casts['native:a'].some(actor=>actor.speaker==='Viktor' && actor.voice==='g'));
    await h.reload();assert.ok(inOther('Kova'));const calls=h.requests.length;
    h.message.id='next-reply';h.message.content='At dawn, ARMAND arrived. "Hello." "Wait." The gate closed.';h.subscriptions.get('chat.messageCount')();assert.equal(inOther('Kova'),false);assert.ok([...h.$('fixed').querySelectorAll('strong')].some(node=>node.textContent==='Kova'));assert.ok(inOther('Viktor'));assert.equal(h.requests.length,calls,'grouping must not ask the planner or speech provider');
    const edit=h.$('fixed').querySelector('[aria-label="Edit Kova"]');edit.focus();edit.click();
    h.message.id='later-reply';h.message.content='At dawn. "Hello." "Wait." The gate closed.';h.subscriptions.get('chat.messageCount')();assert.equal(inOther('Kova'),false,'an open editor stays available across replies');
-   edit.focus();edit.click();assert.ok(inOther('Kova'),'closing the focused editor must still fold an absent character away');assert.equal(document.activeElement,h.$('otherCast').querySelector('summary'),'keyboard focus moves to the collapsed group');
+   edit.focus();edit.click();assert.ok(inOther('Kova'),'closing the focused editor hides an absent character');assert.equal(document.activeElement,h.$('castFilter'),'keyboard focus moves to the character filter');
   }finally{await h.close();}
  }
 });
@@ -1177,7 +1178,8 @@ test('legacy discovered characters keep their voice and pronunciation in the uni
   saved.casts['native:a'].push(mira);saved.cardCastNPCs=['mira'];h.store.set('chat:chat-a',saved);await h.reload();
   assert.equal(h.$('fixed').children.length,2);assert.match(h.$('npcs').textContent,/Mira/);
   assert.equal(document.querySelector('[aria-label="Move Mira to NPC cast"]'),null);
-  assert.equal(document.querySelectorAll('[data-choir-panel="cast"] .et-section-header h3').length,1);assert.equal(document.querySelector('[data-choir-panel="cast"] h3').textContent,'In this reply');
+  assert.equal(document.querySelectorAll('[data-choir-panel="cast"] .et-section-header h3').length,1);assert.equal(document.querySelector('[data-choir-panel="cast"] h3').textContent,'Characters');
+  assert.equal(h.$('castFilter').value,'current');
   await h.plan();await h.reload();
   const actor=h.store.get('chat:chat-a').casts['native:a'].find(actor=>actor.speaker==='Mira');
   assert.equal(actor.voice,'m');assert.equal(actor.sayAs,'Mee Rah');assert.match(h.$('npcs').textContent,/Mira/);

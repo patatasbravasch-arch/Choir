@@ -3,7 +3,7 @@
 import { SETUP_GUIDES } from './setup-guides.js';
 import { SETUP_CSS, SETUP_LOGO } from './setup-ui.js';
 export const ONBOARDING_KEY = 'onboarding:state';
-export const SETUP_STEPS = ['Welcome', 'Connections', 'Voices', 'Playback', 'Review'];
+export const SETUP_STEPS = ['Connect', 'Voices', 'Try it'];
 
 export function shouldOpenSetup(state) {
   return !state?.completed && !state?.deferred;
@@ -127,15 +127,30 @@ export function createSetupWizard(ctx, adapter) {
     const doc = modal.root.ownerDocument;
     const shell = doc.createElement('div');shell.className='choir-setup';shell.dataset.choirSetup='';modal.root.append(shell);
     const draft = setupDraft(snapshot.config, snapshot.preset, snapshot.existing);
-    let connections = snapshot.connections, step = 0, visited = 0, busy = false, closed = false, completed = false, ctrl = null, renderId = 0, cancellable = false, activeRole = 0, playbackDetails = false;
+    let mode='',helpGuide='',connections = snapshot.connections, step = 0, visited = 1, busy = false, closed = false, completed = false, ctrl = null, renderId = 0, cancellable = false, activeRole = 0;
     const tests = new Map();
     const element = (tag,text,parent) => {const node=doc.createElement(tag);if(text)node.textContent=text;parent?.append(node);return node;};
+    // All modes edit this one draft. Switching mode never saves or resets it.
+    if(!snapshot.existing){
+      const first=(connections.tts || []).find(item=>item.model && item.is_default) || connections.tts.find(item=>item.model);
+      if(!connections.tts.some(item=>item.id===draft.connection && item.model) && first)draft.connection=first.id;
+      const llm=connections.llm.find(item=>item.model && item.is_default) || connections.llm.find(item=>item.model);
+      const decision=connections.decision.find(item=>item.model);
+      if(llm){draft.plannerMode='llm';draft.planner=llm.id;draft.useFastClassifier=false;draft.npcPolicy.mode='llm';}
+      else if(decision){draft.plannerMode='jev';draft.decisionConnection=decision.id;draft.useJev=true;draft.useFastClassifier=false;draft.npcPolicy.mode='llm';}
+    }
+    const modes=element('div','',shell);modes.className='cs-modes';modes.setAttribute('aria-label','Setup mode');
+    const modeButtons=new Map();
+    function chooseMode(value){if(busy || completed)return;mode=value;step=value==='quick'?5:[1,2,3,6,7].includes(step)?step:1;helpGuide='';say('');render();body.scrollTop=0;body.querySelector('h2')?.focus();}
+    for(const [key,title] of [['quick','Quick start'],['guided','Guided'],['custom','Custom']]){const node=element('button',title,modes);node.type='button';node.dataset.setupMode=key;node.onclick=()=>chooseMode(key);modeButtons.set(key,node);}
     const nav = element('ol','',shell);nav.className='cs-progress';nav.setAttribute('aria-label','Setup progress');
     const navButtons = SETUP_STEPS.map((title,index) => {
-      const li=element('li','',nav),button=element('button','',li);button.type='button';
-      element('span',String(index+1),button).setAttribute('aria-hidden','true');element('b',['Start','Connect','Voices','Playback','Review'][index],button);
-      button.setAttribute('aria-label',`Step ${index+1}: ${title}`);button.onclick=()=>navigate(index);return button;
+      const li=element('li','',nav),node=element('button','',li);node.type='button';
+      element('span',String(index+1),node).setAttribute('aria-hidden','true');element('b',title,node);
+      node.setAttribute('aria-label',`Step ${index+1}: ${title}`);node.onclick=()=>navigate(index+1);return node;
     });
+    const categories=element('div','',shell);categories.className='cs-categories';categories.setAttribute('aria-label','Setup categories');
+    const categoryButtons=[];for(const [target,title] of [[1,'Connections'],[2,'Voices'],[3,'Playback'],[6,'Soundscape'],[7,'Performance & filters']]){const node=element('button',title,categories);node.type='button';node.onclick=()=>navigate(target);categoryButtons.push([target,node]);}
     const caption = element('p','',shell);caption.className='cs-step-caption';
     const body = element('section','',shell);body.dataset.setupBody='';
     const feedback = element('p','',shell);feedback.className='cs-feedback';feedback.setAttribute('role','status');feedback.setAttribute('aria-live','polite');
@@ -144,7 +159,7 @@ export function createSetupWizard(ctx, adapter) {
     const back = button('Back',actions,()=>navigate(step-1));
     const skip = button('Skip for now',actions,()=>task(async()=>{await defer();modal.dismiss();},'Saving your choice…',false));skip.className='cs-skip';
     const cancel = button('Cancel',actions,()=>{if(cancellable){ctrl?.abort();adapter.stopTest();}});cancel.hidden=true;
-    const next = button('Next',actions,()=>step===4?finish():navigate(step+1));next.className='cs-primary';
+    const next = button('Next',actions,()=>step>=3?finish():navigate(step+1));next.className='cs-primary';
     const say = (message,error=false) => {if(closed)return;feedback.textContent=message;feedback.classList.toggle('cs-error',error);feedback.setAttribute('role',error?'alert':'status');};
     const session = () => adapter.session();
     const safeError = error => {
@@ -155,8 +170,10 @@ export function createSetupWizard(ctx, adapter) {
     const lock = () => {
       shell.setAttribute('aria-busy',String(busy));
       for(const node of body.querySelectorAll('input,select,textarea,button'))node.disabled=busy || node.dataset.unavailable==='true';
-      navButtons.forEach((node,index)=>{node.disabled=busy || completed || index>visited;node.setAttribute('aria-current',index===step?'step':'false');});
-      back.hidden=step===0 || completed || busy;skip.hidden=completed || busy;back.disabled=busy || completed || step===0;skip.disabled=busy || completed;next.disabled=busy;
+      navButtons.forEach((node,index)=>{node.disabled=busy || completed || mode==='guided' && index+1>visited;node.setAttribute('aria-current',index+1===(step>3?3:step)?'step':'false');});
+      for(const [target,node] of categoryButtons){node.disabled=busy || completed;node.setAttribute('aria-pressed',String(step===target));}
+      for(const [key,node] of modeButtons){node.disabled=busy || completed;node.setAttribute('aria-pressed',String(key===mode));}
+      back.hidden=step<=1 || step>3 || mode!=='guided' || completed || busy || Boolean(helpGuide);skip.hidden=completed || busy;back.disabled=busy || completed || step<=1;skip.disabled=busy || completed;next.disabled=busy;
       cancel.hidden=!busy || !cancellable;cancel.disabled=!busy || !cancellable;
     };
     async function task(operation,message,canCancel=true) {
@@ -171,7 +188,7 @@ export function createSetupWizard(ctx, adapter) {
     async function defer() {
       if(completed || previousState?.completed)return;
       if((await ctx.settings.get(ONBOARDING_KEY))?.completed)return;
-      await ctx.settings.set(ONBOARDING_KEY,{version:1,completed:false,deferred:true});
+      const state={version:1,completed:false,deferred:true};await ctx.settings.set(ONBOARDING_KEY,state);adapter.onState?.(state);
     }
     const cleanup = (persistDismissal = true) => {
       if(closed)return;closed=true;++renderId;ctrl?.abort();adapter.stopTest();active=null;
@@ -217,8 +234,8 @@ export function createSetupWizard(ctx, adapter) {
     const routes = () => [['','Use default speech connection'],...connections.tts.map(item=>[`native:${item.id}`,`${item.name} · ${item.provider} · ${item.model || 'no model'}`])];
     const signature = kind => JSON.stringify(kind==='planner'?[draft.plannerMode,draft.planner,draft.decisionConnection,draft.allowLlmFallback,Boolean(session().jev)]:[defaultRoute(),draft.connectionMode,draft.fixed[0]?.route,draft.fixed[0]?.voice,draft.fixed[0]?.accent,draft.fixed[0]?.style,draft.fixed[0]?.deliveryMode,draft.fixed[0]?.excluded]);
     function navigate(target) {
-      if(busy || completed || target<0 || target>4)return;
-      if(target>step){
+      if(busy || completed || ![1,2,3,6,7].includes(target))return;
+      if(mode==='guided' && step<3 && target>step){
         const issues=setupIssues(draft,connections,session()).filter(item=>item.step===step);
         if(issues.length){showIssues(issues);return;}
       }
@@ -226,9 +243,10 @@ export function createSetupWizard(ctx, adapter) {
       body.scrollTop=0;modal.root.scrollTop=0;
     }
     function showIssues(issues) {
+      if(mode==='quick')mode='guided';
       step=issues[0].step;visited=Math.max(visited,step);
       if(step===2){const index=draft.fixed.findIndex(actor=>issues.some(item=>item.message.includes(actor.speaker)));if(index>=0)activeRole=index;}
-      if(step===3)playbackDetails=issues.some(item=>/Prefetch passages|Concurrent TTS requests|Max characters per request/.test(item.message));
+      if(step===3)step=issues.some(item=>/Freesound|cue selection/.test(item.message))?6:issues.some(item=>/Prefetch passages|Concurrent TTS requests|Max characters per request/.test(item.message))?7:3;
       render();say(issues.map(item=>item.message).join('\n'),true);body.scrollTop=0;body.querySelector('h2')?.focus();
     }
     function refresh() {
@@ -272,8 +290,8 @@ export function createSetupWizard(ctx, adapter) {
         onLabel?.(selected?.name || actor.voice);
       }
       const automaticNote=allowAutomatic && draft.plannerMode!=='heuristic'?element('small','Chosen during planning. Assign a voice to keep its identity and audition it here.',row):null;
-      const custom=element('details','',row);element('summary','Use a provider voice ID',custom);
-      voiceId=input(`${label} voice ID`,actor.voice,custom,value=>{
+      const custom=element('div','',row);custom.className='cs-provider-id';const customToggle=button('Use a provider voice ID',custom,()=>{customField.hidden=!customField.hidden;customToggle.setAttribute('aria-expanded',String(!customField.hidden));});customToggle.setAttribute('aria-expanded','false');const customField=element('div','',custom);customField.hidden=true;
+      voiceId=input(`${label} voice ID`,actor.voice,customField,value=>{
         actor.voice=value;populate();changed?.();
       },{hint:'Paste a voice ID from this provider, then test it. This selects an existing voice; it does not create or clone one.'});
       const token=effective();
@@ -287,8 +305,11 @@ export function createSetupWizard(ctx, adapter) {
       const node=element('a',title,parent);node.href=url;node.target='_blank';node.rel='noopener noreferrer';return node;
     }
     function illustratedGuide(parent,id) {
-      const data=SETUP_GUIDES[id],guide=element('details','',parent);guide.className='cs-guide';guide.dataset.setupGuide=id;
-      element('summary',data.title,guide);
+      const link=button(SETUP_GUIDES[id].title+' →',parent,()=>{helpGuide=id;render();body.scrollTop=0;});link.dataset.setupGuideLink=id;link.className='cs-help-link';
+    }
+    function renderGuide(id){
+      const data=SETUP_GUIDES[id],guide=element('section','',body);guide.className='cs-guide';guide.dataset.setupGuide=id;
+      button('← Back to setup',guide,()=>{helpGuide='';render();body.scrollTop=0;});element('h3',data.title,guide);
       element('p',data.intro,guide);element('p',data.note,guide).className='cs-hint';
       const steps=element('ol','',guide);steps.className='cs-guide-steps';
       for(const step of data.steps){
@@ -305,17 +326,19 @@ export function createSetupWizard(ctx, adapter) {
         });
         toggle.className='cs-picture-toggle';toggle.setAttribute('aria-expanded','false');toggle.setAttribute('aria-label',`Enlarge picture: ${step.title}`);
       }
-      const help=disclosure('If something does not work',guide),items=element('ul','',help);items.className='cs-guide-help';
+      const help=element('section','',guide);element('h3','If something does not work',help);const items=element('ul','',help);items.className='cs-guide-help';
       for(const message of data.troubleshooting)element('li',message,items);
       const sources=element('div','',guide);sources.className='cs-guide-links';
       for(const link of data.sources)externalLink(sources,link.label,link.url);
     }
     function render() {
       ++renderId;body.replaceChildren();
-      shell.dataset.setupComplete=String(completed);nav.hidden=completed;caption.hidden=completed;
-      caption.textContent=completed?'Setup saved':`Step ${step+1} of ${SETUP_STEPS.length} · ${SETUP_STEPS[step]}`;
-      const heading=element('h2',completed?'Choir is ready':SETUP_STEPS[step],body);heading.tabIndex=-1;
-      next.textContent=completed?'Close':step===4?'Finish setup':'Next';next.onclick=completed?()=>modal.dismiss():()=>step===4?finish():navigate(step+1);
+      shell.dataset.setupComplete=String(completed);shell.dataset.setupMode=mode || 'choose';modes.hidden=!mode || completed;categories.hidden=completed || mode!=='custom' || Boolean(helpGuide);nav.hidden=completed || mode==='custom' || !mode || mode==='quick' || Boolean(helpGuide);caption.hidden=completed || !mode || mode==='quick' || Boolean(helpGuide);
+      caption.textContent=mode==='custom'?'Edit any category. Save when you are ready.':`Step ${step>3?3:step} of 3 · ${SETUP_STEPS[(step>3?3:step)-1] || ''}`;
+      const titles={0:'Choose your setup',1:'Connect',2:'Voices',3:mode==='custom'?'Playback':'Try it',5:'Quick start',6:'Soundscape',7:'Performance & text filters'};
+      const heading=element('h2',completed?'Choir is ready':helpGuide?SETUP_GUIDES[helpGuide].title:titles[step],body);heading.tabIndex=-1;
+      next.hidden=!mode || Boolean(helpGuide);next.textContent=completed?'Close':mode==='custom'?'Save setup':step>=3?'Finish setup':'Next';next.onclick=completed?()=>modal.dismiss():()=>mode==='custom' || step>=3?finish():navigate(step+1);
+      if(helpGuide){renderGuide(helpGuide);lock();return;}
       const section=(title,parent=body)=>{const node=element('section','',parent);node.className='cs-section';node.dataset.setupSection=title;element('h3',title,node);return node;};
       const card=(title,parent=body)=>{const node=element('section','',parent);node.className='cs-card';element('h3',title,node);return node;};
       const row=parent=>{const node=element('div','',parent);node.className='cs-row';return node;};
@@ -323,33 +346,44 @@ export function createSetupWizard(ctx, adapter) {
       const delivery=(actor,index)=>['auto','base','off'].includes(actor.deliveryMode)?actor.deliveryMode:index===0?'base':'auto';
       const voiceNames=['Narrator','Persona','Main character'];
       const routeName=token=>connections.tts.find(item=>`native:${item.id}`===token)?.name || 'Unavailable connection';
-      const retentionLabel={session:'this session only',1:'1 day',7:'7 days',30:'30 days',forever:'indefinitely'}[draft.retention] || 'invalid';
       const brand=parent=>{const logo=element('img','',parent);logo.className='cs-logo';logo.src=`data:image/svg+xml;charset=utf-8,${encodeURIComponent(SETUP_LOGO)}`;logo.alt='';logo.width=60;logo.height=96;};
       if(completed){
         const hero=row(body);hero.classList.add('cs-hero');brand(hero);
         element('p','Your preferences and voice defaults are saved.',hero).className='cs-lead';
         const steps=element('ol','',body);steps.className='cs-map';
-        for(const [index,title,detail] of [[1,'Plan a reply','Open Choir and select Plan latest.'],[2,'Listen','Press Play in the message controls or mixer.'],[3,'Make it yours','Adjust voices in Cast; change mixer controls in Sound.']]){
+        for(const [index,title,detail] of [[1,'Plan a reply','Open Choir and select Plan latest.'],[2,'Listen','Press Play in the message controls or mixer.'],[3,'Make it yours','Adjust voices in Cast; change mixer controls in Playback.']]){
           const li=element('li','',steps);element('span',String(index),li).className='cs-map-number';const info=element('div','',li);element('strong',title,info);element('small',detail,info);
         }
-        element('p','New chats use these voice defaults. Existing chats keep their voices; use Apply default in Cast if you want to replace them.',body).className='cs-hint';
+        element('p','New chats use these voice defaults. Existing chats keep their voices; use Settings → Cast tools → Apply default to replace them.',body).className='cs-hint';
         const actor=draft.fixed.find(actor=>!actor.excluded && actor.voice);
         if(actor){button('Test final playback',body,()=>testVoice(actor));element('small','Optional: synthesizes and plays one short sample. Provider charges may apply.',body);}
         lock();return;
       }
       if(step===0){
-        const hero=element('div','',body);hero.className='cs-hero';brand(hero);const intro=element('div','',hero);
-        element('p','Give your story a voice.',intro).className='cs-lead';
-        element('p','Distinct voices for narration and dialogue, with an optional soundscape.',intro);
-        const map=element('ol','',body);map.className='cs-map';
-        for(const [index,title,detail] of [[1,'Connect','Use a speech connection saved in Lumiverse.'],[2,'Choose voices','Set voices, accents, and delivery for new chats.'],[3,'Make it comfortable','Choose playback, reading, and audio storage preferences.']]){
-          const li=element('li','',map);element('span',String(index),li).className='cs-map-number';const info=element('div','',li);element('strong',title,info);element('small',detail,info);
+        const hero=row(body);hero.classList.add('cs-hero');brand(hero);element('p','Give your story a voice.',hero).className='cs-lead';
+        element('p','Use connections already saved in Lumiverse. Choose how much guidance you want.',body);
+        const choices=element('div','',body);choices.className='cs-mode-cards';
+        for(const [key,title,detail] of [['quick','Quick start','One screen: speech provider, narrator voice and automatic character voices.'],['guided','Guided setup','Three short steps: connect, choose voices, then try your setup.'],['custom','Custom setup','Open categories directly and adjust every preference at your own pace.']]){
+          const choice=button('',choices,()=>chooseMode(key));choice.dataset.setupChoose=key;choice.setAttribute('aria-label',title);element('strong',title,choice);element('small',detail,choice);element('span','→',choice);
         }
-        const notice=element('div','',body);notice.className='cs-notice';
-        if(snapshot.existing){element('h3','Your existing setup was found',notice);element('p','We’ll start from your saved preferences. Existing chat casts are preserved.',notice);}
-        else element('p','Start with speech. Soundscapes and automation are optional and start off.',notice);
-        element('p','Nothing changes until Finish setup. Speech & Planner preferences are shared across chats; voice defaults apply to new chats.',body).className='cs-hint';
-        element('small','Tests run only when you press a Test button and may use paid APIs. Skip saves no configuration.',body);
+        if(snapshot.existing)element('p','Your existing setup was found. We will start from it and preserve your chat casts.',body).className='cs-notice';
+        element('p','Nothing changes until you finish. Tests are optional, may incur provider charges, and only run when you press Test.',body).className='cs-hint';
+      } else if(step===5){
+        element('p','Start with speech. Soundscapes, accents and mixer controls are available in Guided or Custom.',body).className='cs-hint';
+        const connectionsCard=card('Connect');
+        select('Default TTS connection',[['','Choose a connection'],...connections.tts.map(item=>[item.id,item.name])],draft.connection,connectionsCard,value=>changeSpeechRouting(()=>{draft.connection=value;}));
+        select('Planner engine',[['llm','LLM · best for several speakers'],['jev','Jev · fast speaker detection'],['heuristic','Local · simple scenes, manual voices']],draft.plannerMode,connectionsCard,value=>{draft.plannerMode=value;draft.useFastClassifier=value==='heuristic';draft.useJev=value==='jev';if(value==='heuristic' && draft.npcPolicy.mode==='llm')draft.npcPolicy.mode='skip';tests.delete('planner');render();});
+        if(draft.plannerMode==='llm')select('Planner LLM connection',[['','Default LLM connection'],...connections.llm.map(item=>[item.id,item.name])],draft.planner,connectionsCard,value=>{draft.planner=value;tests.delete('planner');});
+        if(draft.plannerMode==='jev')select('Decision connection',[['','Default Decision connection'],...connections.decision.map(item=>[item.id,item.name])],draft.decisionConnection,connectionsCard,value=>{draft.decisionConnection=value;tests.delete('planner');});
+        element('small',draft.plannerMode==='heuristic'?'Local speaker detection makes no planner request. Assign every role a voice in Guided or Custom.':'Speaker detection uses your selected connection. Provider charges may apply.',connectionsCard);
+        if(!connections.tts.length)element('p','Add a TTS connection in Lumiverse’s Connect panel, then refresh below.',connectionsCard).className='cs-notice';
+        const narrator=card('Narrator');
+        if(draft.connectionMode==='several' && draft.fixed[0].route)select('Narrator connection',routes(),draft.fixed[0].route,narrator,value=>{draft.fixed[0].route=value;draft.fixed[0].voice='';render();});
+        check('Enable narrator speech',!draft.fixed[0].excluded,narrator,value=>{draft.fixed[0].excluded=!value;tests.delete('tts');});
+        voiceField(draft.fixed[0],narrator,'Narrator',()=>tests.delete('tts'),draft.plannerMode!=='heuristic' && !jevNeedsNarratorVoice(draft,connections));
+        if(draft.plannerMode!=='heuristic')check('Choose new character voices automatically',draft.npcPolicy.mode==='llm',narrator,value=>{draft.npcPolicy.mode=value?'llm':'skip';},'Existing assigned voices stay saved. Other automatic roles are chosen when you plan a reply.');
+        const tools=row(body);button('Test narrator voice',tools,()=>testVoice());button('Refresh connections',tools,refresh);
+        illustratedGuide(body,'fish');element('small','Finish saves preferences and voice defaults for new chats. Existing chats keep their voices. Saving makes no planner or speech request.',body);
       } else if(step===1){
         element('p','Choose where speech comes from and how Choir identifies speakers.',body);
         const grid=element('div','',body);grid.className='cs-grid';
@@ -394,7 +428,7 @@ export function createSetupWizard(ctx, adapter) {
           const enabled=check(`Enable ${name.toLowerCase()} speech`,!actor.excluded,title,value=>{actor.excluded=!value;fishSourceWrap.hidden=!hasFishRoute();changeVoice();updateRoles();});enabled.nextElementSibling.firstChild.textContent='Enable speech';
           if(draft.connectionMode==='several')select(`${name} connection`,routes(),actor.route || '',panel,value=>{actor.route=value;actor.voice='';changeVoice();render();});
           voiceField(actor,panel,name,()=>{changeVoice();updateRoles();},draft.plannerMode!=='heuristic' && (index!==0 || !jevNeedsNarratorVoice(draft,connections)),label=>{const summary=summaries[index];summary.dataset.voiceId=actor.voice;summary.dataset.voiceName=label || '';updateRoles();});
-          const customId=panel.querySelector('.cs-voice-fields details');
+          const customId=panel.querySelector('.cs-provider-id');
           const acting=element('div','',panel);acting.className='cs-grid';
           const accent=input(`${name} accent`,actor.accent,acting,value=>{actor.accent=value;changeVoice();},{placeholder:'e.g. light Irish accent'});accent.maxLength=300;accent.parentElement.firstChild.textContent='Accent preference';
           const mode=select(`${name} delivery`,[['auto','Automatic acting'],['base','Base style only'],['off','No tone directions']],delivery(actor,index),acting,value=>{actor.deliveryMode=value;changeVoice();});mode.parentElement.firstChild.textContent='Delivery';
@@ -417,24 +451,31 @@ export function createSetupWizard(ctx, adapter) {
         }
         element('p',policy.mode==='skip'?'Unassigned new speakers stay silent until you give them a voice.':policy.mode==='llm'?'Automatic selection needs Jev or an LLM and may incur planner charges.':'Shared and preferred voices can be used with local heuristic attribution.',npc).className='cs-hint';
       } else if(step===3){
-        const main=element('div','',body),details=element('div','',body);main.hidden=playbackDetails;details.hidden=!playbackDetails;
-        const setDetails=value=>{playbackDetails=value;main.hidden=value;details.hidden=!value;body.scrollTop=0;heading.textContent=value?'Playback details':'Playback';heading.focus();};
-        if(playbackDetails)heading.textContent='Playback details';
-        element('p','Choose everyday controls. Soundscapes and automation are optional.',main);
-        const playback=card('Playback & saved audio',main);
+        element('p','Choose everyday controls. Soundscapes and automation are optional.',body);
+        const playback=card('Playback & saved audio',body);
         const controls=element('div','',playback);controls.className='cs-grid';
         check('Floating audio mixer',draft.enableMixer,controls,value=>{draft.enableMixer=value;});
         check('Show message play controls',draft.sectionButtons,controls,value=>{draft.sectionButtons=value;});
         check('Match passage loudness',draft.normalizeLoudness,playback,value=>{draft.normalizeLoudness=value;},'Reduce volume differences between speech passages.');
         select('Audio retention for new recordings',[['session','This session only'],['1','1 day'],['7','7 days'],['30','30 days'],['forever','Indefinitely']],draft.retention,playback,value=>{draft.retention=value;},'Audio is saved on this device for replay and download. For existing recordings, change Audio retention in Saved.');
-        const reading=section('Reading',main);
+        const reading=section('Reading',body);
         select('Highlight spoken text',[['off','Off'],['passage','Passage'],['word','Word by word']],draft.readAlong || 'off',reading,value=>{draft.readAlong=value;});
         check('Follow narration',Boolean(draft.followNarration),reading,value=>{draft.followNarration=value;},'Keep the spoken passage in view.');
-        const automation=section('Automatic replies',main),automatic=row(automation);
+        const automation=section('Automatic replies',body),automatic=row(automation);
         check('Auto-plan new replies',draft.autoPlan,automatic,value=>{draft.autoPlan=value;});
         check('Auto-play new replies',draft.auto,automatic,value=>{draft.auto=value;});
         element('small','Automatic planning and speech can incur provider charges. Nothing plays or calls a planner while saving setup.',automation);
-        const sound=section('Soundscape',main),toggles=row(sound);
+        const summary=section('Your choices');
+        const selectedPlanner=(draft.plannerMode==='jev'?connections.decision:connections.llm).find(item=>draft.plannerMode==='jev'?(draft.decisionConnection?item.id===draft.decisionConnection:item.is_default):(draft.planner?item.id===draft.planner:item.is_default));
+        element('p',draft.plannerMode==='heuristic'?'Local speaker detection':`${draft.plannerMode==='jev'?'Jev':'LLM'} · ${selectedPlanner?.name || 'Default connection'} · ${selectedPlanner?.model || ''}`,summary).className='cs-hint';
+        element('p',draft.fixed.map((actor,index)=>`${voiceNames[index]}: ${actor.excluded?'off':actor.voice || (draft.plannerMode==='llm'?'LLM chooses during planning':'Choir chooses during planning')}`).join(' · '),summary).className='cs-hint';
+        const editVoice=button('Edit voices',summary,()=>navigate(2));editVoice.setAttribute('aria-label','Edit narrator');
+        const trying=section('Try your setup',body),tryButtons=row(trying);button('Test planner connection',tryButtons,testPlanner);button('Test narrator voice',tryButtons,()=>testVoice());element('small','Optional: provider tests may incur charges. You can finish without running them.',trying);
+        for(const kind of ['tts','planner']){const test=tests.get(kind);element('small',test?.key===signature(kind)?`${kind==='tts'?'Speech':'Planner'} test passed: ${test.message}`:`${kind==='tts'?'Speech':'Planner'} connection has not been tested with these choices.`,trying);}
+        const more=section('Optional settings');button('Soundscape →',more,()=>navigate(6));button('Performance & text filters →',more,()=>navigate(7));
+      } else if(step===6){
+        button('← Back to playback',body,()=>navigate(3));
+        const sound=section('Soundscape',body),toggles=row(sound);
         check('Sound effects',draft.enableSfx,toggles,value=>{draft.enableSfx=value;updateSound();});
         check('Ambient sound',draft.enableAmbience,toggles,value=>{draft.enableAmbience=value;updateSound();});
         check('Background music',draft.enableMusic,toggles,value=>{draft.enableMusic=value;updateSound();});
@@ -445,54 +486,21 @@ export function createSetupWizard(ctx, adapter) {
         const loop=element('div','',sound);check('Loop music between replies',draft.loopMusic,loop,value=>{draft.loopMusic=value;});
         function updateSound(){requirements.hidden=!(draft.enableSfx || draft.enableAmbience || draft.enableMusic);freesound.hidden=!(draft.enableSfx || draft.enableAmbience);loop.hidden=!draft.enableMusic;}
         updateSound();illustratedGuide(sound,'freesound');
-        const more=section('Fine tuning',main);button('More playback settings',more,()=>setDetails(true));element('small','Buffering, request limits, custom text filters, and the Auto-plan shortcut.',more);
-        button('Back to playback',details,()=>setDetails(false));
-        const buffering=section('Buffering and request limits',details);
+      } else if(step===7){
+        button('Back to playback',body,()=>navigate(3));
+        const buffering=section('Buffering and request limits',body);
         element('p','Lookahead prepares speech before you reach it. More requests can reduce gaps, but can generate unused audio and increase provider load.',buffering).className='cs-hint';
         const numbers=element('div','',buffering);numbers.className='cs-grid';
         number('Prefetch passages','prefetch',0,4,numbers,'0 turns lookahead off. Try 2 for faster playback.');
         number('Concurrent TTS requests','concurrency',1,4,numbers,'Try 2 if your provider permits it.');
         number('Max characters per request','chunk',80,10000,buffering,'Smaller requests can start sooner, but require more calls.');
         check('Group speech requests',draft.batchSpeech,buffering,value=>{draft.batchSpeech=value;},'Used only by compatible providers, voices and playback settings.');
-        const filtering=section('Text filters',details);
+        const filtering=section('Text filters',body);
         check('Skip non-story blocks',draft.skipMeta!==false,filtering,value=>{draft.skipMeta=value;},'Filter trackers, recaps and interface panels. LLM and Jev modes can also run a planner check.');
         const skipped=element('textarea');skipped.rows=2;skipped.value=draft.ignoredTags || '';skipped.placeholder='summary, .status-panel, #phone-panel';skipped.oninput=()=>{draft.ignoredTags=skipped.value;};
         field('Skip tags and blocks',skipped,filtering,'Tag names, classes or IDs, separated by commas. Applies across chats.');
-        check('Show automatic planning shortcut',draft.showAutoPlanAction,details,value=>{draft.showAutoPlanAction=value;},'Shows a shortcut; does not turn Auto-plan on.');
-        element('p','Set name pronunciation in the character’s Cast editor after setup.',details).className='cs-hint';
-      } else {
-        element('p','Check the essentials, then save. Tests are optional and run only when you ask.',body);
-        const issues=setupIssues(draft,connections,session());
-        const group=title=>{const node=element('section','',body);node.className='cs-review-group';element('h3',title,node);return node;};
-        const review=(parent,title,detail,target,status,role)=>{
-          const node=element('div','',parent);node.className='cs-review';const info=element('div','',node);element('h3',title,info);element('small',detail,info);element('span',status,node).className='cs-status';
-          const edit=button('Edit',node,()=>{
-            if(role!=null)activeRole=role;if(target===3)playbackDetails=false;navigate(target);
-            const destination={'New speakers':'New speakers',Reading:'Reading','Optional features':draft.enableSfx || draft.enableAmbience || draft.enableMusic?'Soundscape':'Automatic replies'}[title];
-            if(destination){const section=[...body.querySelectorAll('[data-setup-section]')].find(node=>node.dataset.setupSection===destination);section?.scrollIntoView?.({block:'start'});const heading=section?.querySelector('h3');if(heading){heading.tabIndex=-1;heading.focus({preventScroll:true});}}
-          });edit.setAttribute('aria-label',`Edit ${title.toLowerCase()}`);
-        };
-        const testStatus=kind=>tests.get(kind)?.key===signature(kind)?'Test passed':'Not tested';
-        const connectionGroup=group('Connections'),tts=connections.tts.find(item=>item.id===draft.connection);
-        review(connectionGroup,'Speech',`${tts?.name || 'Missing TTS connection'} · ${tts?.provider || ''} · ${tts?.model || 'no model'}`,1,issues.some(item=>item.step===1 && /TTS/.test(item.message))?'Needs attention':testStatus('tts'));
-        const plannerConnection=(draft.plannerMode==='jev'?connections.decision:connections.llm).find(item=>draft.plannerMode==='jev'?(draft.decisionConnection?item.id===draft.decisionConnection:item.is_default):(draft.planner?item.id===draft.planner:item.is_default));
-        const plannerDetail=draft.plannerMode==='heuristic'?'Local heuristic · no planner API':`${draft.plannerMode==='jev'?'Jev':'Standard LLM'} · ${plannerConnection?.name || (draft.plannerMode==='jev' && connections.directJev && session().jev?'Session Jev connection':'Missing planner connection')}${plannerConnection?.model?` · ${plannerConnection.model}`:''}`;
-        review(connectionGroup,'Planner',plannerDetail+(draft.plannerMode==='jev'?` · LLM fallback: ${draft.allowLlmFallback?'on':'off'}`:''),1,issues.some(item=>item.step===1 && !/TTS/.test(item.message))?'Needs attention':testStatus('planner'));
-        const cast=group('Voice defaults · new chats');
-        draft.fixed.forEach((actor,index)=>review(cast,voiceNames[index],actor.excluded?'Speech disabled':`${actor.voice || (draft.plannerMode==='llm'?'LLM chooses during planning':draft.plannerMode==='jev'?'Choir chooses with Jev':'Choose a voice')} · ${routeName(effectiveRoute(actor))}${actor.accent?` · ${actor.accent}`:''} · ${['Automatic acting','Base style only','No tone directions'][['auto','base','off'].indexOf(delivery(actor,index))]}`,2,actor.excluded?'Off':issues.some(item=>item.step===2 && item.message.includes(actor.speaker))?'Needs attention':actor.voice?'Assigned':'Automatic',index));
-        review(cast,'New speakers',`Automatic casting: ${draft.npcPolicy.mode}${hasFishRoute()?` · Fish voice source: ${draft.fishVoiceSource}`:''}`,2,'Optional');
-        const preferences=group('Playback preferences');
-        review(preferences,'Playback & saved audio',`Mixer: ${draft.enableMixer?'on':'off'} · Message controls: ${draft.sectionButtons?'on':'off'} · Loudness matching: ${draft.normalizeLoudness?'on':'off'} · New recordings: ${retentionLabel}`,3,issues.some(item=>item.step===3)?'Needs attention':'Configured');
-        review(preferences,'Reading',`Highlight: ${draft.readAlong || 'off'} · Follow narration: ${draft.followNarration?'on':'off'} · Custom skip rules: ${draft.ignoredTags || 'none'} · Automatic non-story filtering: ${draft.skipMeta===false?'off':'on'}`,3,'Configured');
-        review(preferences,'Optional features',[['Sound effects',draft.enableSfx],['Ambience',draft.enableAmbience],[draft.loopMusic?'Music (loop between replies)':'Music',draft.enableMusic],['Auto-plan',draft.autoPlan],['Auto-play',draft.auto]].filter(item=>item[1]).map(item=>item[0]).join(', ') || 'All optional features are off',3,'Optional');
-        const limits=disclosure('Request settings summary',body);element('p',`Prefetch: ${draft.prefetch} · Concurrent TTS: ${draft.concurrency} · Request size: ${draft.chunk} · Group speech: ${draft.batchSpeech?'on':'off'} · Auto-plan shortcut: ${draft.showAutoPlanAction?'shown':'hidden'}`,limits).className='cs-hint';
-        const testing=section('Optional connection checks'),buttons=row(testing);
-        button('Test planner connection',buttons,testPlanner);
-        if(!draft.fixed[0].excluded)button('Test narrator voice',buttons,()=>testVoice());
-        for(const kind of ['tts','planner']){const test=tests.get(kind);element('small',test?.key===signature(kind)?`${kind==='tts'?'Speech':'Planner'} test passed: ${test.message}`:`${kind==='tts'?'Speech':'Planner'} connection has not been tested with these choices.`,testing);}
-        element('small','Voice tests generate speech; LLM and Jev tests may use paid APIs. Saving itself makes no planner or synthesis request.',testing);
-        if(issues.length)say(issues.map(item=>item.message).join('\n'),true);
-        element('p','Finish saves shared preferences and voice defaults for new chats. Existing chat voice choices remain intact. Run setup again from the Setup tab whenever you need it.',body).className='cs-hint';
+        check('Show automatic planning shortcut',draft.showAutoPlanAction,body,value=>{draft.showAutoPlanAction=value;},'Shows a shortcut; does not turn Auto-plan on.');
+        element('p','Set name pronunciation in the character’s Cast editor after setup.',body).className='cs-hint';
       }
       lock();
     }
@@ -511,7 +519,7 @@ export function createSetupWizard(ctx, adapter) {
         if(latest.length)throw new Error(latest.map(item=>item.message).join('\n'));
         await adapter.save(draft,snapshot.config,signal,()=>{committing=true;saving=true;cancellable=false;lock();});
         if(closed || signal.aborted)return;
-        completed=true;if(!closed){render();say('Setup completed successfully.');}
+        completed=true;adapter.onState?.({completed:true,deferred:false});if(!closed){render();say('Setup completed successfully.');}
         } finally {if(committing)saving=false;}
       },'Validating and saving setup…');
     }

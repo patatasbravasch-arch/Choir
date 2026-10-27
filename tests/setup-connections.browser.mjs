@@ -43,7 +43,7 @@ async function connectionHarness({disabledNarrator=false}={}){
     sendToBackend:request=>{if(request.action!=='cancel')setTimeout(()=>backend?.({namespace:'choir',id:request.id,result:{ready:true,decisionsAvailable:true}}),1);}
   };
   const cleanup=await setup(ctx),root=()=>document.querySelector('[data-choir-setup]');
-  const click=text=>{const node=[...root().querySelectorAll('button')].find(button=>button.textContent===text);assert.ok(node,`Missing ${text}`);assert.equal(node.disabled,false,`Disabled ${text}`);node.click();};
+  const click=text=>{const node=[...root().querySelectorAll('button')].find(button=>(button.textContent===text || button.getAttribute('aria-label')===text));assert.ok(node,`Missing ${text}`);assert.equal(node.disabled,false,`Disabled ${text}`);node.click();};
   const select=(label,value)=>{const node=root().querySelector(`[aria-label="${label}"]`);node.value=value;node.dispatchEvent(new dom.window.Event('change',{bubbles:true}));};
   const options=()=>[...root().querySelector('[aria-label="Narrator voice"]').options].map(option=>option.value);
   return {store,root,click,select,options,change(id,model,ids){tts.find(connection=>connection.id===id).model=model;catalogues.set(id,ids);},holdNext(id){const value={};holds.set(id,value);return value;},cleanup(){cleanup();dom.window.close();Object.assign(globalThis,original);}};
@@ -51,7 +51,7 @@ async function connectionHarness({disabledNarrator=false}={}){
 
 test('setup refresh reloads an edited connection catalogue even when its ID is unchanged',async()=>{
   const h=await connectionHarness();try{
-    await until(()=>h.root());h.click('Next');h.click('Next');await until(()=>h.options().includes('old-voice'));
+    await until(()=>h.root());h.click('Guided setup');h.click('Next');await until(()=>h.options().includes('old-voice'));
     h.click('Back');h.change('tts','replacement-model',['new-voice']);h.click('Refresh connections');await until(()=>h.root().textContent.includes('Connections refreshed'));
     h.click('Next');await until(()=>h.options().includes('new-voice'));assert.ok(!h.options().includes('old-voice'));
   }finally{h.cleanup();}
@@ -59,7 +59,7 @@ test('setup refresh reloads an edited connection catalogue even when its ID is u
 
 test('a late catalogue response cannot replace voices loaded after setup refresh',async()=>{
   const h=await connectionHarness();let held;try{
-    await until(()=>h.root());h.click('Next');h.click('Next');await until(()=>h.options().includes('old-voice'));
+    await until(()=>h.root());h.click('Guided setup');h.click('Next');await until(()=>h.options().includes('old-voice'));
     held=h.holdNext('other');h.select('Narrator connection','native:other');await until(()=>held.release);
     h.click('Back');h.change('other','replacement-model',['new-other']);h.click('Refresh connections');await until(()=>h.root().textContent.includes('Connections refreshed'));
     h.click('Next');await until(()=>h.options().includes('new-other'));held.release();await tick();
@@ -69,8 +69,8 @@ test('a late catalogue response cannot replace voices loaded after setup refresh
 
 test('setup saves a disabled narrator without requiring its deleted speech connection',async()=>{
   const h=await connectionHarness({disabledNarrator:true});try{
-    await until(()=>h.root());h.click('Next');h.click('Next');await until(()=>h.options().length>1);
-    h.click('Next');h.click('Next');h.click('Finish setup');
+    await until(()=>h.root());h.click('Guided setup');h.click('Next');await until(()=>h.options().length>1);
+    h.click('Next');h.click('Finish setup');
     await until(()=>h.root().textContent.includes('Setup completed successfully') || h.root().textContent.includes('Select an available TTS connection'));
     assert.match(h.root().textContent,/Setup completed successfully/);
     const narrator=h.store.get('settings:captured-defaults').leadVoices[0];

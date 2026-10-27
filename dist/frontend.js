@@ -2142,6 +2142,16 @@ const SETUP_CSS = `
   @media(max-width:400px){.choir-setup .cs-progress b{display:none}.choir-setup .cs-progress button{font-size:.95em}.choir-setup .cs-voice-choices{grid-template-columns:minmax(0,1fr)}.choir-setup .cs-voice-choices .cs-gender,.choir-setup .cs-voice-choices .cs-voice{grid-column:auto;grid-row:auto}.choir-setup .cs-voice-choices .cs-voice{grid-row:1}.choir-setup .cs-role-picker{gap:5px}.choir-setup .cs-role-picker strong{font-size:.82em}.choir-setup .cs-voice-title{align-items:flex-start}}
   @media(max-height:520px){.choir-setup{height:calc(100dvh - 110px)}.choir-setup .cs-step-caption{margin:4px 0}.choir-setup .cs-progress{padding-bottom:6px}}
   @media(prefers-reduced-motion:reduce){.choir-setup *{scroll-behavior:auto}}
+
+  .choir-setup .cs-progress{grid-template-columns:repeat(3,minmax(0,1fr));padding-bottom:8px}
+  .choir-setup .cs-progress b{display:inline}
+  .choir-setup .cs-modes{display:flex;gap:4px;padding-bottom:10px;flex-shrink:0;border-bottom:1px solid var(--cs-border);margin-bottom:10px}.choir-setup .cs-modes button{flex:1;background:none;border-color:transparent;padding:6px;font-size:.88em}.choir-setup .cs-modes [aria-pressed="true"]{border-color:var(--cs-accent);color:var(--cs-accent);background:var(--lumiverse-primary-010,#8882)}
+  .choir-setup .cs-mode-cards{display:grid;gap:10px}.choir-setup .cs-mode-cards button{display:grid;grid-template-columns:1fr auto;text-align:left;gap:4px 16px;padding:16px;background:none}.choir-setup .cs-mode-cards small{grid-column:1;margin:0;font-size:.88em;font-weight:400}.choir-setup .cs-mode-cards span{grid-column:2;grid-row:1 / 3;align-self:center}.choir-setup .cs-hero{padding:8px 0 14px;gap:16px}.choir-setup .cs-logo{width:34px;height:58px}.choir-setup .cs-hero .cs-lead{font-size:1.1em;margin:0}
+  .choir-setup .cs-card{padding:12px;margin-bottom:12px}.choir-setup .cs-section{margin-top:14px;padding-top:12px}.choir-setup .cs-help-link{background:none;border:0;padding-left:0;font-size:.88em;color:var(--cs-accent)}.choir-setup .cs-provider-id{margin:6px 0}.choir-setup .cs-provider-id>button{font-size:.84em;background:none;border:0;padding-left:0}.choir-setup .cs-guide>button{margin-bottom:16px}
+  .choir-setup[data-setup-mode="custom"] .cs-progress span{display:none}.choir-setup[data-setup-mode="quick"] .cs-voice-choices{grid-template-columns:1fr}.choir-setup[data-setup-mode="quick"] .cs-gender{display:none}.choir-setup[data-setup-mode="quick"] .cs-voice{grid-column:1;grid-row:1}
+
+  .choir-setup .cs-categories{display:flex;flex-wrap:wrap;gap:4px;flex-shrink:0;margin-bottom:8px}.choir-setup .cs-categories button{font-size:.82em;padding:6px 10px;background:none}.choir-setup .cs-categories [aria-pressed="true"]{color:var(--cs-accent);border-color:var(--cs-accent)}
+  @media(max-height:480px){.choir-setup .cs-step-caption{display:none}.choir-setup .cs-modes{margin:0;padding:0;border:0}.choir-setup .cs-modes button{min-height:32px;padding:3px 8px}.choir-setup .cs-progress{padding:0;border:0}.choir-setup .cs-progress button{min-height:32px;padding:3px}.choir-setup .cs-actions{padding-top:6px}.choir-setup .cs-feedback:not(:empty){max-height:32px;padding:3px 0}.choir-setup .cs-categories{margin:0;gap:2px}.choir-setup .cs-categories button{min-height:32px;padding:3px 7px}}
 `;
 
 // Embedded so the first-run icon also works offline. Source: assets/logo.svg.
@@ -2150,7 +2160,7 @@ const SETUP_LOGO = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 240 
 // Onboarding owns a draft only. All provider, voice and storage operations are
 // supplied by Choir's frontend so the wizard cannot diverge from playback.
 const ONBOARDING_KEY = 'onboarding:state';
-const SETUP_STEPS = ['Welcome', 'Connections', 'Voices', 'Playback', 'Review'];
+const SETUP_STEPS = ['Connect', 'Voices', 'Try it'];
 
 function shouldOpenSetup(state) {
   return !state?.completed && !state?.deferred;
@@ -2274,15 +2284,30 @@ function createSetupWizard(ctx, adapter) {
     const doc = modal.root.ownerDocument;
     const shell = doc.createElement('div');shell.className='choir-setup';shell.dataset.choirSetup='';modal.root.append(shell);
     const draft = setupDraft(snapshot.config, snapshot.preset, snapshot.existing);
-    let connections = snapshot.connections, step = 0, visited = 0, busy = false, closed = false, completed = false, ctrl = null, renderId = 0, cancellable = false, activeRole = 0, playbackDetails = false;
+    let mode='',helpGuide='',connections = snapshot.connections, step = 0, visited = 1, busy = false, closed = false, completed = false, ctrl = null, renderId = 0, cancellable = false, activeRole = 0;
     const tests = new Map();
     const element = (tag,text,parent) => {const node=doc.createElement(tag);if(text)node.textContent=text;parent?.append(node);return node;};
+    // All modes edit this one draft. Switching mode never saves or resets it.
+    if(!snapshot.existing){
+      const first=(connections.tts || []).find(item=>item.model && item.is_default) || connections.tts.find(item=>item.model);
+      if(!connections.tts.some(item=>item.id===draft.connection && item.model) && first)draft.connection=first.id;
+      const llm=connections.llm.find(item=>item.model && item.is_default) || connections.llm.find(item=>item.model);
+      const decision=connections.decision.find(item=>item.model);
+      if(llm){draft.plannerMode='llm';draft.planner=llm.id;draft.useFastClassifier=false;draft.npcPolicy.mode='llm';}
+      else if(decision){draft.plannerMode='jev';draft.decisionConnection=decision.id;draft.useJev=true;draft.useFastClassifier=false;draft.npcPolicy.mode='llm';}
+    }
+    const modes=element('div','',shell);modes.className='cs-modes';modes.setAttribute('aria-label','Setup mode');
+    const modeButtons=new Map();
+    function chooseMode(value){if(busy || completed)return;mode=value;step=value==='quick'?5:[1,2,3,6,7].includes(step)?step:1;helpGuide='';say('');render();body.scrollTop=0;body.querySelector('h2')?.focus();}
+    for(const [key,title] of [['quick','Quick start'],['guided','Guided'],['custom','Custom']]){const node=element('button',title,modes);node.type='button';node.dataset.setupMode=key;node.onclick=()=>chooseMode(key);modeButtons.set(key,node);}
     const nav = element('ol','',shell);nav.className='cs-progress';nav.setAttribute('aria-label','Setup progress');
     const navButtons = SETUP_STEPS.map((title,index) => {
-      const li=element('li','',nav),button=element('button','',li);button.type='button';
-      element('span',String(index+1),button).setAttribute('aria-hidden','true');element('b',['Start','Connect','Voices','Playback','Review'][index],button);
-      button.setAttribute('aria-label',`Step ${index+1}: ${title}`);button.onclick=()=>navigate(index);return button;
+      const li=element('li','',nav),node=element('button','',li);node.type='button';
+      element('span',String(index+1),node).setAttribute('aria-hidden','true');element('b',title,node);
+      node.setAttribute('aria-label',`Step ${index+1}: ${title}`);node.onclick=()=>navigate(index+1);return node;
     });
+    const categories=element('div','',shell);categories.className='cs-categories';categories.setAttribute('aria-label','Setup categories');
+    const categoryButtons=[];for(const [target,title] of [[1,'Connections'],[2,'Voices'],[3,'Playback'],[6,'Soundscape'],[7,'Performance & filters']]){const node=element('button',title,categories);node.type='button';node.onclick=()=>navigate(target);categoryButtons.push([target,node]);}
     const caption = element('p','',shell);caption.className='cs-step-caption';
     const body = element('section','',shell);body.dataset.setupBody='';
     const feedback = element('p','',shell);feedback.className='cs-feedback';feedback.setAttribute('role','status');feedback.setAttribute('aria-live','polite');
@@ -2291,7 +2316,7 @@ function createSetupWizard(ctx, adapter) {
     const back = button('Back',actions,()=>navigate(step-1));
     const skip = button('Skip for now',actions,()=>task(async()=>{await defer();modal.dismiss();},'Saving your choice…',false));skip.className='cs-skip';
     const cancel = button('Cancel',actions,()=>{if(cancellable){ctrl?.abort();adapter.stopTest();}});cancel.hidden=true;
-    const next = button('Next',actions,()=>step===4?finish():navigate(step+1));next.className='cs-primary';
+    const next = button('Next',actions,()=>step>=3?finish():navigate(step+1));next.className='cs-primary';
     const say = (message,error=false) => {if(closed)return;feedback.textContent=message;feedback.classList.toggle('cs-error',error);feedback.setAttribute('role',error?'alert':'status');};
     const session = () => adapter.session();
     const safeError = error => {
@@ -2302,8 +2327,10 @@ function createSetupWizard(ctx, adapter) {
     const lock = () => {
       shell.setAttribute('aria-busy',String(busy));
       for(const node of body.querySelectorAll('input,select,textarea,button'))node.disabled=busy || node.dataset.unavailable==='true';
-      navButtons.forEach((node,index)=>{node.disabled=busy || completed || index>visited;node.setAttribute('aria-current',index===step?'step':'false');});
-      back.hidden=step===0 || completed || busy;skip.hidden=completed || busy;back.disabled=busy || completed || step===0;skip.disabled=busy || completed;next.disabled=busy;
+      navButtons.forEach((node,index)=>{node.disabled=busy || completed || mode==='guided' && index+1>visited;node.setAttribute('aria-current',index+1===(step>3?3:step)?'step':'false');});
+      for(const [target,node] of categoryButtons){node.disabled=busy || completed;node.setAttribute('aria-pressed',String(step===target));}
+      for(const [key,node] of modeButtons){node.disabled=busy || completed;node.setAttribute('aria-pressed',String(key===mode));}
+      back.hidden=step<=1 || step>3 || mode!=='guided' || completed || busy || Boolean(helpGuide);skip.hidden=completed || busy;back.disabled=busy || completed || step<=1;skip.disabled=busy || completed;next.disabled=busy;
       cancel.hidden=!busy || !cancellable;cancel.disabled=!busy || !cancellable;
     };
     async function task(operation,message,canCancel=true) {
@@ -2318,7 +2345,7 @@ function createSetupWizard(ctx, adapter) {
     async function defer() {
       if(completed || previousState?.completed)return;
       if((await ctx.settings.get(ONBOARDING_KEY))?.completed)return;
-      await ctx.settings.set(ONBOARDING_KEY,{version:1,completed:false,deferred:true});
+      const state={version:1,completed:false,deferred:true};await ctx.settings.set(ONBOARDING_KEY,state);adapter.onState?.(state);
     }
     const cleanup = (persistDismissal = true) => {
       if(closed)return;closed=true;++renderId;ctrl?.abort();adapter.stopTest();active=null;
@@ -2364,8 +2391,8 @@ function createSetupWizard(ctx, adapter) {
     const routes = () => [['','Use default speech connection'],...connections.tts.map(item=>[`native:${item.id}`,`${item.name} · ${item.provider} · ${item.model || 'no model'}`])];
     const signature = kind => JSON.stringify(kind==='planner'?[draft.plannerMode,draft.planner,draft.decisionConnection,draft.allowLlmFallback,Boolean(session().jev)]:[defaultRoute(),draft.connectionMode,draft.fixed[0]?.route,draft.fixed[0]?.voice,draft.fixed[0]?.accent,draft.fixed[0]?.style,draft.fixed[0]?.deliveryMode,draft.fixed[0]?.excluded]);
     function navigate(target) {
-      if(busy || completed || target<0 || target>4)return;
-      if(target>step){
+      if(busy || completed || ![1,2,3,6,7].includes(target))return;
+      if(mode==='guided' && step<3 && target>step){
         const issues=setupIssues(draft,connections,session()).filter(item=>item.step===step);
         if(issues.length){showIssues(issues);return;}
       }
@@ -2373,9 +2400,10 @@ function createSetupWizard(ctx, adapter) {
       body.scrollTop=0;modal.root.scrollTop=0;
     }
     function showIssues(issues) {
+      if(mode==='quick')mode='guided';
       step=issues[0].step;visited=Math.max(visited,step);
       if(step===2){const index=draft.fixed.findIndex(actor=>issues.some(item=>item.message.includes(actor.speaker)));if(index>=0)activeRole=index;}
-      if(step===3)playbackDetails=issues.some(item=>/Prefetch passages|Concurrent TTS requests|Max characters per request/.test(item.message));
+      if(step===3)step=issues.some(item=>/Freesound|cue selection/.test(item.message))?6:issues.some(item=>/Prefetch passages|Concurrent TTS requests|Max characters per request/.test(item.message))?7:3;
       render();say(issues.map(item=>item.message).join('\n'),true);body.scrollTop=0;body.querySelector('h2')?.focus();
     }
     function refresh() {
@@ -2419,8 +2447,8 @@ function createSetupWizard(ctx, adapter) {
         onLabel?.(selected?.name || actor.voice);
       }
       const automaticNote=allowAutomatic && draft.plannerMode!=='heuristic'?element('small','Chosen during planning. Assign a voice to keep its identity and audition it here.',row):null;
-      const custom=element('details','',row);element('summary','Use a provider voice ID',custom);
-      voiceId=input(`${label} voice ID`,actor.voice,custom,value=>{
+      const custom=element('div','',row);custom.className='cs-provider-id';const customToggle=button('Use a provider voice ID',custom,()=>{customField.hidden=!customField.hidden;customToggle.setAttribute('aria-expanded',String(!customField.hidden));});customToggle.setAttribute('aria-expanded','false');const customField=element('div','',custom);customField.hidden=true;
+      voiceId=input(`${label} voice ID`,actor.voice,customField,value=>{
         actor.voice=value;populate();changed?.();
       },{hint:'Paste a voice ID from this provider, then test it. This selects an existing voice; it does not create or clone one.'});
       const token=effective();
@@ -2434,8 +2462,11 @@ function createSetupWizard(ctx, adapter) {
       const node=element('a',title,parent);node.href=url;node.target='_blank';node.rel='noopener noreferrer';return node;
     }
     function illustratedGuide(parent,id) {
-      const data=SETUP_GUIDES[id],guide=element('details','',parent);guide.className='cs-guide';guide.dataset.setupGuide=id;
-      element('summary',data.title,guide);
+      const link=button(SETUP_GUIDES[id].title+' →',parent,()=>{helpGuide=id;render();body.scrollTop=0;});link.dataset.setupGuideLink=id;link.className='cs-help-link';
+    }
+    function renderGuide(id){
+      const data=SETUP_GUIDES[id],guide=element('section','',body);guide.className='cs-guide';guide.dataset.setupGuide=id;
+      button('← Back to setup',guide,()=>{helpGuide='';render();body.scrollTop=0;});element('h3',data.title,guide);
       element('p',data.intro,guide);element('p',data.note,guide).className='cs-hint';
       const steps=element('ol','',guide);steps.className='cs-guide-steps';
       for(const step of data.steps){
@@ -2452,17 +2483,19 @@ function createSetupWizard(ctx, adapter) {
         });
         toggle.className='cs-picture-toggle';toggle.setAttribute('aria-expanded','false');toggle.setAttribute('aria-label',`Enlarge picture: ${step.title}`);
       }
-      const help=disclosure('If something does not work',guide),items=element('ul','',help);items.className='cs-guide-help';
+      const help=element('section','',guide);element('h3','If something does not work',help);const items=element('ul','',help);items.className='cs-guide-help';
       for(const message of data.troubleshooting)element('li',message,items);
       const sources=element('div','',guide);sources.className='cs-guide-links';
       for(const link of data.sources)externalLink(sources,link.label,link.url);
     }
     function render() {
       ++renderId;body.replaceChildren();
-      shell.dataset.setupComplete=String(completed);nav.hidden=completed;caption.hidden=completed;
-      caption.textContent=completed?'Setup saved':`Step ${step+1} of ${SETUP_STEPS.length} · ${SETUP_STEPS[step]}`;
-      const heading=element('h2',completed?'Choir is ready':SETUP_STEPS[step],body);heading.tabIndex=-1;
-      next.textContent=completed?'Close':step===4?'Finish setup':'Next';next.onclick=completed?()=>modal.dismiss():()=>step===4?finish():navigate(step+1);
+      shell.dataset.setupComplete=String(completed);shell.dataset.setupMode=mode || 'choose';modes.hidden=!mode || completed;categories.hidden=completed || mode!=='custom' || Boolean(helpGuide);nav.hidden=completed || mode==='custom' || !mode || mode==='quick' || Boolean(helpGuide);caption.hidden=completed || !mode || mode==='quick' || Boolean(helpGuide);
+      caption.textContent=mode==='custom'?'Edit any category. Save when you are ready.':`Step ${step>3?3:step} of 3 · ${SETUP_STEPS[(step>3?3:step)-1] || ''}`;
+      const titles={0:'Choose your setup',1:'Connect',2:'Voices',3:mode==='custom'?'Playback':'Try it',5:'Quick start',6:'Soundscape',7:'Performance & text filters'};
+      const heading=element('h2',completed?'Choir is ready':helpGuide?SETUP_GUIDES[helpGuide].title:titles[step],body);heading.tabIndex=-1;
+      next.hidden=!mode || Boolean(helpGuide);next.textContent=completed?'Close':mode==='custom'?'Save setup':step>=3?'Finish setup':'Next';next.onclick=completed?()=>modal.dismiss():()=>mode==='custom' || step>=3?finish():navigate(step+1);
+      if(helpGuide){renderGuide(helpGuide);lock();return;}
       const section=(title,parent=body)=>{const node=element('section','',parent);node.className='cs-section';node.dataset.setupSection=title;element('h3',title,node);return node;};
       const card=(title,parent=body)=>{const node=element('section','',parent);node.className='cs-card';element('h3',title,node);return node;};
       const row=parent=>{const node=element('div','',parent);node.className='cs-row';return node;};
@@ -2470,33 +2503,44 @@ function createSetupWizard(ctx, adapter) {
       const delivery=(actor,index)=>['auto','base','off'].includes(actor.deliveryMode)?actor.deliveryMode:index===0?'base':'auto';
       const voiceNames=['Narrator','Persona','Main character'];
       const routeName=token=>connections.tts.find(item=>`native:${item.id}`===token)?.name || 'Unavailable connection';
-      const retentionLabel={session:'this session only',1:'1 day',7:'7 days',30:'30 days',forever:'indefinitely'}[draft.retention] || 'invalid';
       const brand=parent=>{const logo=element('img','',parent);logo.className='cs-logo';logo.src=`data:image/svg+xml;charset=utf-8,${encodeURIComponent(SETUP_LOGO)}`;logo.alt='';logo.width=60;logo.height=96;};
       if(completed){
         const hero=row(body);hero.classList.add('cs-hero');brand(hero);
         element('p','Your preferences and voice defaults are saved.',hero).className='cs-lead';
         const steps=element('ol','',body);steps.className='cs-map';
-        for(const [index,title,detail] of [[1,'Plan a reply','Open Choir and select Plan latest.'],[2,'Listen','Press Play in the message controls or mixer.'],[3,'Make it yours','Adjust voices in Cast; change mixer controls in Sound.']]){
+        for(const [index,title,detail] of [[1,'Plan a reply','Open Choir and select Plan latest.'],[2,'Listen','Press Play in the message controls or mixer.'],[3,'Make it yours','Adjust voices in Cast; change mixer controls in Playback.']]){
           const li=element('li','',steps);element('span',String(index),li).className='cs-map-number';const info=element('div','',li);element('strong',title,info);element('small',detail,info);
         }
-        element('p','New chats use these voice defaults. Existing chats keep their voices; use Apply default in Cast if you want to replace them.',body).className='cs-hint';
+        element('p','New chats use these voice defaults. Existing chats keep their voices; use Settings → Cast tools → Apply default to replace them.',body).className='cs-hint';
         const actor=draft.fixed.find(actor=>!actor.excluded && actor.voice);
         if(actor){button('Test final playback',body,()=>testVoice(actor));element('small','Optional: synthesizes and plays one short sample. Provider charges may apply.',body);}
         lock();return;
       }
       if(step===0){
-        const hero=element('div','',body);hero.className='cs-hero';brand(hero);const intro=element('div','',hero);
-        element('p','Give your story a voice.',intro).className='cs-lead';
-        element('p','Distinct voices for narration and dialogue, with an optional soundscape.',intro);
-        const map=element('ol','',body);map.className='cs-map';
-        for(const [index,title,detail] of [[1,'Connect','Use a speech connection saved in Lumiverse.'],[2,'Choose voices','Set voices, accents, and delivery for new chats.'],[3,'Make it comfortable','Choose playback, reading, and audio storage preferences.']]){
-          const li=element('li','',map);element('span',String(index),li).className='cs-map-number';const info=element('div','',li);element('strong',title,info);element('small',detail,info);
+        const hero=row(body);hero.classList.add('cs-hero');brand(hero);element('p','Give your story a voice.',hero).className='cs-lead';
+        element('p','Use connections already saved in Lumiverse. Choose how much guidance you want.',body);
+        const choices=element('div','',body);choices.className='cs-mode-cards';
+        for(const [key,title,detail] of [['quick','Quick start','One screen: speech provider, narrator voice and automatic character voices.'],['guided','Guided setup','Three short steps: connect, choose voices, then try your setup.'],['custom','Custom setup','Open categories directly and adjust every preference at your own pace.']]){
+          const choice=button('',choices,()=>chooseMode(key));choice.dataset.setupChoose=key;choice.setAttribute('aria-label',title);element('strong',title,choice);element('small',detail,choice);element('span','→',choice);
         }
-        const notice=element('div','',body);notice.className='cs-notice';
-        if(snapshot.existing){element('h3','Your existing setup was found',notice);element('p','We’ll start from your saved preferences. Existing chat casts are preserved.',notice);}
-        else element('p','Start with speech. Soundscapes and automation are optional and start off.',notice);
-        element('p','Nothing changes until Finish setup. Speech & Planner preferences are shared across chats; voice defaults apply to new chats.',body).className='cs-hint';
-        element('small','Tests run only when you press a Test button and may use paid APIs. Skip saves no configuration.',body);
+        if(snapshot.existing)element('p','Your existing setup was found. We will start from it and preserve your chat casts.',body).className='cs-notice';
+        element('p','Nothing changes until you finish. Tests are optional, may incur provider charges, and only run when you press Test.',body).className='cs-hint';
+      } else if(step===5){
+        element('p','Start with speech. Soundscapes, accents and mixer controls are available in Guided or Custom.',body).className='cs-hint';
+        const connectionsCard=card('Connect');
+        select('Default TTS connection',[['','Choose a connection'],...connections.tts.map(item=>[item.id,item.name])],draft.connection,connectionsCard,value=>changeSpeechRouting(()=>{draft.connection=value;}));
+        select('Planner engine',[['llm','LLM · best for several speakers'],['jev','Jev · fast speaker detection'],['heuristic','Local · simple scenes, manual voices']],draft.plannerMode,connectionsCard,value=>{draft.plannerMode=value;draft.useFastClassifier=value==='heuristic';draft.useJev=value==='jev';if(value==='heuristic' && draft.npcPolicy.mode==='llm')draft.npcPolicy.mode='skip';tests.delete('planner');render();});
+        if(draft.plannerMode==='llm')select('Planner LLM connection',[['','Default LLM connection'],...connections.llm.map(item=>[item.id,item.name])],draft.planner,connectionsCard,value=>{draft.planner=value;tests.delete('planner');});
+        if(draft.plannerMode==='jev')select('Decision connection',[['','Default Decision connection'],...connections.decision.map(item=>[item.id,item.name])],draft.decisionConnection,connectionsCard,value=>{draft.decisionConnection=value;tests.delete('planner');});
+        element('small',draft.plannerMode==='heuristic'?'Local speaker detection makes no planner request. Assign every role a voice in Guided or Custom.':'Speaker detection uses your selected connection. Provider charges may apply.',connectionsCard);
+        if(!connections.tts.length)element('p','Add a TTS connection in Lumiverse’s Connect panel, then refresh below.',connectionsCard).className='cs-notice';
+        const narrator=card('Narrator');
+        if(draft.connectionMode==='several' && draft.fixed[0].route)select('Narrator connection',routes(),draft.fixed[0].route,narrator,value=>{draft.fixed[0].route=value;draft.fixed[0].voice='';render();});
+        check('Enable narrator speech',!draft.fixed[0].excluded,narrator,value=>{draft.fixed[0].excluded=!value;tests.delete('tts');});
+        voiceField(draft.fixed[0],narrator,'Narrator',()=>tests.delete('tts'),draft.plannerMode!=='heuristic' && !jevNeedsNarratorVoice(draft,connections));
+        if(draft.plannerMode!=='heuristic')check('Choose new character voices automatically',draft.npcPolicy.mode==='llm',narrator,value=>{draft.npcPolicy.mode=value?'llm':'skip';},'Existing assigned voices stay saved. Other automatic roles are chosen when you plan a reply.');
+        const tools=row(body);button('Test narrator voice',tools,()=>testVoice());button('Refresh connections',tools,refresh);
+        illustratedGuide(body,'fish');element('small','Finish saves preferences and voice defaults for new chats. Existing chats keep their voices. Saving makes no planner or speech request.',body);
       } else if(step===1){
         element('p','Choose where speech comes from and how Choir identifies speakers.',body);
         const grid=element('div','',body);grid.className='cs-grid';
@@ -2541,7 +2585,7 @@ function createSetupWizard(ctx, adapter) {
           const enabled=check(`Enable ${name.toLowerCase()} speech`,!actor.excluded,title,value=>{actor.excluded=!value;fishSourceWrap.hidden=!hasFishRoute();changeVoice();updateRoles();});enabled.nextElementSibling.firstChild.textContent='Enable speech';
           if(draft.connectionMode==='several')select(`${name} connection`,routes(),actor.route || '',panel,value=>{actor.route=value;actor.voice='';changeVoice();render();});
           voiceField(actor,panel,name,()=>{changeVoice();updateRoles();},draft.plannerMode!=='heuristic' && (index!==0 || !jevNeedsNarratorVoice(draft,connections)),label=>{const summary=summaries[index];summary.dataset.voiceId=actor.voice;summary.dataset.voiceName=label || '';updateRoles();});
-          const customId=panel.querySelector('.cs-voice-fields details');
+          const customId=panel.querySelector('.cs-provider-id');
           const acting=element('div','',panel);acting.className='cs-grid';
           const accent=input(`${name} accent`,actor.accent,acting,value=>{actor.accent=value;changeVoice();},{placeholder:'e.g. light Irish accent'});accent.maxLength=300;accent.parentElement.firstChild.textContent='Accent preference';
           const mode=select(`${name} delivery`,[['auto','Automatic acting'],['base','Base style only'],['off','No tone directions']],delivery(actor,index),acting,value=>{actor.deliveryMode=value;changeVoice();});mode.parentElement.firstChild.textContent='Delivery';
@@ -2564,24 +2608,31 @@ function createSetupWizard(ctx, adapter) {
         }
         element('p',policy.mode==='skip'?'Unassigned new speakers stay silent until you give them a voice.':policy.mode==='llm'?'Automatic selection needs Jev or an LLM and may incur planner charges.':'Shared and preferred voices can be used with local heuristic attribution.',npc).className='cs-hint';
       } else if(step===3){
-        const main=element('div','',body),details=element('div','',body);main.hidden=playbackDetails;details.hidden=!playbackDetails;
-        const setDetails=value=>{playbackDetails=value;main.hidden=value;details.hidden=!value;body.scrollTop=0;heading.textContent=value?'Playback details':'Playback';heading.focus();};
-        if(playbackDetails)heading.textContent='Playback details';
-        element('p','Choose everyday controls. Soundscapes and automation are optional.',main);
-        const playback=card('Playback & saved audio',main);
+        element('p','Choose everyday controls. Soundscapes and automation are optional.',body);
+        const playback=card('Playback & saved audio',body);
         const controls=element('div','',playback);controls.className='cs-grid';
         check('Floating audio mixer',draft.enableMixer,controls,value=>{draft.enableMixer=value;});
         check('Show message play controls',draft.sectionButtons,controls,value=>{draft.sectionButtons=value;});
         check('Match passage loudness',draft.normalizeLoudness,playback,value=>{draft.normalizeLoudness=value;},'Reduce volume differences between speech passages.');
         select('Audio retention for new recordings',[['session','This session only'],['1','1 day'],['7','7 days'],['30','30 days'],['forever','Indefinitely']],draft.retention,playback,value=>{draft.retention=value;},'Audio is saved on this device for replay and download. For existing recordings, change Audio retention in Saved.');
-        const reading=section('Reading',main);
+        const reading=section('Reading',body);
         select('Highlight spoken text',[['off','Off'],['passage','Passage'],['word','Word by word']],draft.readAlong || 'off',reading,value=>{draft.readAlong=value;});
         check('Follow narration',Boolean(draft.followNarration),reading,value=>{draft.followNarration=value;},'Keep the spoken passage in view.');
-        const automation=section('Automatic replies',main),automatic=row(automation);
+        const automation=section('Automatic replies',body),automatic=row(automation);
         check('Auto-plan new replies',draft.autoPlan,automatic,value=>{draft.autoPlan=value;});
         check('Auto-play new replies',draft.auto,automatic,value=>{draft.auto=value;});
         element('small','Automatic planning and speech can incur provider charges. Nothing plays or calls a planner while saving setup.',automation);
-        const sound=section('Soundscape',main),toggles=row(sound);
+        const summary=section('Your choices');
+        const selectedPlanner=(draft.plannerMode==='jev'?connections.decision:connections.llm).find(item=>draft.plannerMode==='jev'?(draft.decisionConnection?item.id===draft.decisionConnection:item.is_default):(draft.planner?item.id===draft.planner:item.is_default));
+        element('p',draft.plannerMode==='heuristic'?'Local speaker detection':`${draft.plannerMode==='jev'?'Jev':'LLM'} · ${selectedPlanner?.name || 'Default connection'} · ${selectedPlanner?.model || ''}`,summary).className='cs-hint';
+        element('p',draft.fixed.map((actor,index)=>`${voiceNames[index]}: ${actor.excluded?'off':actor.voice || (draft.plannerMode==='llm'?'LLM chooses during planning':'Choir chooses during planning')}`).join(' · '),summary).className='cs-hint';
+        const editVoice=button('Edit voices',summary,()=>navigate(2));editVoice.setAttribute('aria-label','Edit narrator');
+        const trying=section('Try your setup',body),tryButtons=row(trying);button('Test planner connection',tryButtons,testPlanner);button('Test narrator voice',tryButtons,()=>testVoice());element('small','Optional: provider tests may incur charges. You can finish without running them.',trying);
+        for(const kind of ['tts','planner']){const test=tests.get(kind);element('small',test?.key===signature(kind)?`${kind==='tts'?'Speech':'Planner'} test passed: ${test.message}`:`${kind==='tts'?'Speech':'Planner'} connection has not been tested with these choices.`,trying);}
+        const more=section('Optional settings');button('Soundscape →',more,()=>navigate(6));button('Performance & text filters →',more,()=>navigate(7));
+      } else if(step===6){
+        button('← Back to playback',body,()=>navigate(3));
+        const sound=section('Soundscape',body),toggles=row(sound);
         check('Sound effects',draft.enableSfx,toggles,value=>{draft.enableSfx=value;updateSound();});
         check('Ambient sound',draft.enableAmbience,toggles,value=>{draft.enableAmbience=value;updateSound();});
         check('Background music',draft.enableMusic,toggles,value=>{draft.enableMusic=value;updateSound();});
@@ -2592,54 +2643,21 @@ function createSetupWizard(ctx, adapter) {
         const loop=element('div','',sound);check('Loop music between replies',draft.loopMusic,loop,value=>{draft.loopMusic=value;});
         function updateSound(){requirements.hidden=!(draft.enableSfx || draft.enableAmbience || draft.enableMusic);freesound.hidden=!(draft.enableSfx || draft.enableAmbience);loop.hidden=!draft.enableMusic;}
         updateSound();illustratedGuide(sound,'freesound');
-        const more=section('Fine tuning',main);button('More playback settings',more,()=>setDetails(true));element('small','Buffering, request limits, custom text filters, and the Auto-plan shortcut.',more);
-        button('Back to playback',details,()=>setDetails(false));
-        const buffering=section('Buffering and request limits',details);
+      } else if(step===7){
+        button('Back to playback',body,()=>navigate(3));
+        const buffering=section('Buffering and request limits',body);
         element('p','Lookahead prepares speech before you reach it. More requests can reduce gaps, but can generate unused audio and increase provider load.',buffering).className='cs-hint';
         const numbers=element('div','',buffering);numbers.className='cs-grid';
         number('Prefetch passages','prefetch',0,4,numbers,'0 turns lookahead off. Try 2 for faster playback.');
         number('Concurrent TTS requests','concurrency',1,4,numbers,'Try 2 if your provider permits it.');
         number('Max characters per request','chunk',80,10000,buffering,'Smaller requests can start sooner, but require more calls.');
         check('Group speech requests',draft.batchSpeech,buffering,value=>{draft.batchSpeech=value;},'Used only by compatible providers, voices and playback settings.');
-        const filtering=section('Text filters',details);
+        const filtering=section('Text filters',body);
         check('Skip non-story blocks',draft.skipMeta!==false,filtering,value=>{draft.skipMeta=value;},'Filter trackers, recaps and interface panels. LLM and Jev modes can also run a planner check.');
         const skipped=element('textarea');skipped.rows=2;skipped.value=draft.ignoredTags || '';skipped.placeholder='summary, .status-panel, #phone-panel';skipped.oninput=()=>{draft.ignoredTags=skipped.value;};
         field('Skip tags and blocks',skipped,filtering,'Tag names, classes or IDs, separated by commas. Applies across chats.');
-        check('Show automatic planning shortcut',draft.showAutoPlanAction,details,value=>{draft.showAutoPlanAction=value;},'Shows a shortcut; does not turn Auto-plan on.');
-        element('p','Set name pronunciation in the character’s Cast editor after setup.',details).className='cs-hint';
-      } else {
-        element('p','Check the essentials, then save. Tests are optional and run only when you ask.',body);
-        const issues=setupIssues(draft,connections,session());
-        const group=title=>{const node=element('section','',body);node.className='cs-review-group';element('h3',title,node);return node;};
-        const review=(parent,title,detail,target,status,role)=>{
-          const node=element('div','',parent);node.className='cs-review';const info=element('div','',node);element('h3',title,info);element('small',detail,info);element('span',status,node).className='cs-status';
-          const edit=button('Edit',node,()=>{
-            if(role!=null)activeRole=role;if(target===3)playbackDetails=false;navigate(target);
-            const destination={'New speakers':'New speakers',Reading:'Reading','Optional features':draft.enableSfx || draft.enableAmbience || draft.enableMusic?'Soundscape':'Automatic replies'}[title];
-            if(destination){const section=[...body.querySelectorAll('[data-setup-section]')].find(node=>node.dataset.setupSection===destination);section?.scrollIntoView?.({block:'start'});const heading=section?.querySelector('h3');if(heading){heading.tabIndex=-1;heading.focus({preventScroll:true});}}
-          });edit.setAttribute('aria-label',`Edit ${title.toLowerCase()}`);
-        };
-        const testStatus=kind=>tests.get(kind)?.key===signature(kind)?'Test passed':'Not tested';
-        const connectionGroup=group('Connections'),tts=connections.tts.find(item=>item.id===draft.connection);
-        review(connectionGroup,'Speech',`${tts?.name || 'Missing TTS connection'} · ${tts?.provider || ''} · ${tts?.model || 'no model'}`,1,issues.some(item=>item.step===1 && /TTS/.test(item.message))?'Needs attention':testStatus('tts'));
-        const plannerConnection=(draft.plannerMode==='jev'?connections.decision:connections.llm).find(item=>draft.plannerMode==='jev'?(draft.decisionConnection?item.id===draft.decisionConnection:item.is_default):(draft.planner?item.id===draft.planner:item.is_default));
-        const plannerDetail=draft.plannerMode==='heuristic'?'Local heuristic · no planner API':`${draft.plannerMode==='jev'?'Jev':'Standard LLM'} · ${plannerConnection?.name || (draft.plannerMode==='jev' && connections.directJev && session().jev?'Session Jev connection':'Missing planner connection')}${plannerConnection?.model?` · ${plannerConnection.model}`:''}`;
-        review(connectionGroup,'Planner',plannerDetail+(draft.plannerMode==='jev'?` · LLM fallback: ${draft.allowLlmFallback?'on':'off'}`:''),1,issues.some(item=>item.step===1 && !/TTS/.test(item.message))?'Needs attention':testStatus('planner'));
-        const cast=group('Voice defaults · new chats');
-        draft.fixed.forEach((actor,index)=>review(cast,voiceNames[index],actor.excluded?'Speech disabled':`${actor.voice || (draft.plannerMode==='llm'?'LLM chooses during planning':draft.plannerMode==='jev'?'Choir chooses with Jev':'Choose a voice')} · ${routeName(effectiveRoute(actor))}${actor.accent?` · ${actor.accent}`:''} · ${['Automatic acting','Base style only','No tone directions'][['auto','base','off'].indexOf(delivery(actor,index))]}`,2,actor.excluded?'Off':issues.some(item=>item.step===2 && item.message.includes(actor.speaker))?'Needs attention':actor.voice?'Assigned':'Automatic',index));
-        review(cast,'New speakers',`Automatic casting: ${draft.npcPolicy.mode}${hasFishRoute()?` · Fish voice source: ${draft.fishVoiceSource}`:''}`,2,'Optional');
-        const preferences=group('Playback preferences');
-        review(preferences,'Playback & saved audio',`Mixer: ${draft.enableMixer?'on':'off'} · Message controls: ${draft.sectionButtons?'on':'off'} · Loudness matching: ${draft.normalizeLoudness?'on':'off'} · New recordings: ${retentionLabel}`,3,issues.some(item=>item.step===3)?'Needs attention':'Configured');
-        review(preferences,'Reading',`Highlight: ${draft.readAlong || 'off'} · Follow narration: ${draft.followNarration?'on':'off'} · Custom skip rules: ${draft.ignoredTags || 'none'} · Automatic non-story filtering: ${draft.skipMeta===false?'off':'on'}`,3,'Configured');
-        review(preferences,'Optional features',[['Sound effects',draft.enableSfx],['Ambience',draft.enableAmbience],[draft.loopMusic?'Music (loop between replies)':'Music',draft.enableMusic],['Auto-plan',draft.autoPlan],['Auto-play',draft.auto]].filter(item=>item[1]).map(item=>item[0]).join(', ') || 'All optional features are off',3,'Optional');
-        const limits=disclosure('Request settings summary',body);element('p',`Prefetch: ${draft.prefetch} · Concurrent TTS: ${draft.concurrency} · Request size: ${draft.chunk} · Group speech: ${draft.batchSpeech?'on':'off'} · Auto-plan shortcut: ${draft.showAutoPlanAction?'shown':'hidden'}`,limits).className='cs-hint';
-        const testing=section('Optional connection checks'),buttons=row(testing);
-        button('Test planner connection',buttons,testPlanner);
-        if(!draft.fixed[0].excluded)button('Test narrator voice',buttons,()=>testVoice());
-        for(const kind of ['tts','planner']){const test=tests.get(kind);element('small',test?.key===signature(kind)?`${kind==='tts'?'Speech':'Planner'} test passed: ${test.message}`:`${kind==='tts'?'Speech':'Planner'} connection has not been tested with these choices.`,testing);}
-        element('small','Voice tests generate speech; LLM and Jev tests may use paid APIs. Saving itself makes no planner or synthesis request.',testing);
-        if(issues.length)say(issues.map(item=>item.message).join('\n'),true);
-        element('p','Finish saves shared preferences and voice defaults for new chats. Existing chat voice choices remain intact. Run setup again from the Setup tab whenever you need it.',body).className='cs-hint';
+        check('Show automatic planning shortcut',draft.showAutoPlanAction,body,value=>{draft.showAutoPlanAction=value;},'Shows a shortcut; does not turn Auto-plan on.');
+        element('p','Set name pronunciation in the character’s Cast editor after setup.',body).className='cs-hint';
       }
       lock();
     }
@@ -2658,7 +2676,7 @@ function createSetupWizard(ctx, adapter) {
         if(latest.length)throw new Error(latest.map(item=>item.message).join('\n'));
         await adapter.save(draft,snapshot.config,signal,()=>{committing=true;saving=true;cancellable=false;lock();});
         if(closed || signal.aborted)return;
-        completed=true;if(!closed){render();say('Setup completed successfully.');}
+        completed=true;adapter.onState?.({completed:true,deferred:false});if(!closed){render();say('Setup completed successfully.');}
         } finally {if(committing)saving=false;}
       },'Validating and saving setup…');
     }
@@ -2792,85 +2810,88 @@ function createWavArchive(entries,{maxBytes=256*1024*1024}={}){
   return new Blob([...parts,...central,end],{type:'application/zip'});
 }
 
-// Arrange existing controls without changing their listeners or saved settings.
+// Move the existing controls; their listeners and persistence remain shared.
 function createDrawerNavigation(root) {
-  const host = root.querySelector('.ensemble-tts'), document = root.ownerDocument;
-  const navigation = document.createElement('nav');
-  navigation.className = 'et-task-tabs'; navigation.setAttribute('role', 'tablist'); navigation.setAttribute('aria-label', 'Choir tasks');
-  const panels = new Map(), buttons = new Map();let focusedCast;
-  for (const [key, title, hint] of [
-    ['cast','Cast','Choose a voice, accent and delivery for each character.'],
-    ['play','Sound',''],
-    ['recordings','Saved',''],
-    ['settings','Setup','']
-  ]) {
-    const button = document.createElement('button'), panel = document.createElement('section'), intro = document.createElement('p');
-    button.type = 'button'; button.textContent = title; button.id = `choir-tab-${key}`; button.dataset.choirTab = key;
-    button.setAttribute('role', 'tab'); button.setAttribute('aria-controls', `choir-panel-${key}`);
-    panel.id = `choir-panel-${key}`; panel.className = 'et-task-panel'; panel.dataset.choirPanel = key;
-    panel.setAttribute('role', 'tabpanel'); panel.setAttribute('aria-labelledby', button.id); panel.tabIndex = 0;
-    intro.className = 'et-hint'; intro.textContent = hint; panel.append(intro);
-    for (const fragment of [...host.querySelectorAll(`[data-choir-page="${key}"]`)]) panel.append(...fragment.childNodes), fragment.remove();
-    panels.set(key, panel); buttons.set(key, button); navigation.append(button); host.append(panel);
-  }
-  host.querySelector('[data-et="feedback"]').after(navigation);
-  const select = (key, focus = false) => {
-    if (!panels.has(key)) return;
-    if(key!=='cast')closeCast();
-    for (const [id, panel] of panels) { panel.hidden = id !== key; buttons.get(id).setAttribute('aria-selected', String(id === key)); buttons.get(id).tabIndex = id === key ? 0 : -1; }
-    if (focus) buttons.get(key).focus();
-  };
-  for (const [key, button] of buttons) {
-    button.onclick = () => {if(key==='cast')closeCast();select(key);};
-    button.onkeydown = event => {
-      const keys = [...buttons.keys()], index = keys.indexOf(key);
-      const next = event.key === 'ArrowRight' ? (index + 1) % keys.length : event.key === 'ArrowLeft' ? (index + keys.length - 1) % keys.length : event.key === 'Home' ? 0 : event.key === 'End' ? keys.length - 1 : -1;
-      if (next >= 0) { event.preventDefault(); select(keys[next], true); }
-    };
-  }
-  const move = (name, key) => { const node = host.querySelector(`[data-et="${name}"]`); if (node) panels.get(key).append(node); };
-  const playActions = document.createElement('div'); playActions.className = 'et-row';
-  const play = document.createElement('button'); play.type = 'button'; play.dataset.et = 'drawerPlay'; play.textContent = 'Play latest reply'; play.className = 'et-btn-primary'; play.disabled = true; playActions.append(play);
-  for (const name of ['latest', 'showMixer']) playActions.append(host.querySelector(`[data-et="${name}"]`));
-  panels.get('play').querySelector('.et-hint').after(playActions);
-  playActions.after(host.querySelector('[data-et="latestNotice"]'));
-  const settingsActions = document.createElement('div'); settingsActions.className = 'et-row';
-  for (const name of ['setupWizard', 'customizeMixer']) settingsActions.append(host.querySelector(`[data-et="${name}"]`));
-  panels.get('settings').querySelector('.et-hint').after(settingsActions);
-  settingsActions.after(host.querySelector('[data-et="mixerLayout"]'));
-  const recordings = host.querySelector('[data-et="messages"]').closest('details');
-  recordings.querySelector('summary').remove(); panels.get('recordings').append(...recordings.childNodes); recordings.remove();
-  const retention = host.querySelector('[data-et="retention"]').closest('label'); panels.get('recordings').querySelector('.et-hint').after(retention);
-  move('planDetails', 'play');
+  const host=root.querySelector('.ensemble-tts'),doc=root.ownerDocument;
   const field=name=>host.querySelector(`[data-et="${name}"]`);
-  const current=document.createElement('div');current.className='et-current-message';
-  const label=document.createElement('span');label.dataset.et='currentMessageLabel';label.textContent='Latest reply';
-  const download=document.createElement('button');download.type='button';download.dataset.et='drawerDownload';download.textContent='↓';download.setAttribute('aria-label','Download latest reply audio');download.hidden=true;
-  playActions.append(download);playActions.className='et-btn-group';current.append(label,playActions,field('latestNotice'));host.querySelector('.et-header').after(current);
-  field('latestNotice').textContent='Planned';field('latestNotice').title='Use Plan latest again to rebuild the plan. Saved audio remains reusable.';field('latestNotice').removeAttribute('role');
-  const cast=panels.get('cast'),sound=panels.get('play'),settings=panels.get('settings'),saved=panels.get('recordings');
-  cast.querySelector('h3').textContent='In this reply';cast.querySelector('.et-subhead').textContent='New characters';cast.querySelector('[data-et="otherCast"] p')?.remove();
-  const defaults=document.createElement('div');defaults.className='et-default-actions';defaults.append(field('captureDefaults'),field('applyDefaults'));field('npcPolicyRoot').after(defaults);
-  function closeCast(){if(!focusedCast)return;const {row,details,wasOpen,onClose}=focusedCast;focusedCast=null;row.classList.remove('et-focused-cast');if(details)details.open=wasOpen;cast.removeAttribute('data-editing');onClose?.();}
-  const soundActions=document.createElement('div');soundActions.className='et-row';soundActions.append(field('customizeMixer'));sound.prepend(soundActions);sound.append(field('mixerLayout'));
-  field('mixerLayout').classList.remove('et-card');
-  const savedHeading=document.createElement('div');savedHeading.className='et-section-header';const heading=document.createElement('h3');heading.textContent='This chat';const all=document.createElement('button');all.type='button';all.dataset.et='downloadAll';all.textContent='Download all';all.disabled=true;savedHeading.append(heading,all);saved.prepend(savedHeading);saved.append(field('retention').closest('label'),field('deleteChatAudio').parentElement);
-  const advanced=document.createElement('section');advanced.hidden=true;advanced.dataset.choirAdvanced='';
-  const bar=document.createElement('div');bar.className='et-pagebar';const back=document.createElement('button');back.type='button';back.textContent='←';back.setAttribute('aria-label','Back to setup');const title=document.createElement('h3');title.textContent='Advanced settings';bar.append(back,title);advanced.append(bar);
-  const performance=field('concurrency').closest('section');performance.querySelector('h4')?.remove();advanced.append(performance);
-  for(const details of [...settings.querySelectorAll(':scope>details')])advanced.append(details);
-  const importCast=field('castJson').closest('details');importCast.hidden=false;advanced.append(importCast);
-  const advancedButton=document.createElement('button');advancedButton.type='button';advancedButton.className='et-link-row';advancedButton.dataset.et='advancedSettings';advancedButton.textContent='Advanced settings ›';settings.append(advancedButton,advanced);
-  const showAdvanced=open=>{settings.dataset.advanced=String(open);advanced.hidden=!open;};advancedButton.onclick=()=>showAdvanced(true);back.onclick=()=>showAdvanced(false);
-  const interfaceOptions=document.createElement('div');interfaceOptions.className='et-check-grid';for(const key of ['sectionButtons','enableMixer','abyssalMixerTheme','showAutoPlanAction'])interfaceOptions.append(field(key).closest('label'));sound.append(interfaceOptions);
-  for(const key of ['enableSfx','followNarration'])field(key).closest('.et-row')?.classList.add('et-check-grid');
-  field('readAlong').closest('label').classList.remove('et-check');field('readAlong').closest('label').classList.add('et-inline-field');
-  settingsActions.className='et-setup-actions';settings.querySelector('h3').textContent='Connections';settings.querySelector('.et-section-header').after(settingsActions);
-  const savedHint=document.createElement('p');savedHint.className='et-hint';savedHint.textContent='Recent messages below. Download all includes complete recordings throughout this chat.';savedHeading.after(savedHint);
-  const auto=document.createElement('div');auto.className='et-check-grid';auto.append(field('auto').closest('label'));const autoPlan=document.createElement('label');autoPlan.className='et-check';const input=document.createElement('input');input.type='checkbox';input.dataset.et='drawerAutoPlan';autoPlan.append(input,document.createTextNode('Auto-plan new replies'));auto.prepend(autoPlan);advancedButton.before(auto);
+  const el=(tag,text,parent)=>{const node=doc.createElement(tag);if(text)node.textContent=text;parent?.append(node);return node;};
+  const button=(text,parent,action)=>{const node=el('button',text,parent);node.type='button';node.onclick=action;return node;};
+  const panels=new Map(),buttons=new Map(),pages=new Map();let focusedCast;
+  const nav=el('nav');nav.className='et-task-tabs';nav.setAttribute('role','tablist');nav.setAttribute('aria-label','Choir tasks');
+  for(const [key,title] of [['cast','Cast'],['play','Playback'],['recordings','Saved'],['settings','Settings']]){
+    const tab=button(title,nav,()=>{closeCast();closePages();select(key);});tab.dataset.choirTab=key;tab.id=`choir-tab-${key}`;tab.setAttribute('role','tab');tab.setAttribute('aria-controls',`choir-panel-${key}`);
+    const panel=el('section','',host);panel.className='et-task-panel';panel.dataset.choirPanel=key;panel.id=`choir-panel-${key}`;panel.setAttribute('role','tabpanel');panel.setAttribute('aria-labelledby',tab.id);
+    for(const source of [...host.querySelectorAll(`[data-choir-page="${key}"]`)]){panel.append(...source.childNodes);source.remove();}
+    buttons.set(key,tab);panels.set(key,panel);
+    tab.onkeydown=event=>{const keys=[...buttons.keys()],i=keys.indexOf(key),next=event.key==='ArrowRight'?(i+1)%4:event.key==='ArrowLeft'?(i+3)%4:event.key==='Home'?0:event.key==='End'?3:-1;if(next>=0){event.preventDefault();buttons.get(keys[next]).click();buttons.get(keys[next]).focus();}};
+  }
+  host.querySelector('[data-et="feedback"]').after(nav);
+  const cast=panels.get('cast'),playback=panels.get('play'),saved=panels.get('recordings'),settings=panels.get('settings');
+  const home=new Map();for(const [key,panel] of panels){const content=el('div');content.className='et-tab-home';content.append(...panel.childNodes);panel.append(content);home.set(key,content);}
+  function select(key,focus=false){if(!panels.has(key))return;if(key!=='cast')closeCast();for(const [id,panel] of panels){panel.hidden=id!==key;buttons.get(id).setAttribute('aria-selected',String(id===key));buttons.get(id).tabIndex=id===key?0:-1;}if(focus)buttons.get(key).focus();}
+  function closePages(){for(const page of pages.values())page.hidden=true;for(const content of home.values())content.hidden=false;field('customizeMixer')?.setAttribute('aria-expanded','false');}
+  function openPage(key){const page=pages.get(key);if(!page)return;closeCast();closePages();select(page.closest('[data-choir-panel]').dataset.choirPanel);home.get(page.closest('[data-choir-panel]').dataset.choirPanel).hidden=true;page.hidden=false;if(key==='mixer')field('customizeMixer').setAttribute('aria-expanded','true');page.querySelector('h3')?.focus();}
+  function page(key,title,tab,trigger){const node=el('section','',panels.get(tab));node.dataset.choirDestination=key;node.hidden=true;const bar=el('div','',node);bar.className='et-pagebar';const back=()=>{closePages();trigger?.focus();};button(`← ${buttons.get(tab).textContent}`,bar,back);node.onkeydown=event=>{if(event.key==='Escape'){event.preventDefault();back();}};const heading=el('h3',title,bar);heading.tabIndex=-1;pages.set(key,node);if(trigger){trigger.dataset.choirOpen=key;trigger.onclick=()=>openPage(key);}return node;}
+  const move=(name,parent)=>{const node=field(name);if(node)parent.append(node);return node;};
+  const moveLabel=(name,parent)=>{const node=field(name);if(node)parent.append(node.closest('label') || node);};
+  const group=(title,parent)=>{const section=el('section','',parent);section.className='et-control-group';el('h4',title,section);return section;};
+  // The host supplies the Choir title. Keep a single persistent setup entry.
+  const header=host.querySelector('.et-header');header.querySelector('.et-title-group').hidden=true;
+  const setup=move('setupWizard',header);setup.textContent='Setup guide';setup.className='et-setup-link';header.prepend(setup);move('saveState',header);move('save',header);
+  const current=el('div');current.className='et-current-message';header.after(current);el('span','Latest reply',current).dataset.et='currentMessageLabel';
+  const transport=el('div','',current);transport.className='et-btn-group';const start=button('Play',transport);start.dataset.et='drawerPlay';start.disabled=true;start.className='et-btn-primary';
+  move('latest',transport);move('stop',transport);const download=button('↓',transport);download.dataset.et='drawerDownload';download.hidden=true;download.setAttribute('aria-label','Download latest reply audio');
+  const notice=move('latestNotice',current);notice.textContent='Planned';notice.title='Plan latest again to rebuild the plan.';notice.removeAttribute('role');
+  const reminder=button('Continue setup →',header,()=>setup.click());reminder.dataset.et='continueSetup';reminder.hidden=true;
+  // Cast is a filtered list, never an accordion of old characters.
+  const castHome=home.get('cast');castHome.querySelector('h3').textContent='Characters';
+  const filter=el('select');filter.dataset.et='castFilter';filter.setAttribute('aria-label','Show characters');for(const [value,title] of [['current','In this reply'],['all','All saved']]){const option=el('option',title,filter);option.value=value;}
+  castHome.querySelector('.et-section-header').after(filter);
+  const other=field('otherCast');other.querySelector('summary')?.remove();other.querySelector('p')?.remove();
+  const casting=button('Automatic voices →',null);casting.className='et-link-row';castHome.append(casting);const castingPage=page('casting','Automatic voices','cast',casting);
+  const subhead=castHome.querySelector('.et-subhead');subhead?.remove();castHome.querySelector('.et-hint')?.remove();move('npcPolicyRoot',castingPage);
+  const defaults=el('div','',castingPage);defaults.className='et-default-actions';move('captureDefaults',defaults);move('applyDefaults',defaults);move('defaultStatus',castingPage);
+  function updateCastFilter(count=Number(field('otherCastCount').textContent)){filter.options[1].textContent=`All saved${count?` (+${count})`:''}`;other.hidden=filter.value!=='all' || !count;}
+  filter.onchange=()=>updateCastFilter();
+  function closeCast(){if(!focusedCast)return;const {row,onClose}=focusedCast;focusedCast=null;row.classList.remove('et-focused-cast');cast.removeAttribute('data-editing');updateCastFilter();onClose?.();}
+  // Playback groups hold everyday settings; both mixer editors are peers.
+  const playHome=home.get('play'),originalPlay=[...playHome.childNodes];
+  const automation=group('New replies',playHome),checks=el('div','',automation);checks.className='et-check-grid';
+  const autoLabel=el('label','',checks);autoLabel.className='et-check';const auto=el('input','',autoLabel);auto.type='checkbox';auto.dataset.et='drawerAutoPlan';autoLabel.append(doc.createTextNode('Auto-plan'));moveLabel('auto',checks);
+  const tuning=group('Playback',playHome);tuning.append(field('playbackSpeedSlot').closest('.et-tuning-grid'));moveLabel('normalizeLoudness',tuning);
+  const reading=group('Reading',playHome);moveLabel('readAlong',reading);moveLabel('followNarration',reading);
+  const sound=group('Soundscape',playHome),soundChecks=el('div','',sound);soundChecks.className='et-check-grid';for(const name of ['enableSfx','enableAmbience','enableMusic','loopMusic'])moveLabel(name,soundChecks);moveLabel('freesoundApiKey',sound);field('enableSfx').closest('label').title='Freesound sound effects; requires the key below.';
+  const mixer=group('Mixer',playHome);moveLabel('enableMixer',mixer);const mixerActions=el('div','',mixer);mixerActions.className='et-action-grid';move('showMixer',mixerActions);move('customizeMixer',mixerActions);
+  const limits=button('Volume limits',mixerActions);limits.dataset.choirVolumeLimits='';
+  // Keep hidden compatibility inputs, discard only emptied display wrappers.
+  for(const node of originalPlay)if(node.parentElement===playHome){if(node.nodeType===1 && node.querySelector('[data-et]'))node.hidden=true;else node.remove();}
+  const layout=move('mixerLayout',playback);layout.dataset.choirDestination='mixer';pages.set('mixer',layout);field('customizeMixer').dataset.choirOpen='mixer';
+  const volumePage=page('volume','Volume limits','play',limits);volumePage.dataset.choirVolumePage='';
+  // Saved recordings and their lifetime belong together.
+  const recent=field('messages').closest('details');recent.querySelector('summary')?.remove();home.get('recordings').append(...recent.childNodes);recent.remove();
+  const savedHome=home.get('recordings'),savedTitle=el('div');savedTitle.className='et-section-header';el('h3','This chat',savedTitle);const all=button('Download all',savedTitle);all.dataset.et='downloadAll';all.disabled=true;savedHome.prepend(savedTitle);moveLabel('retention',savedHome);savedHome.append(field('deleteChatAudio').parentElement);
+  // Settings is a short directory of peer pages, with no advanced-settings nesting.
+  const settingsHome=home.get('settings'),originalSettings=[...settingsHome.childNodes];
+  const destinations={};for(const [key,title,description] of [['connections','Connections','Speech provider and voice sources'],['planner','Planner','Speaker detection and fallback'],['filters','Text filters','Choose what gets read aloud'],['performance','Performance','Buffering and request sizes'],['interface','Interface','Message buttons and mixer appearance'],['castTools','Cast tools','Defaults, additional voices and import / export']]){
+    const link=button('',settingsHome);link.className='et-settings-link';el('strong',title,link);el('small',description,link);el('span','›',link);destinations[key]=page(key,title,'settings',link);
+  }
+  for(const name of ['connectionMode','connection','styleParam','fishVoiceSource'])moveLabel(name,destinations.connections);move('testTts',destinations.connections);move('load',destinations.connections);
+  for(const name of ['plannerMode','planner','decisionConnection','allowLlmFallback','plannerTokens'])moveLabel(name,destinations.planner);for(const name of ['jevKey','jevEndpoint','plannerHint','testPlanner'])move(name,destinations.planner);
+  const filters=field('ignoredTags').closest('details');filters.querySelector('summary')?.remove();destinations.filters.append(...filters.childNodes);filters.remove();
+  const performance=field('concurrency').closest('section');for(const name of ['concurrency','chunk','prefetch','apiBase'])moveLabel(name,destinations.performance);destinations.performance.append(field('batchSpeech').closest('.et-row'));for(const hint of [...performance.querySelectorAll(':scope>p')])destinations.performance.append(hint);
+  for(const name of ['sectionButtons','abyssalMixerTheme','showAutoPlanAction'])moveLabel(name,destinations.interface);
+  move('extraVoicesWrap',destinations.castTools);const castTools=field('castJson').closest('details');castTools.querySelector('summary')?.remove();destinations.castTools.append(...castTools.childNodes);castTools.remove();
+  destinations.castTools.querySelector('.et-pagebar').after(defaults);
+  // Plan and JSON editors are separate destinations too.
+  const plan=move('planDetails',playHome);const planLink=button('Speech plan →',plan);planLink.className='et-link-row';const planPage=page('plan','Speech plan','play',planLink);move('planSummary',planPage);move('preview',planPage);const json=field('planJson').closest('details');json.querySelector('summary')?.remove();const jsonLink=button('Edit attribution JSON →',plan);jsonLink.className='et-link-row';const jsonPage=page('attribution','Attribution JSON','play',jsonLink);jsonPage.append(...json.childNodes);json.remove();
+  for(const node of originalSettings)if(node.parentElement===settingsHome){if(node.nodeType===1 && (node.matches('[data-et]') || node.querySelector('[data-et]')))node.hidden=true;else node.remove();}
   for(const control of settings.querySelectorAll('select'))control.closest('label')?.classList.add('et-inline-field');
   select('cast');
-  return {select,closeCast,openCast(row,onClose){closeCast();const details=row.closest('details'),wasOpen=details?.open;focusedCast={row,details,wasOpen,onClose};if(details)details.open=true;row.classList.add('et-focused-cast');cast.dataset.editing='true';select('cast');},showMixer(open){sound.dataset.customizing=String(open);select('play');},showAdvanced};
+  return {select,closeCast,openPage,closePages,updateCastFilter,volumePage,
+    setSetupReminder(show){reminder.hidden=!show;},
+    openCast(row,onClose){closeCast();closePages();if(other.contains(row))other.hidden=false;focusedCast={row,onClose};row.classList.add('et-focused-cast');cast.dataset.editing='true';select('cast');},
+    showMixer(open){if(open)openPage('mixer');else closePages();select('play');}
+  };
 }
 
 const DRAWER_UI_CSS=`
@@ -2892,6 +2913,19 @@ const DRAWER_UI_CSS=`
 .ensemble-tts .et-tuning-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.ensemble-tts .et-tuning{padding:8px 0;border:0;background:none}.ensemble-tts .et-tuning-hint{display:none}.ensemble-tts .et-tuning-title{font-size:12px}.ensemble-tts .et-character-speed{margin-top:8px}
 @media(max-width:400px){.ensemble-tts .et-grid:has([data-et="connection"]){grid-template-columns:1fr}.ensemble-tts .et-current-message>.et-btn-group{width:100%}.ensemble-tts .et-cast-header{grid-template-columns:minmax(60px,.8fr) minmax(0,1.2fr) auto auto}.ensemble-tts .et-inline-field{grid-template-columns:72px minmax(0,1fr)}}
 @media(pointer:coarse),(max-width:600px){.ensemble-tts button,.ensemble-tts .et-task-tabs button,.ensemble-tts .cm-customize-row button,.ensemble-tts .et-pagebar button,.ensemble-tts .et-cast-header>[data-choir-edit],.ensemble-tts .et-cast-header>[data-choir-remove]{min-height:44px;min-width:44px}.ensemble-tts .et-check-grid label,.ensemble-tts .cm-customize-row label{min-height:44px;font-size:13px}.ensemble-tts input:not([type="checkbox"]),.ensemble-tts select{font-size:16px;min-height:44px}.ensemble-tts .cm-customize-quick{grid-template-columns:1fr}}
+
+/* Flat task pages. Each destination has one return path. */
+.ensemble-tts .et-title-group[hidden],.ensemble-tts .et-toolbar:empty{display:none!important}
+.ensemble-tts .et-header{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin:0 0 8px}.ensemble-tts .et-header .et-save-state{margin-left:auto}.ensemble-tts .et-setup-link{background:transparent;border:0;padding-left:0;font-weight:600}.ensemble-tts [data-et="continueSetup"]{width:100%;text-align:left;border-color:var(--lumiverse-primary,#c4b5fd)}
+.ensemble-tts .et-current-message{align-items:center;gap:4px 8px}.ensemble-tts .et-current-message .et-btn-group{order:0}.ensemble-tts .et-current-message [data-et="latestNotice"]{display:none}
+.ensemble-tts .et-task-tabs{display:grid;grid-template-columns:repeat(4,minmax(0,1fr))}.ensemble-tts .et-tab-home{min-width:0}.ensemble-tts .et-tab-home>h3{margin-top:0}
+.ensemble-tts .et-control-group{margin:0 0 16px;padding:0 0 12px;border-bottom:1px solid #8883}.ensemble-tts .et-control-group>h4{margin:0 0 8px;font-weight:600}.ensemble-tts .et-control-group>label{margin:8px 0}.ensemble-tts .et-control-group:last-child{border-bottom:0}
+.ensemble-tts .et-action-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:8px}.ensemble-tts .et-action-grid>:last-child:nth-child(odd){grid-column:1 / -1}
+.ensemble-tts .et-settings-link{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:3px 12px;text-align:left;width:100%;background:none;border:0;border-bottom:1px solid #8883;border-radius:0;padding:12px 2px}.ensemble-tts .et-settings-link strong{font-size:13px}.ensemble-tts .et-settings-link small{font-size:11px;opacity:.7;grid-column:1}.ensemble-tts .et-settings-link>span{grid-column:2;grid-row:1 / 3}
+.ensemble-tts [data-choir-destination]>label{display:block;margin:12px 0}.ensemble-tts [data-choir-destination] p,.ensemble-tts [data-choir-destination] small{font-size:12px;line-height:1.5;overflow-wrap:anywhere}.ensemble-tts [data-choir-destination]>button{margin:4px 6px 4px 0}.ensemble-tts .et-pagebar{border-bottom:1px solid #8883;padding-bottom:10px;align-items:center}.ensemble-tts .et-pagebar button{font-size:12px}.ensemble-tts .et-pagebar h3{font-size:14px;text-align:right;outline:none}
+.ensemble-tts [data-et="castFilter"]{width:100%;margin-bottom:6px}.ensemble-tts [data-editing="true"] .et-tab-home>:not(:has(.et-focused-cast)){display:none!important}.ensemble-tts .et-cast-row.et-focused-cast{padding-top:0}.ensemble-tts .et-focused-cast .et-cast-editor .et-control-group{padding-top:12px;border-top:1px solid #8883;border-bottom:0}.ensemble-tts [data-choir-pronunciation-page]>label{display:grid;gap:4px}
+.ensemble-tts .et-volume-limits>.et-pagebar{display:flex}.ensemble-tts .et-volume-limits>label{display:flex}.ensemble-tts .et-volume-limits input{width:76px}.ensemble-tts [data-et="planDetails"]{padding-top:10px;border-top:1px solid #8883}
+@media(max-width:400px){.ensemble-tts .et-current-message>.et-btn-group{width:100%}.ensemble-tts .et-settings-link{padding:14px 2px}.ensemble-tts .et-edit-pair{grid-template-columns:1fr}}
 `;
 
 // Provider adapters keep acting instructions out of the spoken transcript.
@@ -3287,7 +3321,7 @@ export async function setup(ctx) {
     <div data-et="fixed"></div>
 
     <div data-et="npcs"></div>
-    <details data-et="otherCast" hidden><summary>Other characters (<span data-et="otherCastCount">0</span>)</summary><p style="font-size:.85em;opacity:.75">Not used in the current reply. Their voices and settings stay saved; they appear above again when used.</p><div data-et="otherCastRows"></div></details>
+    <section data-et="otherCast" hidden><span data-et="otherCastCount" hidden>0</span><div data-et="otherCastRows"></div></section>
     <h4 class="et-subhead">Automatic casting</h4><p class="et-hint">Voice selection for characters discovered in the story.</p><div data-et="npcPolicyRoot" class="et-npc-policy"></div>
     <p data-et="defaultStatus" role="status" aria-live="polite" style="font-size:.85em;opacity:.8"></p>
     </section><section data-choir-page="settings">
@@ -3321,7 +3355,7 @@ export async function setup(ctx) {
     </div>
     </section><section data-choir-page="play"><h4 class="et-subhead">Sound</h4>
     <div class="et-row">
-      <label class="et-check" title="Foley cues from Freesound (key in Advanced Settings)"><input data-et="enableSfx" type="checkbox" checked> Sound effects</label>
+      <label class="et-check" title="Foley cues from Freesound (key in Playback → Soundscape)"><input data-et="enableSfx" type="checkbox" checked> Sound effects</label>
       <label class="et-check" title="Ambient background sound from Freesound"><input data-et="enableAmbience" type="checkbox" checked> Ambience</label>
       <label class="et-check" title="Kevin MacLeod's incompetech tracks, CC BY 4.0"><input data-et="enableMusic" type="checkbox"> Music</label>
       <label class="et-check" data-et="loopMusicWrap" title="Keep the track playing between replies until another music cue replaces it. Stop, music off, or changing chats ends playback."><input data-et="loopMusic" type="checkbox"> Loop music</label>
@@ -3380,13 +3414,13 @@ export async function setup(ctx) {
       </div>
       <label data-et="extraVoicesWrap" style="margin-top:10px"><span data-et="extraVoicesLabel">Additional voices & community models (ID | description)</span><textarea data-et="extraVoices" rows="2" placeholder="voice_id | description (e.g. Fish Audio community model ID or Gemini voice)"></textarea></label>
     </section></section>
-    <details data-et="planDetails" hidden><summary data-et="planSummary">Speech plan</summary>
+    <section data-et="planDetails" hidden><h4 data-et="planSummary">Speech plan</h4>
     <div data-et="preview"></div>
     <details>
       <summary>Edit attribution JSON</summary>
       <textarea data-et="planJson" rows="6" spellcheck="false" style="margin-top:8px"></textarea>
       <button data-et="apply" style="margin-top:8px">Apply JSON</button>
-    </details></details>
+    </details></section>
     <details hidden><summary>Import / export cast</summary><p>Exports include routes and preferences, never credentials. Imported routes must exist on this host.</p>
       <textarea data-et="castJson" aria-label="Cast JSON"></textarea><button data-et="exportCast">Export cast</button><button data-et="importCast">Validate and import cast</button>
     </details>
@@ -3907,7 +3941,7 @@ export async function setup(ctx) {
   const mixerQuickButtons=new Map(quickButtonKeys.map((key,index)=>[key,[mixerAutoPlan,mixerAutoPlay,mixerSfx,mixerAmbience,mixerMusic,mixerFollow,mixerMessages][index]]));
   const customizePanel=$('mixerLayoutOptions'),layoutPanel=$('mixerLayout');layoutPanel.id=`choir-mixer-layout-${randomUuid()}`;$('customizeMixer').setAttribute('aria-controls',layoutPanel.id);
   const showMixerLayout=open=>{layoutPanel.hidden=!open;$('customizeMixer').setAttribute('aria-expanded',String(open));drawerNavigation.showMixer(open);if(open)refreshMixerLayoutEditor();};
-  const layoutBar=document.createElement('div');layoutBar.className='et-pagebar';const layoutTitle=layoutPanel.querySelector('h3');layoutTitle.textContent='Customize mixer';$('closeMixerLayout').textContent='←';$('closeMixerLayout').setAttribute('aria-label','Back to sound');layoutBar.append($('closeMixerLayout'),layoutTitle);layoutPanel.prepend(layoutBar);
+  const layoutBar=document.createElement('div');layoutBar.className='et-pagebar';const layoutTitle=layoutPanel.querySelector('h3');layoutTitle.textContent='Customize mixer';$('closeMixerLayout').textContent='←';$('closeMixerLayout').setAttribute('aria-label','Back to playback');layoutBar.append($('closeMixerLayout'),layoutTitle);layoutPanel.prepend(layoutBar);
   $('customizeMixer').onclick=()=>showMixerLayout(layoutPanel.hidden);
   $('closeMixerLayout').onclick=()=>{showMixerLayout(false);$('customizeMixer').focus();};
   layoutPanel.addEventListener('keydown',event=>{if(event.key==='Escape'){event.preventDefault();showMixerLayout(false);$('customizeMixer').focus();}});
@@ -3930,8 +3964,7 @@ export async function setup(ctx) {
     const move=offset=>{const order=mixerState.quickButtonOrder,index=order.indexOf(key),next=index+offset;if(next<0 || next>=order.length)return;[order[index],order[next]]=[order[next],order[index]];refreshMixerLayoutEditor();applyMixerLayout();void persistMixer();(offset<0?up:down).disabled?layoutChecks.get(key).focus():(offset<0?up:down).focus();};up.onclick=()=>move(-1);down.onclick=()=>move(1);row.append(up,down);quickLayoutRows.set(key,{row,up,down});
   }
   const resetMixerLayout=document.createElement('button');resetMixerLayout.type='button';resetMixerLayout.className='cm-reset-layout';resetMixerLayout.textContent='Reset mixer layout';resetMixerLayout.onclick=()=>{mixerState.layout={...mixerLayoutDefaults};mixerState.quickButtonOrder=[...quickButtonKeys];mixerState.quickButtonColumns=0;refreshMixerLayoutEditor();applyMixerLayout();void persistMixer();};customizePanel.append(resetMixerLayout);
-  const volumeLimits=document.createElement('section');volumeLimits.className='et-volume-limits';volumeLimits.setAttribute('aria-label','Volume limits');volumeLimits.hidden=true;const limitsHeading=document.createElement('h3');limitsHeading.textContent='Volume limits';const limitsBar=document.createElement('div');limitsBar.className='et-pagebar';const limitsBack=document.createElement('button');limitsBack.type='button';limitsBack.textContent='←';limitsBack.setAttribute('aria-label','Back to mixer customization');limitsBar.append(limitsBack,limitsHeading);volumeLimits.append(limitsBar);layoutPanel.append(volumeLimits);
-  const limitsLink=document.createElement('button');limitsLink.type='button';limitsLink.className='et-link-row';limitsLink.dataset.choirVolumeLimits='';limitsLink.textContent='Volume limits ›';customizePanel.append(limitsLink);limitsLink.onclick=()=>{customizePanel.hidden=true;layoutBar.hidden=true;volumeLimits.hidden=false;limitsBack.focus();};limitsBack.onclick=()=>{volumeLimits.hidden=true;customizePanel.hidden=false;layoutBar.hidden=false;limitsLink.focus();};
+  const volumeLimits=drawerNavigation.volumePage;volumeLimits.classList.add('et-volume-limits');volumeLimits.setAttribute('aria-label','Volume limits');
   for(const [kind,label] of [['master','Master'],['voices','Voices'],['music','Music'],['ambience','Ambience'],['sfx','Sound effects']]){
     const field=document.createElement('label'),name=document.createElement('span'),number=document.createElement('input'),unit=document.createElement('span');name.textContent=label;number.type='number';number.min='1';number.max=kind==='master'?'100':'300';number.step='1';number.value=String(Math.round(mixerState.volumeLimits[kind]*100));number.setAttribute('aria-label',`${label} maximum percent`);number.dataset.choirVolumeLimit=kind;unit.textContent='%';field.append(name,number,unit);volumeLimits.append(field);
     number.onchange=()=>{mixerState.volumeLimits=normalizeMixerVolumeLimits({...mixerState.volumeLimits,[kind]:Number(number.value)/100});number.value=String(Math.round(mixerState.volumeLimits[kind]*100));mixerState.master=Math.min(mixerState.master,mixerState.volumeLimits.master);for(const effect of ['music','ambience','sfx'])mixerState[effect]=Math.min(mixerState[effect],mixerState.volumeLimits[effect]);for(const channel of Object.values(mixerState.channels))channel.volume=Math.min(channel.volume,mixerState.volumeLimits.voices);masterVolume.setVolumeMaximum(mixerState.volumeLimits.master,mixerState.master);applyVolume();renderMixer();refreshSectionControls();void persistMixer();};
@@ -4468,6 +4501,7 @@ export async function setup(ctx) {
   }
   const setupWizard=createSetupWizard(ctx,{
     report:message=>status(message,true),
+    onState:state=>drawerNavigation.setSetupReminder(!state?.completed && Boolean(state?.deferred)),
     session:()=>({jev:$('jevKey').value.trim()}),
     setSession:(kind,value)=>{if(kind==='jev')$('jevKey').value=value;},
     connections:signal=>wizardConnections(signal,true),
@@ -4543,6 +4577,7 @@ export async function setup(ctx) {
     }
   });
   $('setupWizard').onclick=()=>void setupWizard.open();
+  void ctx.settings.get(ONBOARDING_KEY).then(state=>{if(!disposed)drawerNavigation.setSetupReminder(!state?.completed && Boolean(state?.deferred));}).catch(()=>{});
   unsubs.push(()=>setupWizard.dispose());
   function refreshDefaultControls(){
     $('captureDefaults').disabled=busy || defaultOperation || !chatId || !castRows.length;
@@ -4749,7 +4784,7 @@ export async function setup(ctx) {
       }
       validateNumericSettings(candidate);
       for(const name of ['chunk','plannerTokens','prefetch'])if(!$(name).value.trim())throw new Error('Enter a value for '+$(name).parentElement.firstChild.textContent.trim()+'.');
-    }catch(error){++settingsEdit;pendingSettings=null;clearTimeout(autosaveTimer);autosaveTimer=null;saveState(castConflict?'Not saved · duplicate character name':'Not saved · check Advanced Settings',true);status(error.message,true);return false;}
+    }catch(error){++settingsEdit;pendingSettings=null;clearTimeout(autosaveTimer);autosaveTimer=null;saveState(castConflict?'Not saved · duplicate character name':'Not saved · check Settings',true);status(error.message,true);return false;}
     if(candidate.ignoredTags!==config.ignoredTags){stop(false);clearPlan();paragraphCues.clear();renderMessages();}
     if(JSON.stringify(namePronunciations(pronunciationActors(candidate)))!==JSON.stringify(namePronunciations(pronunciationActors(config))))stop(false);
     $('readingPreview').hidden=true;
@@ -5210,7 +5245,7 @@ export async function setup(ctx) {
       rowVoices=addExtraVoice(id,description,selectedRoute);
       if(![...voice.options].some(item=>item.value===id))option(voice,id,id);
       voice.value=id;searchFilter='';voiceSearchInput.value='';filterVoices();
-      if(!scheduleSettingsSave())throw new Error('Voice ID could not be saved. Check Advanced Settings first.');
+      if(!scheduleSettingsSave())throw new Error('Voice ID could not be saved. Check Settings first.');
       await flushSettings();
       if(disposed || chatId!==targetChat || version!==loadVersion || !root.contains(row))return;
       closeVoiceIdEditor();renderCast();status(`Voice ID saved for ${name.value || 'character'}. Use the preview button to test it.`);
@@ -5316,13 +5351,11 @@ export async function setup(ctx) {
 
     auditionRowBtn.setAttribute('aria-label',`Audition ${actor.speaker}`);header.append(auditionRowBtn);auditionRowBtn.classList.add('et-cast-audition');
     const summary=document.createElement('span');summary.className='et-cast-summary';header.append(summary);
-    const refreshSummary=()=>{const selected=rowVoices.find(item=>item.id===voice.value),provider=detectProvider(route.value || scope(config)),label={fish_audio:'Fish',gemini:'Gemini',google_tts:'Gemini',openai_tts:'OpenAI',openrouter_tts:'OpenRouter'}[provider] || provider;summary.textContent=`${selected?.name || voice.value || 'Automatic'} · ${label}`;};refreshSummary();voice.addEventListener('change',refreshSummary);route.addEventListener('change',refreshSummary);
+    const refreshSummary=()=>{const selected=rowVoices.find(item=>item.id===voice.value),provider=detectProvider(route.value || scope(config)),label={fish_audio:'Fish',gemini:'Gemini',google_tts:'Gemini',openai_tts:'OpenAI',openrouter_tts:'OpenRouter'}[provider] || provider;const display=selected?.name && selected.name!==voice.value?selected.name:selected?.description?.split(/[.;\n]/)[0]?.slice(0,48) || (voice.value && /^[a-f0-9]{20,}$/i.test(voice.value)?'Saved voice':voice.value) || 'Automatic';summary.textContent=`${display} · ${label}`;summary.title=voice.value || 'Chosen during planning';};refreshSummary();voice.addEventListener('change',refreshSummary);route.addEventListener('change',refreshSummary);
     voiceSearchRow.append(voiceSearchInput,searchCommBtn,voiceIdBtn);
     const browse=document.createElement('button');browse.type='button';browse.textContent='Find a voice';browse.setAttribute('aria-expanded','false');voiceSearchRow.hidden=true;browse.onclick=()=>{voiceSearchRow.hidden=!voiceSearchRow.hidden;browse.setAttribute('aria-expanded',String(!voiceSearchRow.hidden));if(!voiceSearchRow.hidden)voiceSearchInput.focus();};
     voiceWrap.append(voice,browse,voiceSearchRow,voiceIdEditor);
-    const secondary=document.createElement('section');secondary.hidden=true;secondary.dataset.choirPronunciationPage='';const primary=document.createElement('div');primary.dataset.choirVoicePage='';editor.append(primary,secondary);
-    const secondaryLink=document.createElement('button');secondaryLink.type='button';secondaryLink.className='et-link-row';secondaryLink.textContent='Pronunciation & voice speed ›';
-    const backVoice=document.createElement('button');backVoice.type='button';backVoice.textContent='←';backVoice.setAttribute('aria-label','Back to voice');const secondaryBar=document.createElement('div');secondaryBar.className='et-pagebar';const secondaryTitle=document.createElement('h3');secondaryTitle.textContent='Pronunciation & speed';secondaryBar.append(backVoice,secondaryTitle);secondary.append(secondaryBar);secondaryLink.onclick=()=>{primary.hidden=true;secondary.hidden=false;backVoice.focus();};backVoice.onclick=()=>{secondary.hidden=true;primary.hidden=false;secondaryLink.focus();};
+    const primary=document.createElement('div');primary.dataset.choirVoicePage='';const secondary=document.createElement('section');secondary.dataset.choirPronunciationPage='';secondary.className='et-control-group';const pronunciationTitle=document.createElement('h4');pronunciationTitle.textContent='Pronunciation & speed';secondary.append(pronunciationTitle);editor.append(primary,secondary);
     name.style.display='';const nameLabel=document.createElement('label');nameLabel.textContent='Name';nameLabel.className='et-inline-field';nameLabel.append(name);primary.append(nameLabel);
     const deliveryPair=document.createElement('div');deliveryPair.className='et-edit-pair';
 
@@ -5337,7 +5370,7 @@ export async function setup(ctx) {
       if(node===accent)wrap.title='Requested on every passage. The model and selected voice determine how convincingly it can produce the accent. Fish S1 uses the voice’s recorded accent.';
       if(node===voiceWrap)wrap.style.cssText='grid-column:1 / -1;margin-top:2px';
     }
-    style.closest('label').before(deliveryPair);primary.append(secondaryLink);
+    style.closest('label').before(deliveryPair);
     const speedSection=document.createElement('div');speedSection.className='et-tuning et-character-speed';
     const speedHeading=document.createElement('span');speedHeading.className='et-tuning-title';speedHeading.textContent='Voice speed';
     const speedSlot=document.createElement('div');speedSlot.className='et-tuning-slot';
@@ -5381,9 +5414,8 @@ export async function setup(ctx) {
     });
     const focused=document.activeElement;let restoreFocus=false;
     for(const [target,rows] of buckets)rows.forEach((row,index)=>{if(target.children[index]!==row){if(row.contains(focused))restoreFocus=true;target.insertBefore(row,target.children[index] || null);}});
-    const count=buckets.get(otherRows).length;other.hidden=!count;$('otherCastCount').textContent=String(count);
-    if(!count || previous && previous.id!==latest?.id && !other.contains(focused))other.open=false;
-    if(restoreFocus)(otherRows.contains(focused) && !other.open?other.querySelector('summary'):focused)?.focus({preventScroll:true});
+    const count=buckets.get(otherRows).length;$('otherCastCount').textContent=String(count);drawerNavigation.updateCastFilter(count);
+    if(restoreFocus)(otherRows.contains(focused) && other.hidden?$('castFilter'):focused)?.focus({preventScroll:true});
   }
   function renderCast() {
     drawerNavigation.closeCast();
@@ -6445,7 +6477,7 @@ export async function setup(ctx) {
   const freesoundKey=snapshot=>(snapshot.freesoundApiKey || $('freesoundApiKey')?.value || '').trim();
   const soundsEnabled=snapshot=>snapshot.enableSfx!==false || snapshot.enableAmbience!==false;
   const soundCuesWanted=snapshot=>soundsEnabled(snapshot) && Boolean(freesoundKey(snapshot)) || snapshot.enableMusic===true;
-  const missingFoleyKey=snapshot=>soundsEnabled(snapshot) && !freesoundKey(snapshot)?'Sound effects and ambience need a Freesound API key in Advanced settings. Speech continues.':'';
+  const missingFoleyKey=snapshot=>soundsEnabled(snapshot) && !freesoundKey(snapshot)?'Sound effects and ambience need a Freesound API key in Playback → Soundscape. Speech continues.':'';
   async function chooseSoundCues(segments,signal,onStage=status,currentMusic){
     onStage('Choosing sound effects…');
     const result=await rpc('sfx',{segments:segments.map(({speaker,text})=>({speaker,text})),connectionId:config.planner,music:config.enableMusic===true,...(currentMusic?{currentMusic}:{})},signal,60000,
@@ -7431,7 +7463,7 @@ export async function setup(ctx) {
     const sourceKey=`${seg.kind}:${foleyKey(sfx)}`,key=volatileKey(sourceKey,snapshot);
     return loadVolatileAudio(foleyCache,key,sourceKey,snapshot,signal,async()=>{
     const apiKey = snapshot.freesoundApiKey || $('freesoundApiKey')?.value?.trim() || '';
-    if(!apiKey)throw new Error('Configure a Freesound API key in Advanced Settings');
+    if(!apiKey)throw new Error('Configure a Freesound API key in Playback → Soundscape');
     let previewUrl;
     // Freesound requires every search word to match, so drop trailing words until one matches.
     for(let words=query.split(' ');!previewUrl && words.length;words=words.slice(0,-1)){
@@ -7775,7 +7807,7 @@ export async function setup(ctx) {
     try{
       const result=await (await api('/spindle',{signal:branchLookup.signal})).json();
       const extension=result.extensions?.find(item=>item.identifier==='choir');
-      if(!disposed){const branch=extension?.metadata?.branch;badge.hidden=!['staging','UI-CLEANUP'].includes(branch);badge.textContent=branch==='UI-CLEANUP'?'UI cleanup':'Staging';badge.title=`Choir ${"1.1.6-staging.49"} · ${branch || 'unknown branch'}`;}
+      if(!disposed){const branch=extension?.metadata?.branch;badge.hidden=!['staging','UI-CLEANUP'].includes(branch);badge.textContent=branch==='UI-CLEANUP'?'UI cleanup':'Staging';badge.title=`Choir ${"1.1.6-staging.50"} · ${branch || 'unknown branch'}`;}
     }catch{/* Keep an unknown branch unlabelled without interrupting playback. */}
     finally{clearTimeout(timeout);}
   })();
