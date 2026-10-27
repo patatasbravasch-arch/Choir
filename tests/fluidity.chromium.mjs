@@ -15,7 +15,7 @@ const server=createServer(async(req,res)=>{
 await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
 let browser;
 try{
-  browser=await chromium.launch({headless:true,...(process.env.CHOIR_BROWSER_CHANNEL?{channel:process.env.CHOIR_BROWSER_CHANNEL}:{}),args:['--no-proxy-server','--autoplay-policy=no-user-gesture-required']});
+  browser=await chromium.launch({headless:true,channel:process.env.CHOIR_BROWSER_CHANNEL || 'chrome',args:['--no-proxy-server','--autoplay-policy=no-user-gesture-required']});
   for(const options of [
     ...['main','companion'].flatMap(mode=>[.75,1,1.5,2,3,4].map(rate=>({mode,rate,delay:150}))),
     ...['main','companion'].map(mode=>({mode,rate:2,delay:80,decodeDelay:120})),

@@ -338,7 +338,7 @@ test('unassigned fixed speakers are cast once while explicit assignments remain 
   assert.throws(()=>validatePlan({segments:[{speaker:'Alice',text:'Hello.'}]},'Hello.',c),/LLM-selected voice/);
 });
 
-test('gender preferences survive NPC casting and do not override assigned voices',()=>{
+test('gender preferences survive Automatic casting and do not override assigned voices',()=>{
   const c=config();c.fixed[1].gender='male';
   const plan=validatePlan({segments:[{speaker:'Alice',voice:'Fenrir',text:'Hello.'},
     {speaker:'Guard',voice:'Puck',gender:'neutral',text:'Welcome.'}]},'Hello. Welcome.',c);
@@ -763,6 +763,18 @@ test('casting rows tolerate list markers and markdown and ignore other text',()=
   assert.deepEqual([...rows.styles],[[1,'soft'],[2,''],[3,'']]);
   assert.deepEqual([...rows.npcs],[['gate guard',{name:'The Gate Guard',gender:'male',voice:'x1'}]]);
   assert.equal(rows.language,'pt');
+});
+
+test('Fish preferred pool overrides community discovery and rejects a suggested voice outside the selected route and pool',async()=>{
+ const selected='1'.repeat(32),outside='2'.repeat(32),other='3'.repeat(32),route='native:fish';
+ const config={fixed:[{speaker:'Narrator',voice:'n',style:'',route}],npcs:[],defaultRoute:route,
+  voices:[{id:'n',route},{id:selected,route,gender:'male'},{id:outside,route,gender:'male'},{id:other,route:'native:other',gender:'male'}],
+  npcPolicy:{mode:'preferred',route,voices:[selected]},communityRoutes:{[route]:'community'},useStyle:false};
+ const {calls,llm}=scripted([`D0|Guard|\nNPC|Guard|male|${outside}`]);
+ const transcript='"Halt!"',raw=await castReply(transcript,config,'',llm);
+ const plan=validatePlan(resolvePlanReferences(raw,transcript,config),transcript,config);
+ assert.equal(plan.segments[0].voice,selected);assert.equal(plan.segments[0].route,route);assert.equal(raw.segments[0].voiceSearch,undefined);
+ assert.ok(calls[0][1].content.includes(selected));assert.ok(!calls[0][1].content.includes(outside));assert.ok(!calls[0][1].content.includes(other));
 });
 
 test('castReply canonicalises aliases, reads NOT_SPOKEN as narration and casts new NPCs with a suitable unused voice',async()=>{

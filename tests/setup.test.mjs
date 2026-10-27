@@ -41,7 +41,7 @@ test('configuration validation distinguishes missing routes, voices, session key
 
 test('heuristic needs no LLM but cannot silently choose automatic NPC voices or sound cues',()=>{
   const draft=value(),local={...connections,llm:[]};assert.deepEqual(setupIssues(draft,local),[]);
-  draft.npcPolicy.mode='llm';assert.ok(setupIssues(draft,local).some(issue=>/Automatic NPC/.test(issue.message)));
+  draft.npcPolicy.mode='llm';assert.ok(setupIssues(draft,local).some(issue=>/Automatic voice/.test(issue.message)));
   draft.npcPolicy.mode='skip';draft.enableSfx=true;assert.equal(setupIssues(draft,local).filter(issue=>issue.step===3).length,2);
   draft.freesoundApiKey='configured';assert.equal(setupIssues(draft,local).filter(issue=>issue.step===3).length,1);
 });
@@ -53,8 +53,8 @@ test('Jev requires an available Decision connection on modern hosts; session key
 });
 
 test('shared and preferred NPC voices have contextual validation',()=>{
-  const draft=value();draft.npcPolicy={mode:'single',voice:''};assert.ok(setupIssues(draft,connections).some(issue=>/shared NPC/.test(issue.message)));
-  draft.npcPolicy={mode:'preferred',voices:[]};assert.ok(setupIssues(draft,connections).some(issue=>/preferred NPC/.test(issue.message)));
+  const draft=value();draft.npcPolicy={mode:'single',voice:''};assert.ok(setupIssues(draft,connections).some(issue=>/shared voice/.test(issue.message)));
+  draft.npcPolicy={mode:'preferred',voices:[]};assert.ok(setupIssues(draft,connections).some(issue=>/preferred voice/.test(issue.message)));
   draft.npcPolicy.voices=['voice'];assert.deepEqual(setupIssues(draft,connections),[]);
   draft.npcPolicy.route='gemini';assert.ok(setupIssues(draft,connections).some(issue=>issue.step===2));
 });
