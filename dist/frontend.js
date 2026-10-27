@@ -2849,7 +2849,7 @@ function createDrawerNavigation(root) {
   const setup=move('setupWizard',header);setup.textContent='Setup guide';setup.className='et-setup-link';header.prepend(setup);move('saveState',header);move('save',header);
   const current=el('div');current.className='et-current-message';header.after(current);el('span','Latest reply',current).dataset.et='currentMessageLabel';
   const transport=el('div','',current);transport.className='et-btn-group';const start=button('Play',transport);start.dataset.et='drawerPlay';start.disabled=true;start.className='et-btn-primary';
-  move('latest',transport);move('stop',transport);const download=button('↓',transport);download.dataset.et='drawerDownload';download.hidden=true;download.setAttribute('aria-label','Download latest reply audio');
+  move('latest',transport);move('stop',transport);move('showMixer',transport);const download=button('↓',transport);download.dataset.et='drawerDownload';download.hidden=true;download.setAttribute('aria-label','Download latest reply audio');
   const notice=move('latestNotice',current);notice.textContent='Planned';notice.title='Plan latest again to rebuild the plan.';notice.removeAttribute('role');
   const reminder=button('Continue setup →',header,()=>setup.click());reminder.dataset.et='continueSetup';reminder.hidden=true;
   // Cast is a filtered list, never an accordion of old characters.
@@ -2870,7 +2870,7 @@ function createDrawerNavigation(root) {
   const tuning=group('Playback',playHome);tuning.append(field('playbackSpeedSlot').closest('.et-tuning-grid'));moveLabel('normalizeLoudness',tuning);
   const reading=group('Reading',playHome);moveLabel('readAlong',reading);moveLabel('followNarration',reading);
   const sound=group('Soundscape',playHome),soundChecks=el('div','',sound);soundChecks.className='et-check-grid';for(const name of ['enableSfx','enableAmbience','enableMusic','loopMusic'])moveLabel(name,soundChecks);moveLabel('freesoundApiKey',sound);field('enableSfx').closest('label').title='Freesound sound effects; requires the key below.';
-  const mixer=group('Mixer',playHome);moveLabel('enableMixer',mixer);const mixerActions=el('div','',mixer);mixerActions.className='et-action-grid';move('showMixer',mixerActions);move('customizeMixer',mixerActions);
+  const mixer=group('Mixer',playHome);moveLabel('enableMixer',mixer);const mixerActions=el('div','',mixer);mixerActions.className='et-action-grid';move('customizeMixer',mixerActions);
   const limits=button('Volume limits',mixerActions);limits.dataset.choirVolumeLimits='';
   // Keep hidden compatibility inputs, discard only emptied display wrappers.
   for(const node of originalPlay)if(node.parentElement===playHome){if(node.nodeType===1 && node.querySelector('[data-et]'))node.hidden=true;else node.remove();}
@@ -7828,7 +7828,7 @@ export async function setup(ctx) {
     try{
       const result=await (await api('/spindle',{signal:branchLookup.signal})).json();
       const extension=result.extensions?.find(item=>item.identifier==='choir');
-      if(!disposed){const branch=extension?.metadata?.branch;badge.hidden=!['staging','UI-CLEANUP'].includes(branch);badge.textContent=branch==='UI-CLEANUP'?'UI cleanup':'Staging';badge.title=`Choir ${"1.1.6-staging.51"} · ${branch || 'unknown branch'}`;}
+      if(!disposed){const branch=extension?.metadata?.branch;badge.hidden=!['staging','UI-CLEANUP'].includes(branch);badge.textContent=branch==='UI-CLEANUP'?'UI cleanup':'Staging';badge.title=`Choir ${"1.1.6-staging.52"} · ${branch || 'unknown branch'}`;}
     }catch{/* Keep an unknown branch unlabelled without interrupting playback. */}
     finally{clearTimeout(timeout);}
   })();
