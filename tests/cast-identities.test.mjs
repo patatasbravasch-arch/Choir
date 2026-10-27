@@ -1,6 +1,44 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {reconcileCastDuplicates,mergeSettingsChanges} from '../src/core.js';
+import {reconcileCastDuplicates,mergeSettingsChanges,castReply,validatePlan,resolvePlanReferences} from '../src/core.js';
+
+test('Kian and Kian Frost become one lead with aliases, the original voice, and provider choices retained',()=>{
+ const lead={speaker:'Kian',voice:'chosen',route:'native:fish',style:'theatrical',accent:'Irish'};
+ const value={fixed:[{speaker:'Narrator',voice:'n'},{speaker:'Persona',voice:'p'},lead,{speaker:'Kian Frost',voice:'wrong',aliases:['Frost']}],casts:{'native:fish':[{speaker:'Kian Frost',voice:'wrong'}]},singleVoices:{'native:fish':{'Kian Frost':'alternate'},'native:gemini':{Kian:'saved','Kian Frost':'duplicate'}}};
+ const before=structuredClone(value),clean=reconcileCastDuplicates(value);
+ assert.equal(clean.fixed.length,3);assert.equal(clean.fixed[2].voice,'chosen');assert.equal(clean.fixed[2].accent,'Irish');
+ assert.deepEqual(clean.fixed[2].aliases,['Kian Frost','Frost']);assert.deepEqual(clean.casts['native:fish'],[]);
+ assert.deepEqual(clean.singleVoices,{'native:fish':{Kian:'alternate'},'native:gemini':{Kian:'saved'}});
+ assert.deepEqual(value,before);assert.strictEqual(reconcileCastDuplicates(clean),clean);
+});
+
+test('different full names sharing Kian and the protected persona are not merged',()=>{
+ const fixed=[{speaker:'Narrator'},{speaker:'Kian'},{speaker:'Kian Frost'},{speaker:'Kian Stone'}];
+ const value={fixed,casts:{a:[{speaker:'Kian',voice:'npc'}]}};
+ assert.equal(reconcileCastDuplicates(value).fixed.length,4);
+ const persona={fixed:fixed.slice(0,3),casts:{}};assert.strictEqual(reconcileCastDuplicates(persona),persona);
+ const people={fixed:[{speaker:'Narrator'},{speaker:'Persona'},{speaker:'Kian'},{speaker:'Kian Frost'},{speaker:'Kian Stone'}],casts:{}};
+ assert.strictEqual(reconcileCastDuplicates(people),people);
+});
+
+test('casting reuses a unique short/full identity without creating another NPC or changing its voice',async()=>{
+ for(const [saved,answer] of [['Kian','Kian Frost'],['Kian Frost','Kian']]){
+  const config={fixed:[{speaker:'Narrator',voice:'n',style:''},{speaker:'Persona',voice:'p',style:''},{speaker:saved,voice:'k',style:''}],npcs:[],voices:['n','p','k','other'].map(id=>({id}))};
+  const text='"Hello."',raw=await castReply(text,config,'',async()=>`D0|${answer}|calm`),plan=validatePlan(resolvePlanReferences(raw,text,config),text,config);
+  assert.deepEqual(plan.segments.map(segment=>[segment.speaker,segment.voice]),[[saved,'k']]);assert.deepEqual(plan.npcs,[]);
+ }
+});
+
+test('exact canonical names win over lossy punctuation and article matching',async()=>{
+ for(const names of [['Rose','The Rose'],['J. D.','J D']]){
+  const config={fixed:[{speaker:'Narrator',voice:'n',style:''},...names.map((speaker,i)=>({speaker,voice:`v${i}`,style:''}))],npcs:[],voices:['n','v0','v1'].map(id=>({id}))};
+  const text='"First." "Second."',raw=await castReply(text,config,'',async()=>`D0|${names[0]}|\nD1|${names[1]}|`),plan=validatePlan(resolvePlanReferences(raw,text,config),text,config);
+  assert.deepEqual(plan.segments.map(segment=>[segment.speaker,segment.voice]),[[names[0],'v0'],[names[1],'v1']]);
+  const blank={...config,fixed:config.fixed.map((actor,index)=>index?{...actor,voice:''}:actor)};
+  const selected=await castReply(text,blank,'',async()=>`D0|${names[0]}|\nD1|${names[1]}|\nNPC|${names[0]}|neutral|v0\nNPC|${names[1]}|neutral|v1`);
+  assert.deepEqual(selected.segments.map(segment=>[segment.speaker,segment.voice]),[[names[0],'v0'],[names[1],'v1']]);
+ }
+});
 
 test('exact duplicate cast names retain the first voice, route and preferences, including across NPC lists',()=>{
   const lead={speaker:'Kieran',voice:'chosen',route:'native:fish',style:'quiet',accent:'Irish',aliases:['Kier'],sayAs:'KEER-an'};

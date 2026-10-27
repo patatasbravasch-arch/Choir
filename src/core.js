@@ -121,30 +121,79 @@ export function normalizeName(value) {
   return String(value || '').normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
-// One identity per visible cast. Keep the first saved assignment (including its
-// route and voice); provider-specific NPC lists remain separate from each other.
-// Match canonical names only: two people sharing an alias must not be merged.
+const roleNames=new Set(['narrator','persona','user','you','character','npc','unknown','the','a','an','guard','captain','doctor','dr','sir','lady','lord','man','woman','soldier','waiter','bartender']);
+const personNameParts=name=>{
+  const parts=normalizeName(name).split(' ');
+  return parts.length<=4 && parts.every(part=>/^[\p{L}\p{M}][\p{L}\p{M}'’-]+$/u.test(part)) && !roleNames.has(parts[0])?parts:[];
+};
+const fullNameFamilies=names=>{
+  const families=new Map();
+  for(const name of names){const parts=personNameParts(name);if(parts.length<2)continue;const family=families.get(parts[0]) || new Set();family.add(normalizeName(name));families.set(parts[0],family);}
+  return families;
+};
+
+// Exact names always win. A short/full-name match must have only one full name
+// in the cast and this reply; shared first names and fuzzy collisions stay distinct.
+export function castIdentityResolver(actors,extraNames=[]) {
+  const names=actor=>[actor.speaker,...(actor.aliases || [])];
+  const families=fullNameFamilies([...actors.flatMap(names),...extraNames]);
+  const one=matches=>matches.length===1?matches[0]:undefined;
+  return name=>{
+    const key=normalizeName(name),exact=actors.filter(actor=>normalizeName(actor.speaker)===key);
+    if(exact.length)return one(exact);
+    const aliases=actors.filter(actor=>(actor.aliases || []).some(alias=>normalizeName(alias)===key));
+    if(aliases.length)return one(aliases);
+    const loose=actors.filter(actor=>names(actor).some(alias=>castKey(alias)===castKey(name)));
+    if(loose.length)return one(loose);
+    const parts=personNameParts(name);
+    if(!parts.length || families.get(parts[0])?.size!==1)return;
+    return one(actors.filter(actor=>names(actor).some(alias=>{
+      const other=personNameParts(alias);
+      return other[0]===parts[0] && (parts.length===1 || other.length===1);
+    })));
+  };
+}
+
+// Keep the first saved voice and settings. Unique short/full names identify one
+// person; the narrator/persona slots and ambiguous first names stay independent.
 export function reconcileCastDuplicates(value) {
   if(!Array.isArray(value?.fixed))return value;
   let changed=false;
-  const unique=actors=>{
-    const result=[],positions=new Map();
-    for(const actor of actors){
-      const key=normalizeName(actor.speaker);
-      if(!key || !positions.has(key)){if(key)positions.set(key,result.length);result.push(actor);continue;}
-      changed=true;
-      const index=positions.get(key),first=result[index];
-      const aliases=[...new Map([...(first.aliases || []),...(actor.aliases || [])].filter(alias=>normalizeName(alias)!==key).map(alias=>[normalizeName(alias),alias])).values()].slice(0,30);
-      if(aliases.length)result[index]={...first,aliases};
+  const all=[...value.fixed,...Object.values(value.casts || {}).flat(),...(value.npcs || [])];
+  const families=fullNameFamilies(all.flatMap(actor=>[actor.speaker,...(actor.aliases || [])]));
+  const identity=name=>{const parts=personNameParts(name);return parts.length && families.get(parts[0])?.size===1?parts[0]:normalizeName(name);};
+  const combine=(first,actor)=>{
+    changed=true;
+    const key=normalizeName(first.speaker);
+    const aliases=[...new Map([actor.speaker,...(first.aliases || []),...(actor.aliases || [])].filter(alias=>normalizeName(alias)!==key).map(alias=>[normalizeName(alias),alias])).values()].slice(0,30);
+    return aliases.length?{...first,aliases}:first;
+  };
+  const unique=(actors,protectedSlots=0)=>{
+    const result=[],positions=new Map(),families=new Map();
+    for(const [slot,actor] of actors.entries()){
+      const key=normalizeName(actor.speaker),family=identity(actor.speaker);
+      const index=positions.get(key) ?? (slot>=protectedSlots?families.get(family):undefined);
+      if(index===undefined){if(key)positions.set(key,result.length);if(slot>=protectedSlots)families.set(family,result.length);result.push(actor);continue;}
+      positions.set(key,index);result[index]=combine(result[index],actor);
     }
     return result;
   };
-  const fixed=unique(value.fixed),names=new Set(fixed.map(actor=>normalizeName(actor.speaker)).filter(Boolean));
-  const casts=Object.fromEntries(Object.entries(value.casts || {}).map(([route,actors])=>[route,unique(actors.filter(actor=>{
-    if(!names.has(normalizeName(actor.speaker)))return true;
-    changed=true;return false;
-  }))]));
-  return changed?{...value,fixed,casts}:value;
+  const fixed=unique(value.fixed,2);
+  const clean=actors=>unique(actors.filter(actor=>{
+    const matches=fixed.flatMap((lead,index)=>normalizeName(lead.speaker)===normalizeName(actor.speaker) || (lead.aliases || []).some(alias=>normalizeName(alias)===normalizeName(actor.speaker)) || index>=2 && identity(lead.speaker)===identity(actor.speaker)?[index]:[]);
+    if(matches.length!==1)return true;
+    const index=matches[0];fixed[index]=combine(fixed[index],actor);return false;
+  }));
+  const casts=Object.fromEntries(Object.entries(value.casts || {}).map(([route,actors])=>[route,clean(actors)]));
+  const npcs=Array.isArray(value.npcs)?clean(value.npcs):undefined;
+  if(!changed)return value;
+  const canonical=new Map([...fixed,...Object.values(casts).flat(),...(npcs || [])].flatMap(actor=>(actor.aliases || []).map(alias=>[normalizeName(alias),actor.speaker])));
+  const singleVoices=value.singleVoices && Object.fromEntries(Object.entries(value.singleVoices).map(([route,voices])=>{
+    const updated={...voices};
+    for(const [name,voice] of Object.entries(voices)){const target=canonical.get(normalizeName(name));if(target && normalizeName(target)!==normalizeName(name)){if(!Object.hasOwn(updated,target))updated[target]=voice;delete updated[name];}}
+    return [route,updated];
+  }));
+  return {...value,fixed,casts,...(npcs?{npcs}:{}),...(singleVoices?{singleVoices}:{})};
 }
 
 const escapePattern = value => value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
@@ -621,6 +670,7 @@ export function unisonSpeakers(transcript,unit,config) {
 }
 
 export function validatePlan(raw, transcript, config) {
+  config=reconcileCastDuplicates(config);
   validateCastConfig(config);
   if (!raw || !Array.isArray(raw.segments) || !raw.segments.length) throw new Error('Expected at least one speech segment.');
   const voices = new Set(config.voices.map(v => v.id));
@@ -734,13 +784,15 @@ export function restoreAttribution(saved, transcript, config) {
     const policy=npc?config.npcPolicy:null;
     const selectedActor=npc?npcCastActor(actor || {route:policy?.route || route,voice:''},config):actor;
     const selectedRoute=selectedActor?.route || policy?.route || route;
+    if(!selectedActor?.voice && !['single','preferred'].includes(policy?.mode))throw new Error(`Speaker ${segment.speaker} needs a real automatic voice choice. Plan this reply to choose its voice.`);
     const choices=config.voices.filter(v=>(v.route || '')===selectedRoute && (policy?.mode!=='preferred' || policy.voices.includes(v.id)));
     const voice=selectedActor?.voice || choices.find(v=>!selectedActor?.gender || selectedActor.gender==='auto' || v.gender===selectedActor.gender)?.id;
     return {voice,route:selectedRoute};
   };
   return validatePlan({segments:saved.segments.map(segment=>{
     const unison=segment.unison?.map(member=>({...member,...selection(member)}));
-    return {...segment,...selection(segment),...(unison?{unison}:{})};
+    const selected=unison?{voice:unison[0].voice,route:unison[0].route}:selection(segment);
+    return {...segment,...selected,...(unison?{unison}:{})};
   })},transcript,config);
 }
 
@@ -825,7 +877,10 @@ export function loudnessGain(channels, target=0.12, sampleRate=24000) {
   while(last>=first && frames[last].rms<threshold)last--;
   for(let i=first;i<=last;i++){squares+=frames[i].squares;count+=frames[i].count;}
   const rms=count?Math.sqrt(squares/count):0;
-  return rms>0.0001?Math.max(0.25,Math.min(4,target/rms,peak?0.95/peak:4)):1;
+  // Very quiet Fish voices can need more than the old 4× ceiling; loud clips
+  // also need enough attenuation to reach the same target. Keep silence gated
+  // and retain the peak cap even when the target cannot be reached safely.
+  return rms>0.0001?Math.max(0.05,Math.min(16,target/rms,peak?0.95/peak:16)):1;
 }
 
 // All decoded tracks use the browser AudioContext's sample rate. Align their
@@ -1170,7 +1225,7 @@ export function parseCastRows(text) {
   for(const line of String(text || '').split(/\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]/)) {
     const parts=line.trim().replace(/^[-* ]+|[-* ]+$/g,'').split('|').map(part=>part.trim().replace(/^[*`]+|[*`]+$/g,''));
     if(parts.length>=2 && /^D?\d+$/.test(parts[0])){const id=Number(parts[0].replace(/^D/,''));speakers.set(id,parts[1]);styles.set(id,parts[2] ?? '');}
-    else if(parts.length>=3 && parts[0].toUpperCase()==='NPC')npcs.set(castKey(parts[1]),{name:parts[1],gender:parts[2].toLowerCase(),voice:parts[3] ?? ''});
+    else if(parts.length>=3 && parts[0].toUpperCase()==='NPC')npcs.set(normalizeName(parts[1]),{name:parts[1],gender:parts[2].toLowerCase(),voice:parts[3] ?? ''});
     else if(parts.length>=2 && parts[0].toUpperCase()==='LANG')language=parts[1];
   }
   return {speakers,styles,npcs,language};
@@ -1182,9 +1237,9 @@ const emptyCast=()=>({speakers:new Map(),styles:new Map(),npcs:new Map(),languag
 // llm(messages) resolves to the answer text; empty text means the provider blocked or refused the request.
 // Resolves to a plan with unit_ids for resolvePlanReferences, or null when no casting came back.
 export async function castReply(transcript, config, context, llm) {
+  config=reconcileCastDuplicates(config);
   const units=speechSourceUnits(transcript),dialogue=units.filter(unit=>unit.kind==='dialogue').map(unit=>unit.id);
-  const actors=[...config.fixed,...config.npcs],canon=new Map();
-  for(const actor of actors)for(const name of [actor.speaker,...(actor.aliases || [])])if(!canon.has(castKey(name)))canon.set(castKey(name),actor);
+  const actors=[...config.fixed,...config.npcs];
   const tail=(text,count)=>Array.from(text).slice(-count).join('');
   const ask=async(messages,ids)=>{
     const found=emptyCast();
@@ -1223,19 +1278,25 @@ export async function castReply(transcript, config, context, llm) {
   }
   if(dialogue.length && !cast.speakers.size)return null;
   const narrator=config.fixed.find(actor=>normalizeName(actor.speaker)==='narrator'),newNames=new Map(),speakers=new Map();
+  const resolveActor=castIdentityResolver(actors,[...cast.speakers.values(),...[...cast.npcs.values()].map(actor=>actor.name)]);
   dialogue.forEach((id,index)=>{
     const answered=cast.speakers.get(id) ?? dialogue.slice(0,index).map(previous=>cast.speakers.get(previous)).filter(name=>name!==undefined).at(-1) ?? 'NOT_SPOKEN';
-    const key=castKey(answered);
-    if(['not spoken','nobody','narrator',''].includes(key.replace(/_/g,' ')))speakers.set(id,narrator);
-    else if(canon.has(key))speakers.set(id,canon.get(key));
-    else {if(!newNames.has(key))newNames.set(key,answered);speakers.set(id,newNames.get(key));}
+    const actor=resolveActor(answered);
+    if(actor)speakers.set(id,actor);
+    else if(['not spoken','nobody','narrator',''].includes(normalizeName(answered).replace(/_/g,' ')))speakers.set(id,narrator);
+    else {
+      const existing=castIdentityResolver([...newNames.values()].map(speaker=>({speaker})),[...cast.speakers.values()])(answered);
+      const key=castKey(answered);if(!newNames.has(key))newNames.set(key,existing?.speaker || answered);speakers.set(id,newNames.get(key));
+    }
   });
   // Assigned voices stay; a missing or unsuitable voice is the first unused catalogue voice of the wanted gender.
   const used=new Set(actors.map(actor=>actor.voice).filter(Boolean)),choices=new Map();
   const choose=speaker=>{
-    const actor=typeof speaker==='string'?null:speaker,name=actor?actor.speaker:speaker,key=castKey(name);
+    const actor=typeof speaker==='string'?null:speaker,name=actor?actor.speaker:speaker,key=normalizeName(name);
     if(choices.has(key))return choices.get(key);
-    const npc=!config.fixed.includes(actor),selected=actor && npc?npcCastActor(actor,config):actor,row=cast.npcs.get(key) || {};
+    const npc=!config.fixed.includes(actor),selected=actor && npc?npcCastActor(actor,config):actor;
+    const rows=[...cast.npcs.values()],fuzzyRows=rows.filter(row=>castKey(row.name)===castKey(name));
+    const row=rows.find(row=>normalizeName(row.name)===key) || rows.find(row=>resolveActor(row.name)===actor && actor) || (fuzzyRows.length===1?fuzzyRows[0]:undefined) || {};
     const gender=[selected?.gender,row.gender].find(value=>['female','male','neutral'].includes(value)) || 'auto';
     let choice={speaker:name,voice:selected?.voice || '',gender};
     if(!choice.voice) {

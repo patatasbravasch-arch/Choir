@@ -761,7 +761,7 @@ test('casting rows tolerate list markers and markdown and ignore other text',()=
   const rows=parseCastRows('Here you go:\n- **D1|Mira|soft**\n* `2` | Jay | \nD3|Narrator\r\nNPC|The Gate Guard|Male|x1\nNPC|bad\nLANG|pt\nD4');
   assert.deepEqual([...rows.speakers],[[1,'Mira'],[2,'Jay'],[3,'Narrator']]);
   assert.deepEqual([...rows.styles],[[1,'soft'],[2,''],[3,'']]);
-  assert.deepEqual([...rows.npcs],[['gate guard',{name:'The Gate Guard',gender:'male',voice:'x1'}]]);
+  assert.deepEqual([...rows.npcs],[['the gate guard',{name:'The Gate Guard',gender:'male',voice:'x1'}]]);
   assert.equal(rows.language,'pt');
 });
 

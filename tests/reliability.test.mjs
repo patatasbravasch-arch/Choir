@@ -75,6 +75,19 @@ test('mixed-provider loudness matching raises quiet audio, lowers loud audio and
   assert.equal(loudnessGain([new Float32Array(32)]),1);
 });
 
+test('very quiet Fish and loud provider clips reach the same target beyond the former gain bounds',()=>{
+ for(const rms of [.01,.03,.24,.8]){const samples=new Float32Array(24000).fill(rms);assert.ok(Math.abs(rms*loudnessGain([samples])-.12)<.00001);}
+ const tiny=new Float32Array(24000).fill(.0002);assert.ok(loudnessGain([tiny])<=16);
+ const peaked=new Float32Array(24000).fill(.01);peaked[500]=1;assert.ok(loudnessGain([peaked])*peaked[500]<=.95);
+});
+
+test('cached attribution never turns an unassigned automatic voice into the first catalogue voice',()=>{
+ const transcript='It rained. "Hello."',raw={segments:[{speaker:'Narrator',text:'It rained.'},{speaker:'Mira',text:'"Hello."'}]};
+ const original=validatePlan(raw,transcript,config),saved=attributionPlan(original,config),changed=structuredClone(config);
+ changed.fixed[1].voice='';
+ assert.throws(()=>restoreAttribution(saved,transcript,changed),/real automatic voice choice/);
+});
+
 test('loudness matching ignores provider edge padding without changing audio or internal pauses',()=>{
   for(const sampleRate of [16000,24000,44100,48000]){
     const speech=Float32Array.from({length:sampleRate},(_,i)=>0.08*Math.sin(2*Math.PI*220*i/sampleRate));

@@ -470,7 +470,7 @@ async function elizaFixture(h,{sayAs='',grouped=false}={}){
   for(const connection of h.connections){connection.provider='fish_audio';connection.model='s2.1-pro';}
   h.state.providers=[{id:'fish_audio',capabilities:{parameters:{},multiSpeaker:{maxSpeakers:5}}}];
   const saved=h.store.get('chat:chat-a');
-  Object.assign(saved,{useStyle:false,skipMeta:false,enableSfx:false,enableAmbience:false,batchSpeech:grouped,connectionMode:grouped?'one':'several'});
+  Object.assign(saved,{useStyle:false,skipMeta:false,enableSfx:false,enableAmbience:false,normalizeLoudness:false,batchSpeech:grouped,connectionMode:grouped?'one':'several'});
   saved.fixed[2]={...saved.fixed[2],speaker:'Eliza',aliases:[],pronunciation:'',accent:'',sayAs};h.store.set('chat:chat-a',saved);await h.reload();
 }
 async function editNamePronunciation(h,value){
@@ -2250,7 +2250,7 @@ test('companion paragraph playback also applies native provider limits and Fish 
 async function fishGroupingHarness(mixer){
   const h=await harness(mixer);h.connections[0].provider='fish_audio';h.connections[0].model='s2.1-pro';
   h.state.providers=[{id:'fish_audio',capabilities:{parameters:{},multiSpeaker:{maxSpeakers:5,models:['s2.1-pro']}}}];
-  const saved=h.store.get('chat:chat-a');saved.connectionMode='one';saved.batchSpeech=true;saved.chunk=1800;saved.enableSfx=false;saved.enableAmbience=false;
+  const saved=h.store.get('chat:chat-a');saved.connectionMode='one';saved.batchSpeech=true;saved.normalizeLoudness=false;saved.chunk=1800;saved.enableSfx=false;saved.enableAmbience=false;
   for(const actor of saved.fixed){delete actor.route;delete actor.accent;delete actor.pronunciation;}
   h.store.set('chat:chat-a',saved);await h.reload();return h;
 }
@@ -2261,7 +2261,7 @@ async function openRouterGroupingHarness(family='fish_audio',patched=true){
  const mixed=[{id:'alloy',name:'Alloy (OpenAI)'},...['Puck','Kore','Charon','Zephyr'].map(id=>({id,name:`${id} (Gemini)`}))];
  h.state.providers=[{id:'openrouter_tts',capabilities:{parameters:{instructions:{type:'string'},speech_style:{type:'string'}},staticVoices:mixed,...(patched?{multiSpeaker:{maxSpeakers:5,models:[fishModel,googleModel],maxSpeakersByModel:{[fishModel]:5,[googleModel]:2}}}:{})}}];
  h.state.catalogues={a:{voices:mixed}};h.state.planForCatalogue=true;
- const saved=h.store.get('chat:chat-a');saved.connectionMode='one';saved.batchSpeech=true;saved.enableSfx=false;saved.enableAmbience=false;saved.useStyle=true;
+ const saved=h.store.get('chat:chat-a');saved.connectionMode='one';saved.batchSpeech=true;saved.normalizeLoudness=false;saved.enableSfx=false;saved.enableAmbience=false;saved.useStyle=true;
  saved.fixed.forEach((actor,i)=>{actor.voice=ids[i];delete actor.route;delete actor.accent;delete actor.pronunciation;});saved.casts={'native:a':[{speaker:'Guard',voice:ids[3],style:''}]};
  if(family==='fish_audio'){saved.extraVoices=fishIds.map(id=>`${id} | A warm storyteller.`).join('\n');saved.extraVoiceRoutes=Object.fromEntries(fishIds.map(id=>[id,['native:a']]));}
  h.store.set('chat:chat-a',saved);await h.reload();return h;
@@ -2311,7 +2311,7 @@ test('an unpatched OpenRouter relay keeps Fish voices model-specific and uses se
   assert.match(h.$('groupingStatus').title,/relay advertises one voice per call/);
   await h.plan();await h.play();assert.equal(h.synthesis.length,4);
   assert.ok(h.synthesis.every(request=>!request.parameters.turns && /^[1-4]{32}$/.test(request.voice)));
-  assert.equal(h.synthesis[0].text,'At dawn.');assert.equal(h.synthesis[0].parameters.instructions,'Calm');
+  assert.equal(h.synthesis[0].text,'[Calm] At dawn.');assert.equal(h.synthesis[0].parameters.instructions,undefined);
  }finally{await h.close();}
 });
 
@@ -2323,6 +2323,18 @@ test('optional Fish grouping sends four turns in one request and cached replay m
     await h.play();assert.equal(h.synthesis.length,1);
     await toggle(h,'batchSpeech',false);await h.play();assert.equal(h.synthesis.length,5);
   }finally{await h.close();}
+});
+
+test('matching loudness separates Fish voices and replay rebuilds an older grouped recording with cached attribution',async()=>{
+ const h=await fishGroupingHarness();try{
+  await h.plan();await h.play();assert.equal(h.synthesis.length,1);assert.ok(h.synthesis[0].parameters.turns);
+  const planned=h.requests.filter(request=>request.action==='plan').length;
+  await toggle(h,'normalizeLoudness',true);await h.play();
+  assert.equal(h.synthesis.length,5);assert.ok(h.synthesis.slice(1).every(request=>!request.parameters.turns));
+  assert.equal(h.requests.filter(request=>request.action==='plan').length,planned,'splitting for loudness reuses attribution');
+  assert.match(h.$('groupingStatus').title,/Loudness matching keeps different voices/);
+  await h.play();assert.equal(h.synthesis.length,5,'the individually balanced clips remain cached');
+ }finally{await h.close();}
 });
 
 test('Fish S2 sends a moderate dialogue-narration-dialogue passage as one call with both voice IDs',async()=>{
@@ -2379,7 +2391,7 @@ test('grouped clip controls update to actual separate requests when speaker leve
 
 test('grouping status explains a single-voice provider and updates its batch count with speaker levels',async()=>{
  const h=await harness();try{
-  await toggle(h,'batchSpeech',true);await h.plan();assert.equal(h.$('groupingStatus').hidden,false);assert.match(h.$('groupingStatus').title,/one voice per call; different assigned voices need separate calls/);assert.match(h.$('groupingStatus').textContent,/4 speech batches/);
+  await toggle(h,'normalizeLoudness',false);await toggle(h,'batchSpeech',true);await h.plan();assert.equal(h.$('groupingStatus').hidden,false);assert.match(h.$('groupingStatus').title,/one voice per call; different assigned voices need separate calls/);assert.match(h.$('groupingStatus').textContent,/4 speech batches/);
   await toggle(h,'batchSpeech',false);assert.equal(h.$('groupingStatus').hidden,true);
  }finally{await h.close();}
  const fish=await fishGroupingHarness();try{
@@ -2432,7 +2444,7 @@ test('Google relay groups prebuilt voices using its existing connection',async()
     h.connections[0].provider='google_tts';h.connections[0].model='gemini-3.8-flash-tts';
     h.state.providers=[{id:'google_tts',capabilities:{parameters:{},staticVoices:voices,multiSpeaker:{maxSpeakers:2,models:['gemini-3.8-flash-tts']}}}];
     h.state.catalogues={a:{voices}};h.state.planForCatalogue=true;
-    const saved=h.store.get('chat:chat-a');saved.connectionMode='one';saved.casts={};saved.batchSpeech=true;saved.enableSfx=false;saved.enableAmbience=false;
+    const saved=h.store.get('chat:chat-a');saved.connectionMode='one';saved.casts={};saved.batchSpeech=true;saved.normalizeLoudness=false;saved.enableSfx=false;saved.enableAmbience=false;
     saved.fixed.forEach((actor,i)=>{actor.voice=voices[i].id;delete actor.route;delete actor.accent;delete actor.pronunciation;});
     h.store.set('chat:chat-a',saved);await h.reload();
     h.message.content='At dawn. "Hello." The gate closed.';await h.plan();await h.play();
@@ -3433,6 +3445,33 @@ test('Let LLM choose makes and saves a real choice despite current or reloaded a
    await h.reload();assert.equal(h.$('fixed').querySelectorAll('[data-choir-voice]')[2].value,'m');await h.play();assert.equal(h.requests.filter(v=>v.action==='plan').length,2);
   }finally{await h.close();}
  }
+});
+
+test('Jev also requests a real automatic voice choice instead of restoring the first cached catalogue voice',async()=>{
+ const h=await harness();try{
+  await h.plan();await h.play();const generated=h.synthesis.length;
+  h.$('plannerMode').value='jev';h.$('plannerMode').dispatchEvent(new h.dom.window.Event('change'));
+  await until(()=>h.$('saveState').textContent==='Saved automatically');
+  const voice=h.$('fixed').querySelectorAll('[data-choir-voice]')[2];voice.value='';voice.dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));
+  await until(()=>h.$('saveState').textContent==='Saved automatically');await h.reload();
+  h.footer.querySelector('button').click();await until(()=>h.requests.some(request=>request.action==='planJev'));
+  await until(()=>h.$('status').textContent.includes('The object cannot be cloned'));
+  assert.equal(h.synthesis.length,generated,'failed automatic selection never plays a catalogue default');
+  assert.equal(h.store.get('chat:chat-a').fixed[2].voice,'');
+ }finally{await h.close();}
+});
+
+test('loading existing Kian and Kian Frost repairs the drawer and saved aliases without replacing the chosen voice',async()=>{
+ const h=await harness();try{
+  const saved=h.store.get('chat:chat-a');saved.fixed[2]={speaker:'Kian',voice:'m',route:'native:b',style:'theatrical',accent:'Irish'};
+  saved.fixed.push({speaker:'Kian Frost',voice:'g',route:'native:a',style:''});saved.casts['native:a'].push({speaker:'Kian Frost',voice:'g',style:''});
+  h.state.character={name:'Kian Frost',description:'Kian Frost is an Irish man.'};h.state.leadSpeaker='Kian';h.store.set('chat:chat-a',saved);await h.reload();
+  await until(()=>h.store.get('chat:chat-a').fixed.length===3);
+  const actor=h.store.get('chat:chat-a').fixed[2];assert.equal(actor.speaker,'Kian');assert.equal(actor.voice,'m');assert.ok(actor.aliases.includes('Kian Frost'));
+  assert.ok(!h.store.get('chat:chat-a').casts['native:a'].some(actor=>actor.speaker==='Kian Frost'));
+  await h.reload();assert.equal(h.store.get('chat:chat-a').fixed.length,3);assert.equal(h.$('fixed').querySelectorAll('[data-choir-voice]')[2].value,'m');
+  assert.equal(h.requests.filter(request=>request.action==='plan').length,0);
+ }finally{await h.close();}
 });
 
 test('LLM casting receives bounded character and persona descriptions with voice catalogue descriptions',async()=>{

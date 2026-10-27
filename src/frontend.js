@@ -404,7 +404,7 @@ export async function setup(ctx) {
         <label>Planner output tokens<input data-et="plannerTokens" type="number" min="1024" max="32768" step="1024" value="8192"></label>
         <label>Prefetch speech clips<input data-et="prefetch" type="number" min="0" max="4" value="1"></label>
         <label class="et-check"><input data-et="allowLlmFallback" type="checkbox"> Allow LLM fallback after Jev fails (extra cost)</label>
-        <label class="et-check"><input data-et="normalizeLoudness" type="checkbox" checked> Match passage loudness</label>
+        <label class="et-check" title="Balances voices separately. Different characters use separate clips while matching is on; matching off allows shared dialogue clips."><input data-et="normalizeLoudness" type="checkbox" checked> Match passage loudness</label>
         <label hidden>Lumiverse API base<input data-et="apiBase" value="/api/v1"></label>
         <label>Freesound API key (Foley)<input data-et="freesoundApiKey" type="password" placeholder="Freesound token"></label>
       </div>
@@ -2753,7 +2753,7 @@ export async function setup(ctx) {
     const cast=casting(config);
     // Attribution has no voice IDs. A blank selection needs a real LLM choice,
     // rather than restoreAttribution's first catalogue entry.
-    if(resolvePlannerMode(config)==='llm' && needsVoiceSelection(saved.attribution,cast))return false;
+    if(needsVoiceSelection(saved.attribution,cast))return false;
     const restored=restoreAttribution(saved.attribution,saved.transcript,cast);
     planAttribution=saved.attribution;
     const chosen=rememberPlanCast(restored);
@@ -3067,10 +3067,11 @@ export async function setup(ctx) {
             transcript,
             config: {...snapshot,allowLlmFallback:config.allowLlmFallback},
             context,
+            connectionId:config.planner,
             decisionConnection: snapshot.decisionConnection || $('decisionConnection')?.value || '',
             apiKey: jevKey,
             endpoint: jevEndpoint
-          }, ctrl.signal, snapshot.communityRoutes ? 60000 : 15000);
+          }, ctrl.signal, snapshot.communityRoutes ? 245000 : 15000);
           if (!result || !Array.isArray(result.segments))throw new Error('Jev returned no valid speech plan.');
           adoptCommunityVoices(result,snapshot);
           fastPlan = validatePlan({ segments: stripBase(result.segments) }, transcript, snapshot);
@@ -3389,7 +3390,7 @@ export async function setup(ctx) {
     const provider=nativeProviders.find(item=>item.id===connection?.provider);
     const family=detectProvider(route),limits=speechRequestLimits(connection?.provider,connection?.model);
     const prebuilt=GEMINI_VOICES.some(voice=>voice.id===segment.voice);
-    const maxSpeakers=voiceGapSetting()>0?0:family==='fish_audio' || family==='gemini' && prebuilt || provider?.capabilities.staticVoices?.some(voice=>voice.id===segment.voice)?nativeSpeakerLimit(connection):0;
+    const maxSpeakers=voiceGapSetting()>0 || snapshot.normalizeLoudness?0:family==='fish_audio' || family==='gemini' && prebuilt || provider?.capabilities.staticVoices?.some(voice=>voice.id===segment.voice)?nativeSpeakerLimit(connection):0;
     const parameters={...request.parameters};
     if(maxSpeakers && (['gemini','fish_audio'].includes(family) || connection?.provider==='openrouter_tts')){delete parameters.speech_style;delete parameters.instructions;delete parameters.voice_direction;}
     const level=mixerVolume(1,segment.speaker,mixerState.channels);
@@ -3411,7 +3412,7 @@ export async function setup(ctx) {
     const route=scope(config),connection=nativeConnections.find(item=>`native:${item.id}`===route);
     const maxSpeakers=nativeSpeakerLimit(connection);
     const name=connection?.name || 'This connection';
-    node.title=maxSpeakers?`${name} can combine up to ${maxSpeakers} ${detectProvider(route)==='gemini'?'preset ':''}voices per call.`:`${name}'s Lumiverse relay advertises one voice per call; different assigned voices need separate calls.`;
+    node.title=config.normalizeLoudness?'Loudness matching keeps different voices in separate clips so each can be balanced.':maxSpeakers?`${name} can combine up to ${maxSpeakers} ${detectProvider(route)==='gemini'?'preset ':''}voices per call.`:`${name}'s Lumiverse relay advertises one voice per call; different assigned voices need separate calls.`;
     if(plan?.segments?.length){
       try{const batches=playbackBatches(plan.segments.map((segment,passageIndex)=>({...segment,passageIndex})),config);
         const speech=batches.filter(batch=>!batch.kind).length;
@@ -3776,7 +3777,7 @@ export async function setup(ctx) {
     config=capture();
     if(planAttribution){
       const cast=casting(config);
-      if(resolvePlannerMode(config)==='llm' && needsVoiceSelection(planAttribution,cast)){
+      if(needsVoiceSelection(planAttribution,cast)){
         if(automatic){status('Auto-play skipped: plan this reply to choose its voices.');return;}
         const source={...planSource};
         const operation=prepare(source.messageId,false,undefined,true),token=revision;
@@ -3862,7 +3863,7 @@ export async function setup(ctx) {
         if(await restoreSavedPlan(messageId)){await play();return;}
         throw new Error('Saved sound-effect timing needs updating. Plan and play this reply to place effects between phrases.');
       }
-      if(recording.segments.some(segment=>segment.unison && (JSON.stringify(segment.mixLevels)!==JSON.stringify(unisonLevels(segment)) || segment.mixNormalize!==config.normalizeLoudness) || segment.dialogue && (!config.batchSpeech || voiceGapSetting()>0 || segment.turns.some(turn=>speakerExcluded(turn.speaker) || mixerVolume(1,turn.speaker,mixerState.channels)!==mixerVolume(1,segment.turns[0].speaker,mixerState.channels) || playbackRateFor(turn.speaker)!==playbackRateFor(segment.turns[0].speaker))))){
+      if(recording.segments.some(segment=>segment.unison && (JSON.stringify(segment.mixLevels)!==JSON.stringify(unisonLevels(segment)) || segment.mixNormalize!==config.normalizeLoudness) || segment.dialogue && (!config.batchSpeech || config.normalizeLoudness || voiceGapSetting()>0 || segment.turns.some(turn=>speakerExcluded(turn.speaker) || mixerVolume(1,turn.speaker,mixerState.channels)!==mixerVolume(1,segment.turns[0].speaker,mixerState.channels) || playbackRateFor(turn.speaker)!==playbackRateFor(segment.turns[0].speaker))))){
         if(await restoreSavedPlan(messageId)){await play();return;}
         throw new Error('Speaker controls changed. Plan and play this reply to rebuild its grouped audio.');
       }
@@ -3937,7 +3938,7 @@ export async function setup(ctx) {
       if(!valid())return;
       let recording;try{recording=await recordingStore('get',recordingKey(operation.chatId,messageId));}catch{}
       if(!valid())return;
-      if(recording && !pendingCardAnalysis() && !mergedCardRecording(recording) && !aliasedLeadRecording(recording) && sameSpeech(recording.content,content) && await recordingMatchesTranscript(recording,content) && !(resolvePlannerMode(config)==='llm' && needsVoiceSelection({segments:(recording.segments || []).flatMap(speechMembers)},casting(config)))){
+      if(recording && !pendingCardAnalysis() && !mergedCardRecording(recording) && !aliasedLeadRecording(recording) && sameSpeech(recording.content,content) && await recordingMatchesTranscript(recording,content) && !needsVoiceSelection({segments:(recording.segments || []).flatMap(speechMembers)},casting(config))){
         if(!valid())return;
         const canonical=text=>String(text || '').replace(/\s+/g,' ').trim();
         const recordedText=(recording.segments || []).flatMap(segment=>segment.turns || [segment]).filter(segment=>!segment.kind).map(segment=>segment.text).join(' ');

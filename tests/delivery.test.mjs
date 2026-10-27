@@ -23,7 +23,26 @@ test('Fish S1 receives fixed parenthesis tags and never a fabricated accent tag'
 });
 test('mixed Fish and Gemini voices select their own provider adapter',()=>{
  const gemini=request({}),fish=request({family:'fish_audio',connection:{provider:'openrouter_tts',model:'fish-audio/s2-pro'},supported:{instructions:{}}});
- assert.deepEqual(Object.keys(gemini.parameters),['speech_style']);assert.deepEqual(Object.keys(fish.parameters),['instructions']);assert.equal(fish.text,segment.text);
+ assert.deepEqual(Object.keys(gemini.parameters),['speech_style']);assert.deepEqual(fish.parameters,{});assert.equal(fish.text,'[Warm. whispering. Accent: Irish] Welcome home.');
+});
+
+test('preset Fish cues are not duplicated or contradicted, while accents remain persistent',()=>{
+ for(const modern of [false,true]){
+  const result=request({family:'fish_audio',segment:{...segment,text:'[whispering] Welcome home.',style:'shouting'},connection:{provider:'fish_audio',model:'s2.1-pro'},supported:modern?{voice_direction:{models:['s2.1-pro']}}:{}});
+  const wire=modern?`[${result.parameters.voice_direction}] ${result.text}`:result.text;
+  assert.equal(wire.match(/\[whispering\]/g).length,1);assert.ok(!wire.includes('shouting'));assert.ok(wire.includes('Accent: Irish'));
+ }
+ const s1=request({family:'fish_audio',segment:{...segment,text:'(whispering) Welcome home.',style:'angry'},connection:{provider:'fish_audio',model:'s1'},supported:{}});
+ assert.equal(s1.text,'(whispering) Welcome home.');
+});
+
+test('Fish S1 supports advanced documented cues and older OpenRouter Gemini uses a spoken-text wrapper',()=>{
+ for(const cue of ['confused','determined','screaming','soft tone','sighing']){
+  const result=request({family:'fish_audio',segment:{...segment,style:cue},actor:{},connection:{provider:'fish_audio',model:'s1'},supported:{}});
+  assert.equal(result.text,`(${cue}) Welcome home.`);
+ }
+ const result=request({connection:{provider:'openrouter_tts',model:'google/gemini-2.5-flash-tts'},supported:{instructions:{},speech_style:{}}});
+ assert.match(result.text,/Delivery: Warm\. whispering\. Accent: Irish/);assert.deepEqual(result.parameters,{});
 });
 test('narrator defaults to base style and discards planner emotions',()=>{
  const result=request({segment:{...segment,speaker:'Narrator',style:'Measured. [shouting] [sobbing]'},actor:{speaker:'Narrator',style:'Measured',accent:'Irish'},narrator:true});

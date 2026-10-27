@@ -989,7 +989,7 @@ const fishSearch=(urls,pages)=>async url=>{urls.push(new URL(url));const items=p
 
 test('a first Fish narration resolves an automatic voice from an empty relay catalogue',async()=>{
   const urls=[],cast={...communityCast,voices:[],fixed:[{speaker:'Narrator',voice:'',style:'',route:'native:fish'}],npcs:[]};
-  const h=await harness(async()=>({content:'NPC|Narrator|neutral|middle-aged; calm\nLANG|en'}),fishSearch(urls,[[fishItem('narrator-first','Narrator',['neutral','middle-aged','calm'])]]));
+  const h=await harness(async()=>({content:'{"choice":"s0"}'}),fishSearch(urls,[[fishItem('narrator-first','Narrator',['neutral','middle-aged','calm'])]]));
   h.send('plan',{transcript:'The room grew quiet.',config:cast});const message=(await h.result()).message;
   assert.equal(message.error,undefined);assert.equal(message.result.segments[0].voice,'narrator-first');assert.equal(urls.length,1);
   assert.equal(message.result.communityVoices[0].route,'native:fish');
@@ -1007,19 +1007,19 @@ test('a described voice is searched in the Fish community library with relaxed t
   assert.deepEqual(urls.map(url=>[...url.searchParams.getAll('tag')]),[['female','young','soft','bright'],['female','young','soft']]);
   assert.deepEqual(['page_size','sort_by','language'].map(name=>urls[0].searchParams.get(name)),['30','score','pt']);
   assert.equal(urls[0].origin+urls[0].pathname,'https://api.fish.audio/model');
-  assert.equal(evaluated.connection_id,'decision-a');assert.deepEqual(evaluated.state,{character:'Mira',voice:'female, young, soft, bright'});
-  assert.deepEqual(evaluated.questions.q0.criteria,{s0:'Ana — female, young; Ana voice (en)',s1:'Bea — female, young, soft; Bea voice (en)'});
+  assert.equal(evaluated.connection_id,'decision-a');assert.deepEqual(evaluated.state,{character:'Mira',voice:'female, young, soft, bright',language:'pt',story:'Mira smiled. "Hello."'});
+  assert.deepEqual(evaluated.questions.q0.criteria,{s0:'Ana — female, young; Ana voice (en)',s1:'Bea — female, young, soft; Bea voice (en)',none:'No suitable character voice among these candidates'});
   assert.match(prompt[1].content,/Available voices for new NPCs: \n/);assert.match(prompt[0].content,/LANG\|ISO 639-1/);
 });
 
-test('a community voice keeps the top result when the choice fails or is slow, defaults to English and stops planning when search fails',async()=>{
+test('a failed or slow Fish voice choice never silently assigns the top result, and search errors remain visible',async()=>{
   const english='D1|Mira|\nNPC|Mira|robot|soft, Not a tag!';
-  for(const [decisions,deadline] of [[{evaluate:async()=>{throw Error('No Decision connection');}}],[{evaluate:()=>new Promise(()=>{})},(fn,ms)=>{if(ms===5000)fn();}],[undefined]]){
+  for(const [decisions,deadline] of [[{evaluate:async()=>{throw Error('No Decision connection');}}],[{evaluate:()=>new Promise(()=>{})},(fn,ms)=>{if(ms===30000)fn();}],[undefined]]){
     const urls=[];
     const h=await harness(async()=>({content:english}),fishSearch(urls,[[fishItem('ana-1','Ana'),fishItem('bea-1','Bea')]]),null,deadline,null,decisions);
     h.send('plan',{transcript:'Mira smiled. "Hello."',config:communityCast});
-    const result=(await h.result()).message.result;
-    assert.equal(result.segments.find(segment=>segment.speaker==='Mira').voice,'ana-1');
+    const result=(await h.result()).message;
+    assert.equal(result.result,undefined);assert.match(result.error,/Fish voice selection failed for Mira:.*No fallback voice was assigned/);
     assert.equal(urls[0].searchParams.get('language'),'en');assert.deepEqual([...urls[0].searchParams.getAll('tag')],['soft']);
   }
   let calls=0;const failed=await harness(async()=>{calls++;return {content:describedPlan};},fishSearch([],[]));
@@ -1031,11 +1031,11 @@ test('Jev describes a speaker with the Decision model before the community searc
   const urls=[],asked=[];
   const h=await harness(null,fishSearch(urls,[[fishItem('old-1','Elder',['female','old'])]]),null,null,null,{evaluate:async input=>{
     const questions=Object.keys(input.questions);asked.push(questions);
-    return {answers:questions.includes('gender')?{gender:{choice:'female'},age:{choice:'old'},language:{choice:'pt'}}:{speaker_0:{choice:'Mira'}}};
+    return {answers:questions.includes('gender')?{gender:{choice:'female'},age:{choice:'old'},language:{choice:'pt'}}:questions.includes('q0')?{q0:{choice:'s0'}}:{speaker_0:{choice:'Mira'}}};
   }});
   h.send('planJev',{transcript:'Mira smiled. "Olá."',config:communityCast});
   const result=JSON.parse(JSON.stringify((await h.result()).message.result));
-  assert.deepEqual(asked,[['speaker_0'],['gender','age','language']]);
+  assert.deepEqual(asked,[['speaker_0'],['gender','age','language'],['q0']]);
   assert.deepEqual(urls.map(url=>[url.searchParams.get('language'),...url.searchParams.getAll('tag')]),[['pt','female','old']]);
   assert.equal(result.segments.find(segment=>segment.speaker==='Mira').voice,'old-1');
   assert.deepEqual(result.communityVoices,[{id:'old-1',description:'Elder — female, old',route:'native:fish'}]);
@@ -1045,10 +1045,37 @@ test('community search drops tag-stuffed voices that also carry the opposite gen
   const stuffed=[fishItem('stuffed-1','Dramatic Character Male',['male','old','female','young']),fishItem('girl-1','Aiko'),fishItem('boy-1','Kenji',['male','young'])];
   for(const [gender,expected] of [['female','girl-1'],['male','boy-1'],['neutral','stuffed-1']]){
     const plan=`D1|Mira|\nNPC|Mira|${gender}|`;
-    const h=await harness(async()=>({content:plan}),fishSearch([],[stuffed]));
+    const h=await harness(async()=>({content:plan}),fishSearch([],[stuffed]),null,null,null,{evaluate:async()=>({answers:{q0:{choice:'s0'}}})});
     h.send('plan',{transcript:'Mira smiled. "Hello."',config:communityCast});
     assert.equal((await h.result()).message.result.segments.find(segment=>segment.speaker==='Mira').voice,expected);
   }
+});
+
+test('Fish uses character profiles and Planner fallback to choose distinct suitable voices instead of an announcer compilation',async()=>{
+ const choices=[],urls=[];
+ const cast={...communityCast,fixed:[communityCast.fixed[0],{speaker:'Rowan',voice:'',style:'',route:'native:fish'},{speaker:'Kian',voice:'',style:'',route:'native:fish'}],npcs:[],characterProfiles:[{speaker:'Kian',name:'Kian Frost',description:'An older Irish man with a warm measured voice.'},{speaker:'Rowan',name:'Rowan',description:'A young man with a bright energetic speaking voice.'}]};
+ const pages=Array.from({length:2},()=>[fishItem('announcer','Smash Bros announcer compilation',['male','old','young']),fishItem('irish','Irish storyteller',['male','old','calm']),fishItem('young','Young adventurer',['male','young','bright'])]);
+ const h=await harness(async request=>{
+  if(!request.messages[0].content.startsWith('Choose one consistent speaking voice'))return {content:'D0|Kian|calm\nD1|Rowan|cheerful\nNPC|Kian|male|old; calm\nNPC|Rowan|male|young; bright\nLANG|en'};
+  const state=JSON.parse(request.messages[1].content);choices.push(state);
+  assert.match(request.messages[0].content,/Reject announcer\/soundboard compilations/);
+  return {content:'{"choice":"s1"}'};
+ },fishSearch(urls,pages),null,null,null,{evaluate:async()=>{throw Error('Decision unavailable');}});
+ h.send('plan',{transcript:'"Hello." "Hi."',config:cast,connectionId:'llm-a'});
+ const result=(await h.result()).message;assert.equal(result.error,undefined);
+ assert.deepEqual([...result.result.segments.map(segment=>[segment.speaker,segment.voice])],[['Kian','irish'],['Rowan','young']]);
+ assert.match(choices[0].character.profile.description,/older Irish/);assert.match(choices[1].character.profile.description,/young man/);
+ assert.ok(!Object.values(choices[1].candidates).some(candidate=>candidate.includes('Irish storyteller')),'already assigned voice is excluded from the next choice');
+});
+
+test('Fish accepts a Decision answer after five seconds, and an explicit none never assigns a voice',async()=>{
+ let cancelled=false;
+ const h=await harness(async()=>({content:describedPlan}),fishSearch([],[[fishItem('announcer','Smash Bros'),fishItem('fitting','Fitting voice')]]),null,(fn,ms)=>{if(ms===5000){cancelled=true;fn();}},null,{evaluate:async()=>({answers:{q0:{choice:'s1'}}})});
+ h.send('plan',{transcript:'Mira smiled. "Hello."',config:communityCast});
+ assert.equal((await h.result()).message.result.segments.find(segment=>segment.speaker==='Mira').voice,'fitting');assert.equal(cancelled,false);
+ const none=await harness(async()=>({content:describedPlan}),fishSearch([],[[fishItem('announcer','Smash Bros',['female','young','soft','bright'])]]),null,null,null,{evaluate:async()=>({answers:{q0:{choice:'none'}}})});
+ none.send('plan',{transcript:'Mira smiled. "Hello."',config:communityCast});const rejected=(await none.result()).message;
+ assert.equal(rejected.result,undefined);assert.match(rejected.error,/No suitable Fish voice found for Mira/);
 });
 
 test('Jev keeps Decision speakers when emotion answers are rejected and splits large replies into 256-question evaluations',async()=>{

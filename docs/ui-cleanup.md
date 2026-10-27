@@ -44,9 +44,12 @@ An accent request is a preference, not a guarantee. Choose and audition an appro
 | Fish S1 | Emit only recognized, explicitly named legacy emotions in parentheses, up to three. S1 cannot turn a free-form Irish accent request into a new accent; choose an Irish voice. |
 | Gemini 3.8 / Flash Lite | Send `parameters.speech_style`; the current Lumiverse relay maps it to speech metadata. The transcript remains speech text. |
 | Older native Gemini | Use a natural-language delivery prompt around the transcript, as supported by the older preview models. |
-| OpenRouter Fish / Gemini | Use that connection's delivery parameters (`instructions` for Fish; `speech_style` for current Gemini). Its relay handles provider conversion. |
+| OpenRouter Fish | Put Fish delivery cues in the request text; the installed OpenRouter relay does not forward Fish `instructions`. |
+| OpenRouter Gemini | Use `speech_style` for current Gemini; older Gemini receives a natural-language delivery prompt around the transcript. |
 
 Fish S2 uses free-form bracket directions; S1 uses a fixed parenthesis vocabulary. [Fish emotion controls](https://docs.fish.audio/developer-guide/core-features/emotions)
+
+Existing Fish cues in the preset text take priority over generated acting. Choir does not add a competing emotion; persistent accent and pronunciation preferences still apply. With **Match passage loudness** enabled, different characters use separate clips so each voice receives its own gain adjustment.
 
 Gemini separates sustained performance metadata from momentary inline vocal sounds. Choir sends planner acting as turn-level delivery; it does not invent coughs, laughter or other vocal events. [Google speech generation](https://ai.google.dev/gemini-api/docs/speech-generation)
 
