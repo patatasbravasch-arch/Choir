@@ -61,4 +61,6 @@ Recommended sequence: named presets first, then host-backed Fish creation, then 
 
 Automated coverage includes delivery routing, narrator defaults, disabled acting with retained accents, legacy model syntax, multilingual request budgets, keyboard tab navigation, mixer row layout/persistence/reset and mixed-provider requests. Existing playback, download, retention, casting, setup and settings-merge checks are also run. Browser audio checks use synthetic audio, so they verify requests, timing and files rather than making a claim about how convincing a provider's Irish accent sounds.
 
-The final local-installation and test results are saved in the accompanying task report.
+Validation completed with **561 automated checks passing** and **all 11 Chromium test programs passing**, including desktop/touch layouts, setup, playback, download and retention. The new browser coverage checks mixed Fish/Gemini requests and separate Gemini turn accents in a grouped request. Scene levels remain scrollable when additional button rows use the available height.
+
+The branch was also installed through the real local Lumiverse extension manager. Drawer navigation, the setup wizard, narrator delivery defaults, accent editing and mixer layout persistence were checked there. Live provider audio quality was not evaluated. Screenshots and the detailed local-installation report accompany the task.
