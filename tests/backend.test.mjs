@@ -384,6 +384,18 @@ test('fishaudio synthesizes speech with Authorization header and emotion tag for
   assert.equal(body.format, 'mp3');
 });
 
+test('direct Fish TTS injects planner delivery, maps Jev labels and respects source cues anywhere',async()=>{
+ for(const [style,text,expected] of [
+  ['cheerful; sigh','Hello.','[happy][sighing] Hello.'],
+  ['[sad][whispering]','Hello.','[sad][whispering] Hello.'],
+  ['angry; shouting','This is [whispering] important.','This is [whispering] important.']
+ ]){
+  let body;const h=await harness(null,async(url,options)=>{body=JSON.parse(options.body);return {status:200,body:'QUJD'};});
+  h.send('fishaudio',{apiKey:'test',model:'s2.1-pro-free',segment:{text,style,voice:'fixed-voice'}});
+  assert.equal((await h.result()).message.error,undefined);assert.equal(body.text,expected);assert.equal(body.reference_id,'fixed-voice');
+ }
+});
+
 test('fishaudio handles missing API key or empty segment', async () => {
   const h = await harness();
   h.send('fishaudio', { apiKey: '', segment: { text: 'Hello.' } });

@@ -3353,7 +3353,9 @@ export async function setup(ctx) {
     if(segment.turns?.length>1){
       if(!segment.dialogue){const single=synthesisSettings({...segment,turns:undefined},snapshot);return {...single,segment:{...single.segment,turns:segment.turns.map(turn=>synthesisSettings(turn,snapshot).segment)}};}
       const requests=segment.turns.map(turn=>synthesisSettings(turn,snapshot)),first=requests[0];
-      const turns=requests.map(request=>request.segment);
+      // Fish cues are already injected into each turn's text. Clear the turn
+      // style so a relay cannot prepend a second, conflicting direction.
+      const turns=requests.map(request=>detectProvider(request.segment.route)==='fish_audio'?{...request.segment,text:request.text,style:''}:request.segment);
       if(requests.some(request=>request.connection?.id!==first.connection?.id))throw new Error('Different TTS connections must use separate speech requests.');
       const parameters={...first.parameters};
       if(segment.dialogue && first.connection){parameters.turns=turns.map(({speaker,voice,text,style})=>({speaker,voice,text,style}));for(const key of ['voice_direction','speech_style','instructions'])if(Object.hasOwn(parameters,key))parameters[key]='';}
@@ -3374,7 +3376,8 @@ export async function setup(ctx) {
     if(segment.unison)return JSON.stringify(['unison',1,snapshot.normalizeLoudness,unisonLevels(segment),speechMembers(segment).map(member=>cacheKey(member,snapshot))]);
     if(segment.kind)return `${segment.kind}:${foleyKey(segment[segment.kind])}`;
     const request=synthesisSettings(segment,snapshot);
-    return passageKey(request.segment,{...snapshot,defaultRoute:scope(snapshot)},request.connection,request.parameters);
+    const keyed=detectProvider(request.segment.route)==='fish_audio'?{...request.segment,text:request.text}:request.segment;
+    return passageKey(keyed,{...snapshot,defaultRoute:scope(snapshot)},request.connection,request.parameters);
   }
   function nativeSpeakerLimit(connection){
     const capability=nativeProviders.find(item=>item.id===connection?.provider)?.capabilities?.multiSpeaker;
@@ -3399,9 +3402,9 @@ export async function setup(ctx) {
     const level=mixerVolume(1,segment.speaker,mixerState.channels);
     return {...limits,...speechTextOptions(snapshot),maxSpeakers,group:JSON.stringify([parameters,level,maxSpeakers,playbackRateFor(segment.speaker)]),
       measure:turns=>{
-        const styled=turns.map(turn=>synthesisSettings(turn,snapshot).segment);
+        const styled=turns.map(turn=>{const request=synthesisSettings(turn,snapshot);return family==='fish_audio'?{...request.segment,text:request.text}:request.segment;});
         const text=styled.map((turn,index)=>family==='fish_audio'
-          ? `${maxSpeakers?`<|speaker:${index}|>`:''}${turn.style && !turn.text.startsWith('[')?`[${turn.style.replace(/^\[|\]$/g,'')}] `:''}${turn.text}`:turn.text).join('\n');
+          ? `${maxSpeakers?`<|speaker:${index}|>`:''}${turn.text}`:turn.text).join('\n');
         const styles=family==='fish_audio'?'':styled.map(turn=>turn.style || '').join('');
         const effective={...connection?.default_parameters,...request.parameters};
         const nativeStyle=family==='gemini' && connection?String(effective.speech_style ?? effective.instructions ?? 'casual, relaxed conversation, natural pacing, understated expression'):'';

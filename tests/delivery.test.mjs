@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {voiceDelivery,characterDeliveryMode,normalizeMixerColumns} from '../src/delivery.js';
+import {voiceDelivery,characterDeliveryMode,normalizeMixerColumns,fishStyleCues} from '../src/delivery.js';
 
 const segment={speaker:'Mira',text:'Welcome home.',style:'Warm. whispering'},actor={speaker:'Mira',style:'Warm',accent:'Irish'};
 const request=options=>voiceDelivery({segment,actor,family:'gemini',connection:{provider:'google_tts',model:'gemini-3.8-flash-tts'},supported:{speech_style:{type:'string'}},...options});
@@ -8,13 +8,13 @@ const request=options=>voiceDelivery({segment,actor,family:'gemini',connection:{
 test('Gemini metadata carries persistent accent and turn delivery without modifying spoken text',()=>{
  const result=request({});assert.equal(result.text,segment.text);assert.equal(result.parameters.speech_style,'Warm. whispering. Accent: Irish');
 });
-test('Fish S2 uses voice_direction including accents, without duplicating inline tags',()=>{
+test('Fish S2 injects delivery at the TTS boundary and clears relay directions to avoid duplicate cues',()=>{
  const result=request({family:'fish_audio',connection:{provider:'fish_audio',model:'s2.1-pro'},supported:{voice_direction:{models:['s2.1-pro']}}});
- assert.equal(result.text,segment.text);assert.equal(result.parameters.voice_direction,'Warm. whispering. Accent: Irish');
+ assert.equal(result.text,'[Warm][whispering][Accent: Irish] Welcome home.');assert.equal(result.parameters.voice_direction,'');
 });
 test('older Fish relays receive free-form S2 tags and their accent instructions',()=>{
  const result=request({family:'fish_audio',connection:{provider:'fish_audio',model:'s2-pro'},supported:{}});
- assert.equal(result.text,'[Warm. whispering. Accent: Irish] Welcome home.');
+ assert.equal(result.text,'[Warm][whispering][Accent: Irish] Welcome home.');
 });
 test('Fish S1 receives fixed parenthesis tags and never a fabricated accent tag',()=>{
  const result=request({family:'fish_audio',connection:{provider:'fish_audio',model:'s1'},supported:{voice_direction:{models:['s2-pro']}}});
@@ -23,7 +23,7 @@ test('Fish S1 receives fixed parenthesis tags and never a fabricated accent tag'
 });
 test('mixed Fish and Gemini voices select their own provider adapter',()=>{
  const gemini=request({}),fish=request({family:'fish_audio',connection:{provider:'openrouter_tts',model:'fish-audio/s2-pro'},supported:{instructions:{}}});
- assert.deepEqual(Object.keys(gemini.parameters),['speech_style']);assert.deepEqual(fish.parameters,{});assert.equal(fish.text,'[Warm. whispering. Accent: Irish] Welcome home.');
+ assert.deepEqual(Object.keys(gemini.parameters),['speech_style']);assert.deepEqual(fish.parameters,{});assert.equal(fish.text,'[Warm][whispering][Accent: Irish] Welcome home.');
 });
 
 test('preset Fish cues are not duplicated or contradicted, while accents remain persistent',()=>{
@@ -74,4 +74,22 @@ test('delivery mode migration and mixer columns normalize malformed saved prefer
  assert.equal(characterDeliveryMode({},true),'base');assert.equal(characterDeliveryMode({deliveryMode:'legacy'}),'auto');
  for(const value of [undefined,null,-1,0,8,2.5,'invalid'])assert.equal(normalizeMixerColumns(value),0);
  for(const value of [1,'2',7])assert.equal(normalizeMixerColumns(value),Number(value));
+});
+
+test('automatic Fish delivery translates Jev labels and retains free-form LLM directions',()=>{
+ assert.deepEqual(fishStyleCues('cheerful; sigh; cheerful'),['happy','sighing']);
+ assert.deepEqual(fishStyleCues('[slightly sad][whispers sweetly]. slightly sad. hesitant. angry'),['slightly sad','whispers sweetly','hesitant']);
+ for(const [style,expected] of [['cheerful','[happy]'],['sigh','[sighing]'],['sad; whispering','[sad][whispering]'],['slightly amused','[slightly amused]']]){
+  const fish=request({family:'fish_audio',segment:{...segment,style},actor:{},connection:{provider:'fish_audio',model:'s2.1-pro-free'},supported:{voice_direction:{}}});
+  assert.equal(fish.text,`${expected} Welcome home.`);assert.deepEqual(fish.parameters,{voice_direction:''});
+ }
+});
+
+test('Fish source cues keep position and suppress generated tones without discarding persistent accent',()=>{
+ const fish=request({family:'fish_audio',segment:{...segment,text:'This is [emphasis] important.',style:'angry; shouting'},connection:{provider:'fish_audio',model:'s2.1-pro'},supported:{voice_direction:{}}});
+ assert.equal(fish.text,'[Accent: Irish] This is [emphasis] important.');assert.equal(fish.parameters.voice_direction,'');
+ const off=request({family:'fish_audio',segment:{...segment,text:'[sad] Welcome home.'},actor:{deliveryMode:'off'},connection:{model:'s2.1-pro'},supported:{}});
+ assert.equal(off.text,'[sad] Welcome home.');
+ const narrator=request({family:'fish_audio',narrator:true,segment:{...segment,style:'angry; sobbing'},actor:{speaker:'Narrator',style:'Calm narration'},connection:{model:'s2.1-pro'},supported:{}});
+ assert.equal(narrator.text,'[Calm narration] Welcome home.');
 });

@@ -4,7 +4,7 @@
 
 # Choir
 
-[![Version](https://img.shields.io/badge/version-1.1.6--staging.48-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/lunch-test)
+[![Version](https://img.shields.io/badge/version-1.1.6--staging.49-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/lunch-test)
 [![Platform](https://img.shields.io/badge/platform-Lumiverse%20Spindle-purple.svg)](https://docs.lumiverse.chat/)
 [![Tests](https://img.shields.io/badge/tests-590%20tests-blue.svg)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -12,6 +12,8 @@
 An installable Lumiverse Spindle extension for multi-voice narration, dialogue attribution, sound effects, ambience and background music.
 
 </div>
+
+Version **1.1.6-staging.49** on **lunch-test** merges automatic Fish S2/S2.1 emotion cues from **emotion-fish-audio**. The existing LLM or Jev planner supplies the passage delivery; Choir injects separate bracket cues when preparing the TTS request, including Jev's cheerful → happy and sigh → sighing. Explicit preset cues take priority. Grouped Fish turns carry their own cues, while Gemini retains its existing instructions. No new drawer controls or model calls are added. See [Fish delivery flow](docs/fish-emotions.md).
 
 Version **1.1.6-staging.48** fixes the audit's casting and download findings. Multi-character cards keep each person's voice profile separate. Both planners use compatible owned Fish voices first in **Both** mode, with community search when needed. Fish briefs ignore negated traits and explicitly named other people, and can use scenario/greeting evidence when the profile lacks voice details. Malformed catalogue rows are skipped. Next, Previous and seeking mark the played mix incomplete; one uninterrupted cached Replay restores the full-message download without new synthesis. Pause/resume remains supported.
 
