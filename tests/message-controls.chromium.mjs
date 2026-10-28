@@ -37,6 +37,21 @@ try{
   assert.ok(switches.every((r,i)=>!i || r.left>=switches[i-1].right-1 || r.top>switches[i-1].top));if(mobile)assert.ok(switches.every(r=>r.width>=44 && r.height>=44));
   await page.getByRole('button',{name:'Collapse Choir voice mixer',exact:true}).click();await play.click();
   await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.includes('Playback finished'));await download.waitFor({state:'visible'});
+  if(variant==='bubble'){
+   const before=await page.evaluate(()=>({speech:window.calls.length,plans:window.plans}));
+   await page.evaluate(async()=>{
+    await window.cleanup();const saved=window.fixtureStore.get('chat:fixture');Object.assign(saved,{connectionMode:'several',batchSpeech:true,sectionButtons:true});saved.fixed[2].voice='';window.fixtureStore.set('chat:fixture',saved);
+    window.fixtureStore.set('settings:global',{...window.fixtureStore.get('settings:global'),batchSpeech:true,sectionButtons:true});window.cleanup=await window.mountChoir();
+   });
+   await actions.locator('summary').click();const choose=actions.getByRole('button',{name:'Plan Choir voices for this message',exact:true});await choose.waitFor({state:'visible'});
+   assert.ok(!(await page.locator('[data-et="status"]').innerText()).includes('Section controls unavailable'));
+   assert.deepEqual(await page.evaluate(()=>({speech:window.calls.length,plans:window.plans})),before,'rendering unresolved grouped controls makes no provider requests');
+   if(process.env.CHOIR_LAYOUT_SCREENSHOTS)await page.screenshot({path:path.join(process.env.CHOIR_LAYOUT_SCREENSHOTS,`choir-voice-planning-${mobile?'mobile':'desktop'}.png`)});
+   await choose.click();await page.waitForFunction(plans=>window.plans===plans+1 && document.querySelector('[data-et="status"]').textContent.startsWith('Ready:'),before.plans);
+   assert.equal(await page.evaluate(()=>window.calls.length),before.speech,'Plan message does not start speech');assert.equal(await page.evaluate(()=>window.fixtureStore.get('chat:fixture').fixed[2].voice),'m');
+   await actions.locator('[data-choir-clip]').first().waitFor({state:'attached'});assert.equal(await choose.count(),0);
+   if(await actions.locator('details').getAttribute('open')!==null)await actions.locator('summary').click();await download.waitFor({state:'visible'});
+  }
   assert.equal(await download.innerText(),'');assert.equal(await download.locator('svg').count(),1);
   const bounds=await page.locator('[data-component="SwipeControls"]').evaluate(node=>{const row=node.getBoundingClientRect();return {left:row.left,right:row.right,width:innerWidth,children:[...node.querySelectorAll(':scope > button,[data-choir-message-controls] > button:not([hidden])')].map(n=>{const r=n.getBoundingClientRect();return {center:r.top+r.height/2,width:r.width,height:r.height};})};});
   assert.ok(bounds.left>=0 && bounds.right<=bounds.width+1,JSON.stringify(bounds));assert.equal(bounds.children.length,4);assert.ok(bounds.children.every(r=>Math.abs(r.center-bounds.children[0].center)<2),JSON.stringify(bounds));if(mobile)assert.ok(bounds.children.slice(2).every(r=>r.width>=44 && r.height>=44));

@@ -3490,6 +3490,39 @@ test('Let LLM choose makes and saves a real choice despite current or reloaded a
  }
 });
 
+test('grouped controls offer explicit voice planning for an automatic Julian voice before and after reload in both TTS modes',async()=>{
+ for(const routing of ['several','one'])for(const reload of [true,false]){
+  const h=await harness();try{
+   const saved=structuredClone(h.store.get('chat:chat-a'));Object.assign(saved,{connectionMode:routing,batchSpeech:true,sectionButtons:true});
+   Object.assign(saved.fixed[2],{speaker:'Julian St. James',aliases:['Julian'],pronunciation:'',accent:''});h.store.set('chat:chat-a',saved);
+   h.state.leadSpeaker='Julian St. James';h.state.character={name:'Julian St. James'};await h.reload();await h.plan();
+   const calls=h.requests.filter(request=>request.action==='plan').length;
+   const voice=h.$('fixed').querySelectorAll('[data-choir-voice]')[2];voice.value='';voice.dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));
+   await until(()=>h.$('saveState').textContent==='Saved automatically');if(reload)await h.reload();await tick();
+   assert.ok(!h.$('status').textContent.includes('Section controls unavailable'),h.$('status').textContent);
+   const choose=h.footer.querySelector('[data-choir-plan-voices]');assert.ok(choose,'unresolved clip controls offer planning rather than failing or keeping stale clip indexes');
+   assert.equal(h.footer.querySelectorAll('[data-choir-clip]').length,0);assert.equal(h.requests.filter(request=>request.action==='plan').length,calls);assert.equal(h.synthesis.length,0);
+   choose.click();await until(()=>h.requests.filter(request=>request.action==='plan').length===calls+1 && !h.$('latest').disabled && h.$('status').textContent.startsWith('Ready:'));
+   await until(()=>h.footer.querySelector('[data-choir-clip]'));assert.equal(h.footer.querySelector('[data-choir-plan-voices]'),null);
+   assert.equal(h.$('fixed').querySelectorAll('[data-choir-voice]')[2].value,'m');assert.equal(h.synthesis.length,0,'planning voices does not start playback');
+   await h.play();assert.ok(h.synthesis.some(input=>input.voice==='m'));assert.equal(h.requests.filter(request=>request.action==='plan').length,calls+1);
+  }finally{await h.close();}
+ }
+});
+
+test('historical grouped controls awaiting a voice do not overwrite the current plan or pick a fallback after a planner failure',async()=>{
+ const h=await harness();try{
+  await toggle(h,'batchSpeech',true);await toggle(h,'sectionButtons',true);await h.plan();
+  const voice=h.$('fixed').querySelectorAll('[data-choir-voice]')[2];voice.value='';voice.dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));await until(()=>h.$('saveState').textContent==='Saved automatically');
+  const current={...h.message,id:'new-message',content:'The clock struck six.'};h.state.messages=[h.message,current];await h.plan();await tick();
+  assert.match(h.$('status').textContent,/^Ready:/);assert.equal(h.requests.filter(request=>request.action==='plan').at(-1).input.transcript,current.content);
+  const choose=h.footer.querySelector('[data-choir-plan-voices]');assert.ok(choose,'the old message keeps its own planning action');
+  const calls=h.requests.filter(request=>request.action==='plan').length;h.state.failPlanAt=calls+1;choose.click();await until(()=>h.$('status').textContent.includes('Planner quota exhausted'));
+  await tick();assert.match(h.$('status').textContent,/Planner quota exhausted/);assert.ok(!h.$('status').textContent.includes('Section controls unavailable'));
+  assert.equal(h.$('fixed').querySelectorAll('[data-choir-voice]')[2].value,'');assert.equal(h.synthesis.length,0,'a failed choice cannot fall back to the first voice');
+ }finally{await h.close();}
+});
+
 test('Jev also requests a real automatic voice choice instead of restoring the first cached catalogue voice',async()=>{
  const h=await harness();try{
   await h.plan();await h.play();const generated=h.synthesis.length;

@@ -4,14 +4,16 @@
 
 # Choir
 
-[![Version](https://img.shields.io/badge/version-1.1.6--staging.55-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/lunch-test)
+[![Version](https://img.shields.io/badge/version-1.1.6--staging.56-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/lunch-test)
 [![Platform](https://img.shields.io/badge/platform-Lumiverse%20Spindle-purple.svg)](https://docs.lumiverse.chat/)
-[![Tests](https://img.shields.io/badge/tests-609%20tests-blue.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-611%20tests-blue.svg)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 An installable Lumiverse Spindle extension for multi-voice narration, dialogue attribution, sound effects, ambience and background music.
 
 </div>
+
+Version **1.1.6-staging.56** fixes grouped message controls throwing a global error when a saved reply still needs an automatic voice choice. This could obscure the status of a different reply being planned or played. Such controls now show a message-specific **Plan message** action; opening them makes no provider calls, and explicit planning chooses missing voices without starting playback. Voice selection still requires a real planner choice and does not fall back to the first catalogue voice.
 
 Version **1.1.6-staging.55** asks the LLM to choose emotion and acting intensity together in its existing casting call. Ordinary dialogue defaults to restrained, conversational delivery; stronger acting needs support from the scene. Jev offers mild, clear and intense reactions within its existing emotion evaluation. Automatic acting uses the planned turn direction instead of stacking an expressive base over it; Base style only, explicit Fish preset cues, accents and narrator settings retain their priority. Gemini receives the degree in its delivery instructions and Fish S2 receives it in bracket cues. Replan, then Play to apply the new guidance; saved Replay keeps its original recording. TTS models can still interpret the instructions differently.
 

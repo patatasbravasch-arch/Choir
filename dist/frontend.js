@@ -7026,16 +7026,29 @@ export async function setup(ctx) {
     entry.details.hidden=!isSecEnabled;entry.list.replaceChildren();if(entry.details.hidden)return;
     entry.summary.textContent=config?.batchSpeech?'Audio clips':'Sections';
     if(!cataloguesReady){const label=document.createElement('span');label.textContent='Loading voice catalogues…';entry.list.append(label);return;}
-    let source,segments;
+    let source,segments,cachedAttribution;
     if(planSource?.chatId===targetChat && planSource.messageId===entry.messageId && sameSpeech(planSource.content,content)){source=planSource;segments=plan.segments;}
     else {
       const saved=await ctx.settings.get(await planKey(targetChat,entry.messageId)).catch(()=>null);
       if(saved && sameSpeech(saved.content,content) && await recordingMatchesTranscript(saved,content)){
-        source=saved;segments=saved.attribution?.segments;
-        if(config.batchSpeech && segments?.length)segments=restoreAttribution(saved.attribution,saved.transcript,casting(config)).segments;
+        source=saved;cachedAttribution=saved.attribution;segments=cachedAttribution?.segments;
       }
     }
     if(disposed || entry.version!==version || chatId!==targetChat || !messageSections.has(entry) || !config?.sectionButtons)return;
+    if(config.batchSpeech && segments?.length){
+      const cast=casting(config);
+      // Section metadata is read-only. An unassigned automatic voice is a
+      // normal pending choice, including on older messages; it must not throw
+      // into the status of the message currently being planned or played.
+      if(needsVoiceSelection({segments},cast)){
+        const label=document.createElement('span');label.textContent='Plan this message to choose its voices.';
+        const button=document.createElement('button');button.type='button';button.dataset.choirPlanVoices='';button.textContent='Plan message';
+        button.setAttribute('aria-label','Plan Choir voices for this message');button.title='Choose missing voices and show audio clips without starting playback.';
+        button.style.cssText='padding:4px 8px;border:1px solid #8886;border-radius:5px;background:transparent;color:inherit;font:12px system-ui;cursor:pointer';
+        button.onclick=()=>run(()=>prepare(entry.messageId,false,undefined,true));entry.list.append(label,button);return;
+      }
+      if(cachedAttribution)segments=restoreAttribution(cachedAttribution,source.transcript,cast).segments;
+    }
     if(segments?.length){
       if(config.batchSpeech)entry.summary.textContent=`Audio clips (${appendClipButtons(entry.list,segments,entry.messageId)})`;
       else appendSectionButtons(entry.list,source,segments,entry.messageId);
