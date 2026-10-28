@@ -626,7 +626,7 @@ test('backend RPC handler supports action planJev and planWithJev', async () => 
   assert.ok(res.message.result);
   const heroSeg = res.message.result.segments.find(s => s.text === '"Farewell,"');
   assert.equal(heroSeg.speaker, 'Hero');
-  assert.equal(heroSeg.style, 'Soft sigh, weary');
+  assert.equal(heroSeg.style, 'Soft sigh');
 
   // Test action alias planWithJev
   const h2 = await harness(null, corsHandler);
@@ -638,6 +638,31 @@ test('backend RPC handler supports action planJev and planWithJev', async () => 
   const res2 = await h2.result();
   assert.ok(res2.message.result);
 });
+
+for (const [emotion, expected] of [['sigh', 'Soft sigh'], ['relieved', 'Softly relieved, warm']]) {
+  test(`Jev ${emotion} preserves a relieved sigh without inventing weariness`, async () => {
+    let emotionCalls = 0;
+    const decisions = {evaluate: async input => {
+      if (input.questions.speaker_0) return {answers: {speaker_0: {choice: 'Mira'}}};
+      emotionCalls++;
+      const criteria = input.questions.emotion_0.criteria;
+      assert.match(criteria.relieved, /Tension easing/);
+      assert.match(criteria.sigh, /choose relieved when the scene describes relief/);
+      assert.equal(criteria.sigh.split('.')[0], 'Soft sigh');
+      return {answers: {emotion_0: {choice: emotion}}};
+    }};
+    const h = await harness(null, null, null, null, null, decisions);
+    h.send('planJev', {transcript: 'Mira smiled with relief. "<sigh> I am glad you came back."', config: castConfig});
+    const message = (await h.result()).message;
+    assert.equal(message.error, undefined);
+    const line = message.result.segments.find(segment => segment.speaker === 'Mira');
+    assert.equal(line.voice, 'Kore');
+    assert.equal(line.text, '"<sigh> I am glad you came back."');
+    assert.equal(line.style, expected);
+    assert.doesNotMatch(line.style, /weary|sad|tired/i);
+    assert.equal(emotionCalls, 1);
+  });
+}
 
 test('action plan attempts Jev when useJev and jevApiKey are configured, succeeding without LLM', async () => {
   let llmCalled = false;

@@ -4,14 +4,16 @@
 
 # Choir
 
-[![Version](https://img.shields.io/badge/version-1.1.6--staging.60-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/lunch-test)
+[![Version](https://img.shields.io/badge/version-1.1.6--staging.61-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/lunch-test)
 [![Platform](https://img.shields.io/badge/platform-Lumiverse%20Spindle-purple.svg)](https://docs.lumiverse.chat/)
-[![Tests](https://img.shields.io/badge/tests-617%20tests-blue.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-619%20tests-blue.svg)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 An installable Lumiverse Spindle extension for multi-voice narration, dialogue attribution, sound effects, ambience and background music.
 
 </div>
+
+Version **1.1.6-staging.61** fixes Jev delivery treating every sigh as weary. Sighs keep a neutral mood unless context supplies one, and explicit relief has its own warm delivery choice. Speaker and voice assignments remain unchanged. Replan, then Play to hear the revised direction; saved Replay keeps the recorded performance.
 
 Version **1.1.6-staging.60** preserves documented Gemini vocal events such as `<sigh>` and `<short pause>` through story filtering and request chunking. Empty Gemini 3.8 narrator styles stay empty, with saved directions still respected. Cast tools explain regional/custom voices and separate custom-voice turns, including temporary Gemini voice keys. No additional model calls are added. Replan, then Play for the revised performance; saved Replay keeps its original audio. See [Gemini speech behavior and limitations](docs/gemini-speech.md).
 

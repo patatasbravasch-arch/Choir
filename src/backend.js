@@ -93,7 +93,8 @@ const JEV_DELIVERY = {
   terrified: ['Intensely frightened', 'High intensity: explicit terror or panic'],
   interested: ['Mildly interested, conversational', 'Low intensity: curiosity or anticipation'],
   excited: ['Clearly excited, animated', 'Moderate intensity: explicit enthusiasm or excitement'],
-  sigh: ['Soft sigh, weary', 'A sigh or weary exhalation explicitly present in the scene']
+  relieved: ['Softly relieved, warm', 'Tension easing, welcome reassurance or a relieved breath explicitly supported by the scene'],
+  sigh: ['Soft sigh', 'An explicitly written sigh or exhalation whose mood is unclear. A sigh alone does not mean fatigue or sadness; choose relieved when the scene describes relief']
 };
 const JEV_DELIVERY_CHOICES = Object.fromEntries(Object.entries(JEV_DELIVERY).map(([key,[style,description]])=>[key,`${style}. ${description}`]));
 
