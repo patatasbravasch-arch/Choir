@@ -460,7 +460,7 @@ export async function setup(ctx) {
   }
   let audioDatabase,audioDatabaseHandle;
   const sessionAudio=new Map();
-  const paragraphAudioCache=new Map(),foleyCache=new Map(),volatilePolicies=new Map();
+  const paragraphAudioCache=new Map(),foleyCache=new Map(),volatilePolicies=new Map(),transcriptCache=new Map();
   let audioInvalidations=null,paragraphPlaybackScope=null;
   const audioExpired=record=>record?.expiresAt!=null && record.expiresAt<=Date.now();
   function recordingWithRetention(record,retention){
@@ -669,7 +669,6 @@ export async function setup(ctx) {
       else if(operation==='prune')invalidateVolatileAudio({kind:'prune'});
       if(!disposed && !busy)void refreshMessageDownloads();
     },()=>{});
-    if(!['get','begin','put','listChat'].includes(operation))return pending;
     let timer;
     const deadline=new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error('Device audio storage is taking too long. Audio remains available in this session; pending saves continue in the background.')),5000);});
     return Promise.race([pending,deadline]).finally(()=>clearTimeout(timer));
@@ -2472,7 +2471,7 @@ export async function setup(ctx) {
     castVisibilitySnapshot={chatId,id:latest?.id,content,plan,identity};
     // Before the first plan, leave every voice available for initial setup.
     const canGroup=Boolean(plan && planSource?.chatId===chatId && latest && content);
-    const transcript=canGroup?normalizeName(transcriptFromMessage(content,config?.ignoredTags)):'';
+    const transcript=canGroup?normalizeName(filteredTranscript(content)):'';
     const speakers=new Set(canGroup && planSource.messageId===latest.id && sameSpeech(planSource.content,content)?plan.segments.flatMap(speechMembers).filter(segment=>!segment.kind).map(segment=>normalizeName(segment.speaker)):[]);
     const buckets=new Map([[$('fixed'),[]],[$('npcs'),[]],[otherRows,[]]]);
     actors.forEach((actor,index)=>{
@@ -2753,7 +2752,7 @@ export async function setup(ctx) {
     const version=++loadVersion;
     cataloguesReady=false;
     closeDefaultEditor?.();
-    cancelAutoReplies();stop(false);clearPlan();clearTtsRequestLog();
+    cancelAutoReplies();stop(false);clearPlan();clearTtsRequestLog();transcriptCache.clear();
     try{await flushSettings();}catch(error){status(`Previous chat settings could not be saved: ${error.message}`,true);}
     if(disposed || version!==loadVersion)return;
     chatId=id;
@@ -2777,7 +2776,7 @@ export async function setup(ctx) {
     if(!saved && !legacyCast)config.fixed[0].voice='';
     if(saved && !saved.connectionMode)config.connectionMode='several';
     if(saved?.jevApiKey){await persistConfig(id,config);if(disposed || version!==loadVersion)return;}
-    await recordingStore('prune').catch(()=>{});
+    void recordingStore('prune').catch(()=>{});
     if(disposed || version!==loadVersion)return;
     if(!saved && !legacyCast && capturedDefaults)config=withDefaultSetup(config,capturedDefaults);
     const repairCast=!config.fixed.some(actor=>normalizeName(actor.speaker)==='narrator');
@@ -3051,7 +3050,20 @@ export async function setup(ctx) {
     }]);
   }
   // Edits that only add images, trackers or other non-spoken markup keep a plan and its audio valid.
-  const spokenText=content=>transcriptFromMessage(content,config?.ignoredTags).replace(/\s+/g,' ').trim();
+  // transcriptFromMessage runs a full HTML/markup filter, and the same message text is compared on
+  // several hot paths (play, replay, section controls). Memoize per content + ignored tags, bounded
+  // so old chats' message text is not retained indefinitely.
+  function filteredTranscript(content,ignoredTags=config?.ignoredTags){
+    const source=String(content ?? '');
+    const key=`${source}\u0000${String(ignoredTags ?? '')}`;
+    const hit=transcriptCache.get(key);
+    if(hit!==undefined)return hit;
+    const value=transcriptFromMessage(source,ignoredTags);
+    transcriptCache.set(key,value);
+    if(transcriptCache.size>64)transcriptCache.delete(transcriptCache.keys().next().value);
+    return value;
+  }
+  const spokenText=content=>filteredTranscript(content).replace(/\s+/g,' ').trim();
   const sameSpeech=(a,b)=>a===b || (a!=null && b!=null && spokenText(a)===spokenText(b));
   function mergedCardRecording(recording){
     const transcript=recording.transcript || '';
@@ -3086,7 +3098,7 @@ export async function setup(ctx) {
     return withoutLines(transcript,skip);
   }
   async function recordingMatchesTranscript(recording,content) {
-    let transcript=await storyTranscript(transcriptFromMessage(content,config?.ignoredTags));
+    let transcript=await storyTranscript(filteredTranscript(content));
     if(/\{\{\s*user\s*\}\}/i.test(transcript))transcript=replacePersonaMacro(transcript,await personaName());
     const saved=recording.transcript ?? recording.segments?.map(segment=>segment.text).join(' ');
     const canonical=text=>String(text || '').replace(/\s+/g,' ').trim();
@@ -3098,7 +3110,7 @@ export async function setup(ctx) {
     const token=revision, targetChat=chatId;
     const content=contentOverride ?? ctx.messages.getContent(messageId);
     if(content==null)throw new Error('Message is no longer available.');
-    let transcript=transcriptFromMessage(content,config?.ignoredTags);
+    let transcript=filteredTranscript(content);
     if(!transcript)throw new Error('This message contains no speakable text.');
     let snapshot=structuredClone(casting(config)),context='';
     const ctrl=new AbortController();controller=ctrl;
@@ -4051,7 +4063,7 @@ export async function setup(ctx) {
         if(!valid())return;
         const canonical=text=>String(text || '').replace(/\s+/g,' ').trim();
         const recordedText=(recording.segments || []).flatMap(segment=>segment.turns || [segment]).filter(segment=>!segment.kind).map(segment=>segment.text).join(' ');
-        if(!outdatedSfxRecording(recording) && canonical(recordedText)===canonical(recording.transcript || transcriptFromMessage(content,config?.ignoredTags)) && !recordingSpeechMissing(recording,capture())){await replayRecording(messageId);return;}
+        if(!outdatedSfxRecording(recording) && canonical(recordedText)===canonical(recording.transcript || filteredTranscript(content)) && !recordingSpeechMissing(recording,capture())){await replayRecording(messageId);return;}
       }
       if(valid())await prepare(messageId,true);
     } finally {if(messageOperation===operation)messageOperation=null;}
@@ -4494,7 +4506,7 @@ export async function setup(ctx) {
         const raw=completed?.swipes?.[completed.swipe_id] ?? completed?.content;
         const eventMatches=typeof reply.content!=='string' || raw===reply.content ||
           reply.generationType==='continue' && typeof raw==='string' && raw.endsWith(reply.content) ||
-          typeof raw==='string' && transcriptFromMessage(raw,config?.ignoredTags)===transcriptFromMessage(reply.content,config?.ignoredTags);
+          typeof raw==='string' && filteredTranscript(raw)===filteredTranscript(reply.content);
         const swipeMatches=reply.swipeId==null || completed?.swipe_id===reply.swipeId;
         if(completed && !completed.is_user && !completed.extra?.is_system && typeof completed.content==='string' && completed.content.trim() && eventMatches && swipeMatches){
           reply.content=completed.content;reply.needsCanonical=false;reply.canonicalChecked=true;

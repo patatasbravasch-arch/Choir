@@ -1,5 +1,7 @@
 # Automatic Fish delivery
 
+Version **1.1.6-staging.59** keeps restrained degrees and negative constraints intact: for example, `barely audible whisper` and `scared but not panicked` remain complete bracket directions. Negated instructions are not converted into positive markers, and saved narrator base directions use the same rules. This adds no planner calls and does not change the selected voice.
+
 Available on **lunch-test** in version **1.1.6-staging.49**, merged from **emotion-fish-audio**. This feature targets S2/S2.1 and adds no drawer controls.
 
 The existing planner chooses each passage's speaker and delivery. The Standard LLM writes a short free-form style including emotion and acting intensity in its casting response; Jev chooses emotion and intensity together in its existing emotion classification. Ordinary dialogue defaults to restrained, conversational delivery. Stronger reactions require support from the scene. Neither needs an additional model call for Fish.

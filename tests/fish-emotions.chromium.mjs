@@ -47,7 +47,13 @@ try{
   await play();assert.equal(await page.evaluate(()=>window.calls.length),3,'unchanged playback reuses the effective emotion request');
   await page.evaluate(()=>{window.fixtureStyle='Clearly sorrowful; softly spoken';});await plan();await play();
   calls=await page.evaluate(()=>window.calls);assert.equal(calls.length,4,'a newly planned emotion regenerates only that Fish passage');fish=calls.at(-1);
-  assert.equal(fish.voice,'m');assert.match(fish.text,/^\[Clearly sorrowful\]\[softly spoken\] /);
+  assert.equal(fish.voice,'m');assert.match(fish.text,/^\[Clearly sad\]\[softly spoken\] /);
+  for(const style of ['barely amused','barely audible whisper','scared but not panicked']){
+   const before=await page.evaluate(()=>window.calls.length);
+   await page.evaluate(style=>{window.fixtureStyle=style;},style);await plan();await play();
+   calls=await page.evaluate(()=>window.calls);assert.equal(calls.length,before+1,'only the changed Fish passage needs new synthesis');fish=calls.at(-1);
+   assert.equal(fish.voice,'m');assert.equal(fish.text,`[${style}] "Welcome."`);
+  }
   await page.evaluate(()=>{window.calls=[];window.fixtureStyle='angry; shouting';window.fixtureMessage.content='The hall fell silent. "This is [whispering] important." A new story begins.';});await plan();await play();
   calls=await page.evaluate(()=>window.calls);fish=calls.find(call=>call.voice==='m');assert.ok(fish);assert.equal((fish.text.match(/\[whispering\]/g) || []).length,1);
   assert.ok(!JSON.stringify(fish).includes('shouting') && !JSON.stringify(fish).includes('angry'),'preset cue suppresses generated acting even inside the line');

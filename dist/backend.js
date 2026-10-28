@@ -1768,20 +1768,67 @@ function characterDeliveryMode(actor, narrator = false) {
 }
 
 const deliveryText = value => String(value || '').replace(/[\[\]<>]/g, ' ').replace(/\s+/g, ' ').trim();
-const FISH_STYLE_ALIASES={cheerful:'happy',joyful:'happy',sigh:'sighing',gasp:'gasping',whisper:'whispering',shout:'shouting',laugh:'laughing',chuckle:'chuckling'};
-// S2 accepts both documented markers and free-form directions. Normalize the
-// existing planner styles at the TTS boundary, without another model request.
+// Canonical provider markers for emotions the planner can emit. Each entry is a
+// clear synonym of a documented Fish S2/Gemini marker. Distinct emotions (amused,
+// delighted) and degree-modified free-form cues are deliberately absent, so their
+// intent and intensity survive — "slightly amused" must never become "happy".
+const DELIVERY_SYNONYMS = [
+  [/\b(?:whisper|hush|murmur)\b/i, 'whispering'],
+  [/\b(?:sigh)\b/i, 'sighing'],
+  [/\b(?:gasp)\b/i, 'gasping'],
+  [/\b(?:pant)\b/i, 'panting'],
+  [/\b(?:shout|yell)\b/i, 'shouting'],
+  [/\b(?:scream)\b/i, 'screaming'],
+  [/\b(?:laugh|giggle)\b/i, 'laughing'],
+  [/\b(?:chuckle)\b/i, 'chuckling'],
+  [/\b(?:cry)\b/i, 'crying'],
+  [/\b(?:sob|weep)\b/i, 'sobbing'],
+  [/\b(?:cheerful|joyful)\b/i, 'happy'],
+  [/\b(?:afraid|fearful)\b/i, 'scared'],
+  [/\b(?:sorrowful|sorrow|melancholy|mournful)\b/i, 'sad'],
+  [/\b(?:anxious|uneasy)\b/i, 'nervous'],
+  [/\b(?:irritated|annoyed|exasperated)\b/i, 'frustrated'],
+  [/\b(?:ironic|sardonic)\b/i, 'sarcastic'],
+  [/\b(?:teasing|mischievous)\b/i, 'playful'],
+];
+const NEGATION = /\b(?:no|not|never|without|don'?t|doesn'?t|didn'?t|won'?t|can'?t|cannot|neither|nor|hardly|barely)\b/i;
+function canonicalDeliveryCue(text) {
+  const token = deliveryText(text);
+  if (!token) return '';
+  const key = token.toLowerCase();
+  for (const [pattern, marker] of DELIVERY_SYNONYMS) {
+    const match = pattern.exec(key);
+    if (!match) continue;
+    // A negated emotion means the opposite; keep the instruction verbatim.
+    if (NEGATION.test(key.slice(0, match.index))) return token;
+    // Replace only the matched word, preserving surrounding qualifiers and degree.
+    return token.replace(pattern, marker);
+  }
+  return token;
+}
+// S2 accepts both documented markers and free-form directions. Normalize clear
+// synonyms at the TTS boundary and keep degree-modified cues verbatim, without
+// another model request.
 function fishStyleCues(value) {
   const cues=[];
   for(const match of String(value || '').matchAll(/\[([^\[\]\r\n]+)\]|\(([^()\r\n]+)\)|([^()[\]]+)/gu)){
     const parts=match[1] || match[2] ? [match[1] || match[2]] : match[3].split(/[.,;]+/u);
     for(const part of parts){
-      const text=deliveryText(part),key=text.toLowerCase();
-      const cue=Object.hasOwn(FISH_STYLE_ALIASES,key)?FISH_STYLE_ALIASES[key]:text;
+      const cue=canonicalDeliveryCue(part);
+      // S2 accepts free-form directions, including degree and negative constraints.
+      // Keep "barely amused" and "scared but not panicked" intact; filtering by
+      // negation words would silently discard their positive delivery guidance.
       if(cue && !cues.some(item=>item.toLowerCase()===cue.toLowerCase()))cues.push(cue);
     }
   }
   return cues.slice(0,3);
+}
+// Gemini's speech_style/instructions stay free-form but concise: normalize clear
+// synonyms per token while preserving the original punctuation between tokens.
+function conciseDeliveryStyle(value) {
+  return String(value || '').split(/(\s*[.,;]+\s*)/u)
+    .map((part, index) => index % 2 ? part : canonicalDeliveryCue(part))
+    .join('').replace(/\s+/g, ' ').trim();
 }
 const S1_CUES = new Set(['happy','sad','angry','excited','calm','nervous','confident','surprised','satisfied','delighted','scared','worried','upset','frustrated','depressed','empathetic','embarrassed','disgusted','moved','proud','relaxed','grateful','curious','sarcastic','disdainful','unhappy','anxious','hysterical','indifferent','uncertain','doubtful','confused','disappointed','regretful','guilty','ashamed','jealous','envious','hopeful','optimistic','pessimistic','nostalgic','lonely','bored','contemptuous','sympathetic','compassionate','determined','resigned','in a hurry tone','shouting','screaming','whispering','soft tone','laughing','chuckling','sobbing','crying loudly','sighing','groaning','panting','gasping','yawning','snoring','audience laughing','background laughter','crowd laughing','break','long-break']);
 
@@ -1803,7 +1850,7 @@ function voiceDelivery({segment, actor, narrator = false, family, connection = {
   // acting on it; persistent accent and pronunciation still travel separately.
   const rawActing = useStyle && mode !== 'off' && !inline ? mode === 'base' ? base || (narrator ? 'Steady, neutral narration' : '') : turn || base : '';
   const cues=fishS2?fishStyleCues(rawActing):[];
-  const acting=fishS2?cues.join('. '):deliveryText(rawActing);
+  const acting=fishS2?cues.join('. '):family==='gemini'?conciseDeliveryStyle(rawActing):deliveryText(rawActing);
   const parameters = {};
   const supports = key => supported[key] && (!supported[key].models || supported[key].models.includes(connection.model));
   if (actor?.accent && supports('accent')) {
@@ -2509,7 +2556,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
   (async () => {
     const input = message.input || {};
     if (message.action === 'ping') {
-      send({result:{version:"1.1.6-staging.58",ready:true,decisionsAvailable:typeof spindle.decisions?.evaluate==='function'}});return;
+      send({result:{version:"1.1.6-staging.59",ready:true,decisionsAvailable:typeof spindle.decisions?.evaluate==='function'}});return;
     }
     if(message.action==='cardCast'){
       const card=input.card;

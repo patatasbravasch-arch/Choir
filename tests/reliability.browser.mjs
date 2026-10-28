@@ -3311,7 +3311,9 @@ test('drawer Stop shares the mixer transport; legacy solo and passage selections
     for(const name of ['play','pause','next','previous','playSelected','resumePosition','seekHost'])assert.equal(h.root.querySelector('[data-et="'+name+'"]'),null);
     assert.equal(h.root.querySelector('[data-et="stop"]').disabled,true);
     assert.equal(h.root.querySelector('[aria-label^="Select passage"]'),null);assert.equal(h.root.querySelector('[aria-label^="Exclude passage"]'),null);
-    assert.equal(h.root.querySelector('[data-et="planDetails"]').hidden,true);assert.equal(h.footer.querySelector('[aria-label="Next spoken block"]'),null);assert.equal(h.footer.querySelector('input[type="range"]'),null);
+    // Speech plan is intentionally reachable from Playback; only the legacy
+    // transport and passage selection controls remain removed.
+    assert.equal(h.root.querySelector('[data-et="planDetails"]').hidden,false);assert.equal(h.footer.querySelector('[aria-label="Next spoken block"]'),null);assert.equal(h.footer.querySelector('input[type="range"]'),null);
     assert.equal(document.querySelectorAll('[aria-label="Next spoken block"]').length,1);assert.equal(document.querySelector('[aria-label="Mira solo"]'),null);
     h.state.blockAudio=true;h.$('play').click();await until(()=>h.audios.at(-1)?.paused===false);assert.equal(h.audios.at(-1).volume,1);
     document.querySelector('[aria-label="Narrator silent"]').click();assert.equal(h.audios.at(-1).volume,0);h.$('stop').click();await tick();await h.reload();

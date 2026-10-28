@@ -49,3 +49,19 @@ for(const native of [true,false])test(`${native?'Lumiverse Decision':'direct Jev
   }
  }finally{globalThis.spindle=original;}
 });
+
+test('Fish S2 and Gemini keep distinct emotions distinct and ordinary dialogue restrained',()=>{
+  for(const [style,fishPrefix,geminiStyle] of [
+    ['slightly amused, softly spoken','[slightly amused][softly spoken]','slightly amused, softly spoken'],
+    ['clearly delighted, warm','[clearly delighted][warm]','clearly delighted, warm'],
+    ['Natural, conversational delivery','[Natural][conversational delivery]','Natural, conversational delivery'],
+  ]){
+    const segment={speaker:'Mira',text:'Welcome home.',style};
+    const fish=voiceDelivery({segment,actor:{speaker:'Mira'},family:'fish_audio',connection:{model:'s2.1-pro'},supported:{}});
+    const gemini=voiceDelivery({segment,actor:{speaker:'Mira'},family:'gemini',connection:{model:'gemini-3.8-flash-tts'},supported:{speech_style:{}}});
+    assert.equal(fish.text,`${fishPrefix} Welcome home.`);
+    assert.equal(gemini.parameters.speech_style,geminiStyle);
+    assert.ok(!fish.text.includes('happy'));
+    assert.ok(!/angry|furious|terrified|ecstatic/i.test(gemini.parameters.speech_style));
+  }
+});

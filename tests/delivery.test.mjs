@@ -121,3 +121,49 @@ test('automatic acting removes the validated base prefix once while base-only an
   assert.equal(request({family:'fish_audio',actor,segment,connection:{model:'s2.1-pro'},supported:{}}).text,'[Slightly amused] Welcome home.');
  }
 });
+
+test('Fish S2 normalizes clear synonyms in place without flattening qualifiers, degree or negation',()=>{
+  assert.deepEqual(fishStyleCues('Quiet whisper, restrained'),['Quiet whispering','restrained']);
+  assert.deepEqual(fishStyleCues('Clearly afraid, tense'),['Clearly scared','tense']);
+  assert.deepEqual(fishStyleCues('Soft sigh, weary'),['Soft sighing','weary']);
+  assert.deepEqual(fishStyleCues('Clearly sorrowful'),['Clearly sad']);
+  assert.deepEqual(fishStyleCues('Slightly irritated, conversational'),['Slightly frustrated','conversational']);
+  assert.deepEqual(fishStyleCues('Subtly dry and ironic'),['Subtly dry and sarcastic']);
+  assert.deepEqual(fishStyleCues('Lightly teasing, conversational'),['Lightly playful','conversational']);
+  assert.deepEqual(fishStyleCues('slightly amused, conversational'),['slightly amused','conversational']);
+  assert.deepEqual(fishStyleCues('Clearly delighted, softly spoken'),['Clearly delighted','softly spoken']);
+  assert.deepEqual(fishStyleCues('Intensely angry'),['Intensely angry']);
+  assert.deepEqual(fishStyleCues('Do not shout'),['Do not shout']);
+  assert.deepEqual(fishStyleCues('not cheerful, conversational'),['not cheerful','conversational']);
+});
+
+test('Fish S2 preserves restrained degrees and negative constraints at the request boundary',()=>{
+  for(const style of ['barely amused','hardly amused','barely audible whisper','scared but not panicked','calm narration without shouting','Do not shout']){
+    assert.deepEqual(fishStyleCues(style),[style]);
+    for(const provider of ['fish_audio','openrouter_tts']){
+      const connection={provider,model:provider==='fish_audio'?'s2.1-pro':'fish-audio/s2-pro'};
+      for(const narrator of [false,true]){
+        const actor=narrator?{speaker:'Narrator',style,deliveryMode:'base'}:{};
+        const result=request({family:'fish_audio',connection,supported:{voice_direction:{}},narrator,actor,segment:{...segment,style}});
+        assert.equal(result.text,`[${style}] Welcome home.`);
+        assert.equal(result.style,style);
+        assert.deepEqual(result.parameters,provider==='fish_audio'?{voice_direction:''}:{});
+      }
+    }
+    assert.equal(request({actor:{},segment:{...segment,style}}).parameters.speech_style,style);
+  }
+});
+
+test('grouped Fish S2 and Gemini turns keep each speaker voice and per-turn delivery',()=>{
+  const turns=[
+    {speaker:'Narrator',voice:'Charon',text:'Welcome home.',style:'Calm narration'},
+    {speaker:'Mira',voice:'Puck',text:'Please stay.',style:'Quiet whisper, restrained'},
+  ];
+  const fish=turns.map(turn=>({...turn,...voiceDelivery({segment:turn,actor:{speaker:turn.speaker,style:''},family:'fish_audio',connection:{provider:'fish_audio',model:'s2.1-pro'},supported:{}})}));
+  assert.equal(fish[0].voice,'Charon');assert.equal(fish[1].voice,'Puck');
+  assert.equal(fish[0].text,'[Calm narration] Welcome home.');
+  assert.equal(fish[1].text,'[Quiet whispering][restrained] Please stay.');
+  const gemini=turns.map(turn=>({...turn,...voiceDelivery({segment:turn,actor:{speaker:turn.speaker,style:''},family:'gemini',connection:{provider:'google_tts',model:'gemini-3.8-flash-tts'},supported:{speech_style:{}}})}));
+  assert.equal(gemini[0].parameters.speech_style,'Calm narration');
+  assert.equal(gemini[1].parameters.speech_style,'Quiet whispering, restrained');
+});
