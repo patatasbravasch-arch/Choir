@@ -491,6 +491,13 @@ function speechMarkupRanges(text,ignoredTags) {
   return ranges;
 }
 
+// Gemini's documented vocal events are transcript content, not HTML. Keep only
+// bare allowlisted tags; attributes, closing tags and ordinary markup still go.
+const VOCAL_EVENTS = new Set(['argh','breath','heavy breath','exhales','cackle','cheer','chuckle','chuckles','cough','cry','gasp','giggle','groan','growl','grunt','grr','hiss','laugh','laughter','moan','pant','pff','phew','scream','shout','shriek','sigh','sighs','sneeze','snicker','snort','sob','throat-clearing','tsk','whimper','whispers','whispering','yawn','short pause','long pause']);
+function vocalEvent(tag) {
+  const match=/^<([a-z]+(?:[ -][a-z]+)*)>$/i.exec(tag);
+  return match && VOCAL_EVENTS.has(match[1].toLowerCase()) ? match[1].toLowerCase() : '';
+}
 function transcriptFromMessage(value, ignoredTags=[]) {
   // Remove complete metadata panels before unwrapping ordinary story markup.
   let text=String(value || '').replace(/\r\n/g,'\n').replace(/\r/g,'\n').replace(/<!--[\s\S]*?(?:-->|$)/g,' ');
@@ -513,7 +520,7 @@ function transcriptFromMessage(value, ignoredTags=[]) {
     .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, '')
     .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
     .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
-    .replace(/<[^>]+>/g, '')
+    .replace(/<[^>]+>/g, tag => vocalEvent(tag) ? tag : '')
     .replace(/^[ \t]*[─│┌┐└┘├┤┬┴┼═║╔╗╚╝╠╣╦╩╬+|-]{3,}[ \t]*$/gm, '')
     .replace(/^[ \t]*[-=_~*]{3,}[ \t]*$/gm, '')
     .replace(/^[ \t]*\|.*\|[ \t]*$/gm, '')
@@ -1083,6 +1090,11 @@ function splitSegment(segment, maxChars = 350, maxBytes = Infinity, {transform=t
       if(!fits(text.slice(0,end)))throw new Error('A name pronunciation exceeds the speech request limit. Shorten its Say name as spelling or raise Max characters per request.');
       break;
     }
+    // Multi-word event tags must reach TTS intact, even at a chunk boundary.
+    for(const match of text.matchAll(/<[^>]+>/g))if(vocalEvent(match[0]) && match.index<end && match.index+match[0].length>end){
+      end=match.index || match[0].length;
+      break;
+    }
     // Do not split a UTF-16 surrogate pair.
     if (/[\uD800-\uDBFF]/.test(text[end-1]) && /[\uDC00-\uDFFF]/.test(text[end])) end--;
     out.push({...segment, text:text.slice(0,end).trim()});
@@ -1617,7 +1629,7 @@ const fold = ch => {const lower = ch.toLowerCase(); return lower.length === ch.l
 
 function readableText(text) {
   let out = '';
-  for (const ch of String(text || '')) if (READABLE.test(ch)) out += fold(ch);
+  for (const ch of String(text || '').replace(/<[^>]+>/g,tag=>vocalEvent(tag)?'':tag)) if (READABLE.test(ch)) out += fold(ch);
   return out;
 }
 
@@ -1834,6 +1846,7 @@ const S1_CUES = new Set(['happy','sad','angry','excited','calm','nervous','confi
 
 function voiceDelivery({segment, actor, narrator = false, family, connection = {}, supported = {}, styleParam, useStyle = true}) {
   const mode = characterDeliveryMode(actor, narrator);
+  const modernGemini = family==='gemini' && /(?:^|\/)gemini-3\.8-flash(?:-lite)?-tts(?:$|[-:])/i.test(connection.model || '');
   const s1=family==='fish_audio' && /(?:^|\/)s1$/.test(connection.model || '');
   const fishS2=family==='fish_audio' && !s1;
   const baseSource=String(actor?.style || ''),combined=String(segment.style || '');
@@ -1848,7 +1861,7 @@ function voiceDelivery({segment, actor, narrator = false, family, connection = {
   const inline=family==='fish_audio' && (s1?[...String(segment.text).matchAll(/\(([^()]+)\)/gu)].some(match=>S1_CUES.has(match[1].trim().toLowerCase())):/\[[^\]\r\n]+\]/u.test(segment.text));
   // Explicit inline delivery belongs to the preset. Do not stack generated
   // acting on it; persistent accent and pronunciation still travel separately.
-  const rawActing = useStyle && mode !== 'off' && !inline ? mode === 'base' ? base || (narrator ? 'Steady, neutral narration' : '') : turn || base : '';
+  const rawActing = useStyle && mode !== 'off' && !inline ? mode === 'base' ? base || (narrator && !modernGemini ? 'Steady, neutral narration' : '') : turn || base : '';
   const cues=fishS2?fishStyleCues(rawActing):[];
   const acting=fishS2?cues.join('. '):family==='gemini'?conciseDeliveryStyle(rawActing):deliveryText(rawActing);
   const parameters = {};
@@ -1861,7 +1874,6 @@ function voiceDelivery({segment, actor, narrator = false, family, connection = {
   const instructions = [acting, actor?.pronunciation, actor?.accent && !supports('accent') ? `Accent: ${actor.accent}` : ''].filter(Boolean).join('. ');
   const openRouter = connection.provider === 'openrouter_tts';
   let parameter;
-  const modernGemini = /gemini-3\.8-flash(?:-lite)?-tts/.test(connection.model || '');
   if (family === 'gemini') parameter = modernGemini || !openRouter && supports('speech_style') ? 'speech_style' : !openRouter && supports('instructions') ? 'instructions' : undefined;
   else if (family === 'fish_audio') parameter = !openRouter && supports('voice_direction') ? 'voice_direction' : undefined;
   else parameter = styleParam && supports(styleParam) ? styleParam : ['instructions', 'instruct', 'prompt'].find(supports);
@@ -1869,6 +1881,12 @@ function voiceDelivery({segment, actor, narrator = false, family, connection = {
   // empty Gemini instructions override the relay's conversational default.
   if (parameter && (instructions || ['gemini','fish_audio'].includes(family))) parameters[parameter] = fishS2?'':instructions;
   let text = segment.text;
+  // Sustained acting stays in Gemini metadata. Preserve explicit point events
+  // there, translate them for Fish S2, and omit unsupported cues elsewhere.
+  if (!modernGemini) text = text.replace(/<[^>]+>/g, tag => {
+    const event=vocalEvent(tag);
+    return event ? fishS2 ? `[${event==='short pause'?'break':event==='long pause'?'long-break':event}]` : '' : tag;
+  });
   if (family === 'fish_audio' && (!parameter || !s1) && instructions) {
     const prefix = s1 ? [...new Set(acting.split(/[.,;]+/).map(cue=>cue.trim().replace(/^\(([^()]+)\)$/,'$1').toLowerCase()).filter(cue=>S1_CUES.has(cue)))].slice(0,3).map(cue=>`(${cue})`).join('') : [...cues,...[actor?.pronunciation,actor?.accent && !supports('accent')?`Accent: ${actor.accent}`:''].filter(Boolean).map(deliveryText)].map(cue=>`[${cue}]`).join('');
     text = prefix ? `${prefix} ${text}` : text;
@@ -2556,7 +2574,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
   (async () => {
     const input = message.input || {};
     if (message.action === 'ping') {
-      send({result:{version:"1.1.6-staging.59",ready:true,decisionsAvailable:typeof spindle.decisions?.evaluate==='function'}});return;
+      send({result:{version:"1.1.6-staging.60",ready:true,decisionsAvailable:typeof spindle.decisions?.evaluate==='function'}});return;
     }
     if(message.action==='cardCast'){
       const card=input.card;

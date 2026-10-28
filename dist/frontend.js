@@ -491,6 +491,13 @@ function speechMarkupRanges(text,ignoredTags) {
   return ranges;
 }
 
+// Gemini's documented vocal events are transcript content, not HTML. Keep only
+// bare allowlisted tags; attributes, closing tags and ordinary markup still go.
+const VOCAL_EVENTS = new Set(['argh','breath','heavy breath','exhales','cackle','cheer','chuckle','chuckles','cough','cry','gasp','giggle','groan','growl','grunt','grr','hiss','laugh','laughter','moan','pant','pff','phew','scream','shout','shriek','sigh','sighs','sneeze','snicker','snort','sob','throat-clearing','tsk','whimper','whispers','whispering','yawn','short pause','long pause']);
+function vocalEvent(tag) {
+  const match=/^<([a-z]+(?:[ -][a-z]+)*)>$/i.exec(tag);
+  return match && VOCAL_EVENTS.has(match[1].toLowerCase()) ? match[1].toLowerCase() : '';
+}
 function transcriptFromMessage(value, ignoredTags=[]) {
   // Remove complete metadata panels before unwrapping ordinary story markup.
   let text=String(value || '').replace(/\r\n/g,'\n').replace(/\r/g,'\n').replace(/<!--[\s\S]*?(?:-->|$)/g,' ');
@@ -513,7 +520,7 @@ function transcriptFromMessage(value, ignoredTags=[]) {
     .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, '')
     .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
     .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
-    .replace(/<[^>]+>/g, '')
+    .replace(/<[^>]+>/g, tag => vocalEvent(tag) ? tag : '')
     .replace(/^[ \t]*[─│┌┐└┘├┤┬┴┼═║╔╗╚╝╠╣╦╩╬+|-]{3,}[ \t]*$/gm, '')
     .replace(/^[ \t]*[-=_~*]{3,}[ \t]*$/gm, '')
     .replace(/^[ \t]*\|.*\|[ \t]*$/gm, '')
@@ -1083,6 +1090,11 @@ function splitSegment(segment, maxChars = 350, maxBytes = Infinity, {transform=t
       if(!fits(text.slice(0,end)))throw new Error('A name pronunciation exceeds the speech request limit. Shorten its Say name as spelling or raise Max characters per request.');
       break;
     }
+    // Multi-word event tags must reach TTS intact, even at a chunk boundary.
+    for(const match of text.matchAll(/<[^>]+>/g))if(vocalEvent(match[0]) && match.index<end && match.index+match[0].length>end){
+      end=match.index || match[0].length;
+      break;
+    }
     // Do not split a UTF-16 surrogate pair.
     if (/[\uD800-\uDBFF]/.test(text[end-1]) && /[\uDC00-\uDFFF]/.test(text[end])) end--;
     out.push({...segment, text:text.slice(0,end).trim()});
@@ -1617,7 +1629,7 @@ const fold = ch => {const lower = ch.toLowerCase(); return lower.length === ch.l
 
 function readableText(text) {
   let out = '';
-  for (const ch of String(text || '')) if (READABLE.test(ch)) out += fold(ch);
+  for (const ch of String(text || '').replace(/<[^>]+>/g,tag=>vocalEvent(tag)?'':tag)) if (READABLE.test(ch)) out += fold(ch);
   return out;
 }
 
@@ -2892,7 +2904,7 @@ function createDrawerNavigation(root) {
   const filters=field('ignoredTags').closest('details');filters.querySelector('summary')?.remove();destinations.filters.append(...filters.childNodes);filters.remove();
   const performance=field('concurrency').closest('section');for(const name of ['concurrency','chunk','prefetch','apiBase'])moveLabel(name,destinations.performance);destinations.performance.append(field('batchSpeech').closest('.et-row'));for(const hint of [...performance.querySelectorAll(':scope>p')])destinations.performance.append(hint);
   for(const name of ['sectionButtons','abyssalMixerTheme','showAutoPlanAction'])moveLabel(name,destinations.interface);
-  move('extraVoicesWrap',destinations.castTools);const castTools=field('castJson').closest('details');castTools.querySelector('summary')?.remove();destinations.castTools.append(...castTools.childNodes);castTools.remove();
+  move('extraVoicesWrap',destinations.castTools);move('geminiVoiceHint',destinations.castTools);const castTools=field('castJson').closest('details');castTools.querySelector('summary')?.remove();destinations.castTools.append(...castTools.childNodes);castTools.remove();
   destinations.castTools.querySelector('.et-pagebar').after(defaults,field('defaultStatus'));
   // Plan and JSON editors are separate destinations too.
   const plan=move('planDetails',playHome);plan.hidden=false;
@@ -3019,6 +3031,7 @@ const S1_CUES = new Set(['happy','sad','angry','excited','calm','nervous','confi
 
 function voiceDelivery({segment, actor, narrator = false, family, connection = {}, supported = {}, styleParam, useStyle = true}) {
   const mode = characterDeliveryMode(actor, narrator);
+  const modernGemini = family==='gemini' && /(?:^|\/)gemini-3\.8-flash(?:-lite)?-tts(?:$|[-:])/i.test(connection.model || '');
   const s1=family==='fish_audio' && /(?:^|\/)s1$/.test(connection.model || '');
   const fishS2=family==='fish_audio' && !s1;
   const baseSource=String(actor?.style || ''),combined=String(segment.style || '');
@@ -3033,7 +3046,7 @@ function voiceDelivery({segment, actor, narrator = false, family, connection = {
   const inline=family==='fish_audio' && (s1?[...String(segment.text).matchAll(/\(([^()]+)\)/gu)].some(match=>S1_CUES.has(match[1].trim().toLowerCase())):/\[[^\]\r\n]+\]/u.test(segment.text));
   // Explicit inline delivery belongs to the preset. Do not stack generated
   // acting on it; persistent accent and pronunciation still travel separately.
-  const rawActing = useStyle && mode !== 'off' && !inline ? mode === 'base' ? base || (narrator ? 'Steady, neutral narration' : '') : turn || base : '';
+  const rawActing = useStyle && mode !== 'off' && !inline ? mode === 'base' ? base || (narrator && !modernGemini ? 'Steady, neutral narration' : '') : turn || base : '';
   const cues=fishS2?fishStyleCues(rawActing):[];
   const acting=fishS2?cues.join('. '):family==='gemini'?conciseDeliveryStyle(rawActing):deliveryText(rawActing);
   const parameters = {};
@@ -3046,7 +3059,6 @@ function voiceDelivery({segment, actor, narrator = false, family, connection = {
   const instructions = [acting, actor?.pronunciation, actor?.accent && !supports('accent') ? `Accent: ${actor.accent}` : ''].filter(Boolean).join('. ');
   const openRouter = connection.provider === 'openrouter_tts';
   let parameter;
-  const modernGemini = /gemini-3\.8-flash(?:-lite)?-tts/.test(connection.model || '');
   if (family === 'gemini') parameter = modernGemini || !openRouter && supports('speech_style') ? 'speech_style' : !openRouter && supports('instructions') ? 'instructions' : undefined;
   else if (family === 'fish_audio') parameter = !openRouter && supports('voice_direction') ? 'voice_direction' : undefined;
   else parameter = styleParam && supports(styleParam) ? styleParam : ['instructions', 'instruct', 'prompt'].find(supports);
@@ -3054,6 +3066,12 @@ function voiceDelivery({segment, actor, narrator = false, family, connection = {
   // empty Gemini instructions override the relay's conversational default.
   if (parameter && (instructions || ['gemini','fish_audio'].includes(family))) parameters[parameter] = fishS2?'':instructions;
   let text = segment.text;
+  // Sustained acting stays in Gemini metadata. Preserve explicit point events
+  // there, translate them for Fish S2, and omit unsupported cues elsewhere.
+  if (!modernGemini) text = text.replace(/<[^>]+>/g, tag => {
+    const event=vocalEvent(tag);
+    return event ? fishS2 ? `[${event==='short pause'?'break':event==='long pause'?'long-break':event}]` : '' : tag;
+  });
   if (family === 'fish_audio' && (!parameter || !s1) && instructions) {
     const prefix = s1 ? [...new Set(acting.split(/[.,;]+/).map(cue=>cue.trim().replace(/^\(([^()]+)\)$/,'$1').toLowerCase()).filter(cue=>S1_CUES.has(cue)))].slice(0,3).map(cue=>`(${cue})`).join('') : [...cues,...[actor?.pronunciation,actor?.accent && !supports('accent')?`Accent: ${actor.accent}`:''].filter(Boolean).map(deliveryText)].map(cue=>`[${cue}]`).join('');
     text = prefix ? `${prefix} ${text}` : text;
@@ -3488,6 +3506,7 @@ export async function setup(ctx) {
         <label class="et-check"><input data-et="showAutoPlanAction" type="checkbox"> Show Auto-plan in chat toolbar</label>
       </div>
       <label data-et="extraVoicesWrap" style="margin-top:10px"><span data-et="extraVoicesLabel">Additional voices & community models (ID | description)</span><textarea data-et="extraVoices" rows="2" placeholder="voice_id | description (e.g. Fish Audio community model ID or Gemini voice)"></textarea></label>
+      <p data-et="geminiVoiceHint" hidden style="font-size:.85em;opacity:.75">For a lasting accent or character voice, choose a regional voice or create one in <a href="https://aistudio.google.com/generate-speech" target="_blank" rel="noopener noreferrer">Google AI Studio</a> and add its ID above. Custom voices use separate turns; grouped Gemini dialogue supports two prebuilt voices. Temporary voice keys expire after 7 days.</p>
     </section></section>
     <section data-et="planDetails" hidden><h4 data-et="planSummary">Speech plan</h4>
     <div data-et="preview"></div>
@@ -4456,7 +4475,7 @@ export async function setup(ctx) {
       if(extraVoiceRoutes(voice.id).length)continue;
       // Older versions shared this textarea across all providers. Recover known
       // provider IDs and explicit assignments before exposing them to the LLM.
-      const provider=GEMINI_VOICES.some(item=>item.id===voice.id) || voice.id.startsWith('voice_')?'gemini':
+      const provider=GEMINI_VOICES.some(item=>item.id===voice.id) || /^(?:voice_|voicekey_)/.test(voice.id)?'gemini':
         OPENAI_VOICES.some(item=>item.id===voice.id)?'openai_tts':/^[a-f0-9]{32}$/i.test(voice.id)?'fish_audio':null;
       const assigned=[...(config.fixed || []),...Object.values(config.casts || {}).flat()]
         .filter(actor=>actor.voice===voice.id).map(actor=>actor.route || scope(config));
@@ -4494,7 +4513,7 @@ export async function setup(ctx) {
     let baseVoices=data.voices || [];
     if(!baseVoices.length)baseVoices=fallback.length?fallback:provider==='openai_tts'?OPENAI_VOICES:[];
     if(conn.provider==='openrouter_tts'){
-      const compatible=voice=>provider==='fish_audio'?!GEMINI_VOICES.some(item=>item.id===voice.id) && !OPENAI_VOICES.some(item=>item.id===voice.id):provider==='gemini'?GEMINI_VOICES.some(item=>item.id===voice.id) || voice.id.startsWith('voice_'):provider==='openai_tts'?OPENAI_VOICES.some(item=>item.id===voice.id):true;
+      const compatible=voice=>provider==='fish_audio'?!GEMINI_VOICES.some(item=>item.id===voice.id) && !OPENAI_VOICES.some(item=>item.id===voice.id):provider==='gemini'?GEMINI_VOICES.some(item=>item.id===voice.id) || /^(?:voice_|voicekey_)/.test(voice.id):provider==='openai_tts'?OPENAI_VOICES.some(item=>item.id===voice.id):true;
       baseVoices=baseVoices.filter(compatible);extra=extra.filter(compatible);
     }
     if(provider==='gemini' && !baseVoices.some(v=>GEMINI_VOICES.some(gv=>gv.id===v.id))) {
@@ -5466,12 +5485,14 @@ export async function setup(ctx) {
       } else if(cardProvider==='gemini') {
         voiceSearchInput.placeholder='Filter Gemini voices…';
         searchCommBtn.hidden=true;
-        style.placeholder='e.g. whispering in fear, sarcastic (Gemini metadata)';
+        style.placeholder='Optional: slightly amused, softly spoken';
       } else {
         voiceSearchInput.placeholder='Filter voices…';
         searchCommBtn.hidden=true;
         style.placeholder='Delivery style instruction';
       }
+      style.title=cardProvider==='gemini'?'Keep delivery brief, or leave it empty. The selected voice supplies identity; avoid long persona descriptions or instructions to keep its timbre unchanged.':'';
+      accent.title=cardProvider==='gemini'?'For a stable accent, prefer a regional or designed voice from Google AI Studio. This saved accent direction remains active.':'';
     };
 
     route.onchange=()=>run(async()=>{
@@ -5676,12 +5697,13 @@ export async function setup(ctx) {
     $('fishVoiceSourceWrap').hidden=!anyFish;
 
     if($('extraVoicesLabel')) {
+      $('geminiVoiceHint').hidden=activeProvider!=='gemini';
       if(activeProvider==='fish_audio') {
         $('extraVoicesLabel').textContent='Additional Fish Audio voices & reference IDs (ID | description)';
         $('extraVoices').placeholder='reference_id | description (e.g. Fish Audio model ID or reference voice)';
       } else if(activeProvider==='gemini') {
         $('extraVoicesLabel').textContent='Additional Gemini voices & custom IDs (ID | description)';
-        $('extraVoices').placeholder='voice_id | description';
+        $('extraVoices').placeholder='voice_… | description (or a temporary voicekey_… ID)';
       } else {
         $('extraVoicesLabel').textContent='Additional voices & models (ID | description)';
         $('extraVoices').placeholder='voice_id | description';

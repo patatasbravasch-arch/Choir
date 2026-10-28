@@ -409,6 +409,22 @@ test('new NPCs use the default connection and saved NPC overrides remain stable'
 });
 
 
+test('documented Gemini vocal events survive story markup filtering without preserving HTML or attributes',()=>{
+ const source='<font color="#abc">"Wait... <short pause> <sigh> Hello."</font><script>ignore()</script><div>She smiled. <throat-clearing> "Welcome."</div>';
+ const transcript=transcriptFromMessage(source);
+ assert.equal(transcript,'"Wait... <short pause> <sigh> Hello." She smiled. <throat-clearing> "Welcome."');
+ assert.equal(transcriptFromMessage('<sigh onclick="alert(1)">Safe.</sigh> <applause>Hi.</applause>'),'Safe. Hi.');
+ assert.equal(transcriptFromMessage('Before <sigh>hidden</sigh> after','sigh'),'Before   after');
+ assert.equal(readableText('Hello <sigh> world!'),readableText('Hello world!'));
+ const long=`${'x'.repeat(72)} <short pause> ${'more words '.repeat(12)}`;
+ const chunks=splitSegment({text:long},80);
+ assert.equal(chunks.map(chunk=>chunk.text).join(' '),long.trim());
+ assert.equal(chunks.filter(chunk=>chunk.text.includes('<short pause>')).length,1);
+ const c=config(),units=speechSourceUnits(transcript);
+ const plan=validatePlan({segments:units.map(unit=>({speaker:'Narrator',voice:'Charon',text:unit.text}))},transcript,c);
+ assert.equal(plan.segments.map(segment=>segment.text).join(' '),units.map(unit=>unit.text).join(' '));
+});
+
 test('stripAudioTags and validatePlan allowing inline tags like <sigh> or [whispers] in segment text without failing transcript equality',()=>{
   assert.equal(stripAudioTags('Hello <sigh> world! [whispers]').trim().replace(/\s+/g, ' '), 'Hello world!');
   assert.equal(stripAudioTags('<gasp> Oh no! <laugh> [shouting] Stop! </pause>').trim().replace(/\s+/g, ' '), 'Oh no! Stop!');

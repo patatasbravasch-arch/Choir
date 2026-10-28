@@ -69,7 +69,7 @@ export function createDrawerNavigation(root) {
   const filters=field('ignoredTags').closest('details');filters.querySelector('summary')?.remove();destinations.filters.append(...filters.childNodes);filters.remove();
   const performance=field('concurrency').closest('section');for(const name of ['concurrency','chunk','prefetch','apiBase'])moveLabel(name,destinations.performance);destinations.performance.append(field('batchSpeech').closest('.et-row'));for(const hint of [...performance.querySelectorAll(':scope>p')])destinations.performance.append(hint);
   for(const name of ['sectionButtons','abyssalMixerTheme','showAutoPlanAction'])moveLabel(name,destinations.interface);
-  move('extraVoicesWrap',destinations.castTools);const castTools=field('castJson').closest('details');castTools.querySelector('summary')?.remove();destinations.castTools.append(...castTools.childNodes);castTools.remove();
+  move('extraVoicesWrap',destinations.castTools);move('geminiVoiceHint',destinations.castTools);const castTools=field('castJson').closest('details');castTools.querySelector('summary')?.remove();destinations.castTools.append(...castTools.childNodes);castTools.remove();
   destinations.castTools.querySelector('.et-pagebar').after(defaults,field('defaultStatus'));
   // Plan and JSON editors are separate destinations too.
   const plan=move('planDetails',playHome);plan.hidden=false;

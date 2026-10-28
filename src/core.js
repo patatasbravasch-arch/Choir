@@ -490,6 +490,13 @@ function speechMarkupRanges(text,ignoredTags) {
   return ranges;
 }
 
+// Gemini's documented vocal events are transcript content, not HTML. Keep only
+// bare allowlisted tags; attributes, closing tags and ordinary markup still go.
+const VOCAL_EVENTS = new Set(['argh','breath','heavy breath','exhales','cackle','cheer','chuckle','chuckles','cough','cry','gasp','giggle','groan','growl','grunt','grr','hiss','laugh','laughter','moan','pant','pff','phew','scream','shout','shriek','sigh','sighs','sneeze','snicker','snort','sob','throat-clearing','tsk','whimper','whispers','whispering','yawn','short pause','long pause']);
+export function vocalEvent(tag) {
+  const match=/^<([a-z]+(?:[ -][a-z]+)*)>$/i.exec(tag);
+  return match && VOCAL_EVENTS.has(match[1].toLowerCase()) ? match[1].toLowerCase() : '';
+}
 export function transcriptFromMessage(value, ignoredTags=[]) {
   // Remove complete metadata panels before unwrapping ordinary story markup.
   let text=String(value || '').replace(/\r\n/g,'\n').replace(/\r/g,'\n').replace(/<!--[\s\S]*?(?:-->|$)/g,' ');
@@ -512,7 +519,7 @@ export function transcriptFromMessage(value, ignoredTags=[]) {
     .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, '')
     .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
     .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
-    .replace(/<[^>]+>/g, '')
+    .replace(/<[^>]+>/g, tag => vocalEvent(tag) ? tag : '')
     .replace(/^[ \t]*[─│┌┐└┘├┤┬┴┼═║╔╗╚╝╠╣╦╩╬+|-]{3,}[ \t]*$/gm, '')
     .replace(/^[ \t]*[-=_~*]{3,}[ \t]*$/gm, '')
     .replace(/^[ \t]*\|.*\|[ \t]*$/gm, '')
@@ -1082,6 +1089,11 @@ export function splitSegment(segment, maxChars = 350, maxBytes = Infinity, {tran
       if(!fits(text.slice(0,end)))throw new Error('A name pronunciation exceeds the speech request limit. Shorten its Say name as spelling or raise Max characters per request.');
       break;
     }
+    // Multi-word event tags must reach TTS intact, even at a chunk boundary.
+    for(const match of text.matchAll(/<[^>]+>/g))if(vocalEvent(match[0]) && match.index<end && match.index+match[0].length>end){
+      end=match.index || match[0].length;
+      break;
+    }
     // Do not split a UTF-16 surrogate pair.
     if (/[\uD800-\uDBFF]/.test(text[end-1]) && /[\uDC00-\uDFFF]/.test(text[end])) end--;
     out.push({...segment, text:text.slice(0,end).trim()});
@@ -1616,7 +1628,7 @@ const fold = ch => {const lower = ch.toLowerCase(); return lower.length === ch.l
 
 export function readableText(text) {
   let out = '';
-  for (const ch of String(text || '')) if (READABLE.test(ch)) out += fold(ch);
+  for (const ch of String(text || '').replace(/<[^>]+>/g,tag=>vocalEvent(tag)?'':tag)) if (READABLE.test(ch)) out += fold(ch);
   return out;
 }
 

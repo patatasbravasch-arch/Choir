@@ -48,9 +48,24 @@ test('narrator defaults to base style and discards planner emotions',()=>{
  const result=request({segment:{...segment,speaker:'Narrator',style:'Measured. [shouting] [sobbing]'},actor:{speaker:'Narrator',style:'Measured',accent:'Irish'},narrator:true});
  assert.equal(result.parameters.speech_style,'Measured. Accent: Irish');assert.ok(!result.style.includes('shouting'));
 });
-test('narrator without a base style receives neutral narration, with opt-in acting',()=>{
- assert.equal(request({actor:{},narrator:true}).style,'Steady, neutral narration');
+test('modern Gemini narrator without a base leaves style empty, with opt-in acting',()=>{
+ assert.equal(request({actor:{},narrator:true}).style,'');
+ assert.equal(request({actor:{},narrator:true}).parameters.speech_style,'');
+ assert.equal(request({actor:{},narrator:true,connection:{provider:'google_tts',model:'gemini-2.5-pro-preview-tts'}}).style,'Steady, neutral narration');
  assert.equal(request({actor:{deliveryMode:'auto'},narrator:true}).style,segment.style);
+});
+
+test('Gemini vocal events retain their position alongside turn metadata, with provider-specific mixed-cast handling',()=>{
+ const spoken='Wait... <short pause> <sigh> I am glad you came back.';
+ const segment={speaker:'Mira',text:spoken,style:'Softly relieved'};
+ const gemini=request({segment,actor:{}});
+ assert.equal(gemini.text,spoken);
+ assert.equal(gemini.parameters.speech_style,'Softly relieved');
+ const fish=request({segment,actor:{},family:'fish_audio',connection:{provider:'fish_audio',model:'s2.1-pro'},supported:{voice_direction:{}}});
+ assert.equal(fish.text,'[Softly relieved] Wait... [break] [sigh] I am glad you came back.');
+ const plain=request({segment,actor:{},family:'openai_tts',connection:{provider:'openai_tts',model:'tts-1'},supported:{}});
+ assert.equal(plain.text,'Wait...   I am glad you came back.');
+ assert.equal(request({segment:{...segment,text:'<long pause> Hello.'},actor:{},family:'fish_audio',connection:{model:'s2.1-pro'},supported:{}}).text,'[Softly relieved] [long-break] Hello.');
 });
 test('turn acting can be disabled without losing a character accent or pronunciation',()=>{
  const result=request({actor:{...actor,deliveryMode:'off',pronunciation:'Soften the final consonants'}});

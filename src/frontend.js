@@ -419,6 +419,7 @@ export async function setup(ctx) {
         <label class="et-check"><input data-et="showAutoPlanAction" type="checkbox"> Show Auto-plan in chat toolbar</label>
       </div>
       <label data-et="extraVoicesWrap" style="margin-top:10px"><span data-et="extraVoicesLabel">Additional voices & community models (ID | description)</span><textarea data-et="extraVoices" rows="2" placeholder="voice_id | description (e.g. Fish Audio community model ID or Gemini voice)"></textarea></label>
+      <p data-et="geminiVoiceHint" hidden style="font-size:.85em;opacity:.75">For a lasting accent or character voice, choose a regional voice or create one in <a href="https://aistudio.google.com/generate-speech" target="_blank" rel="noopener noreferrer">Google AI Studio</a> and add its ID above. Custom voices use separate turns; grouped Gemini dialogue supports two prebuilt voices. Temporary voice keys expire after 7 days.</p>
     </section></section>
     <section data-et="planDetails" hidden><h4 data-et="planSummary">Speech plan</h4>
     <div data-et="preview"></div>
@@ -1387,7 +1388,7 @@ export async function setup(ctx) {
       if(extraVoiceRoutes(voice.id).length)continue;
       // Older versions shared this textarea across all providers. Recover known
       // provider IDs and explicit assignments before exposing them to the LLM.
-      const provider=GEMINI_VOICES.some(item=>item.id===voice.id) || voice.id.startsWith('voice_')?'gemini':
+      const provider=GEMINI_VOICES.some(item=>item.id===voice.id) || /^(?:voice_|voicekey_)/.test(voice.id)?'gemini':
         OPENAI_VOICES.some(item=>item.id===voice.id)?'openai_tts':/^[a-f0-9]{32}$/i.test(voice.id)?'fish_audio':null;
       const assigned=[...(config.fixed || []),...Object.values(config.casts || {}).flat()]
         .filter(actor=>actor.voice===voice.id).map(actor=>actor.route || scope(config));
@@ -1425,7 +1426,7 @@ export async function setup(ctx) {
     let baseVoices=data.voices || [];
     if(!baseVoices.length)baseVoices=fallback.length?fallback:provider==='openai_tts'?OPENAI_VOICES:[];
     if(conn.provider==='openrouter_tts'){
-      const compatible=voice=>provider==='fish_audio'?!GEMINI_VOICES.some(item=>item.id===voice.id) && !OPENAI_VOICES.some(item=>item.id===voice.id):provider==='gemini'?GEMINI_VOICES.some(item=>item.id===voice.id) || voice.id.startsWith('voice_'):provider==='openai_tts'?OPENAI_VOICES.some(item=>item.id===voice.id):true;
+      const compatible=voice=>provider==='fish_audio'?!GEMINI_VOICES.some(item=>item.id===voice.id) && !OPENAI_VOICES.some(item=>item.id===voice.id):provider==='gemini'?GEMINI_VOICES.some(item=>item.id===voice.id) || /^(?:voice_|voicekey_)/.test(voice.id):provider==='openai_tts'?OPENAI_VOICES.some(item=>item.id===voice.id):true;
       baseVoices=baseVoices.filter(compatible);extra=extra.filter(compatible);
     }
     if(provider==='gemini' && !baseVoices.some(v=>GEMINI_VOICES.some(gv=>gv.id===v.id))) {
@@ -2397,12 +2398,14 @@ export async function setup(ctx) {
       } else if(cardProvider==='gemini') {
         voiceSearchInput.placeholder='Filter Gemini voices…';
         searchCommBtn.hidden=true;
-        style.placeholder='e.g. whispering in fear, sarcastic (Gemini metadata)';
+        style.placeholder='Optional: slightly amused, softly spoken';
       } else {
         voiceSearchInput.placeholder='Filter voices…';
         searchCommBtn.hidden=true;
         style.placeholder='Delivery style instruction';
       }
+      style.title=cardProvider==='gemini'?'Keep delivery brief, or leave it empty. The selected voice supplies identity; avoid long persona descriptions or instructions to keep its timbre unchanged.':'';
+      accent.title=cardProvider==='gemini'?'For a stable accent, prefer a regional or designed voice from Google AI Studio. This saved accent direction remains active.':'';
     };
 
     route.onchange=()=>run(async()=>{
@@ -2607,12 +2610,13 @@ export async function setup(ctx) {
     $('fishVoiceSourceWrap').hidden=!anyFish;
 
     if($('extraVoicesLabel')) {
+      $('geminiVoiceHint').hidden=activeProvider!=='gemini';
       if(activeProvider==='fish_audio') {
         $('extraVoicesLabel').textContent='Additional Fish Audio voices & reference IDs (ID | description)';
         $('extraVoices').placeholder='reference_id | description (e.g. Fish Audio model ID or reference voice)';
       } else if(activeProvider==='gemini') {
         $('extraVoicesLabel').textContent='Additional Gemini voices & custom IDs (ID | description)';
-        $('extraVoices').placeholder='voice_id | description';
+        $('extraVoices').placeholder='voice_… | description (or a temporary voicekey_… ID)';
       } else {
         $('extraVoicesLabel').textContent='Additional voices & models (ID | description)';
         $('extraVoices').placeholder='voice_id | description';

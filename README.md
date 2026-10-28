@@ -4,16 +4,16 @@
 
 # Choir
 
-[![Version](https://img.shields.io/badge/version-1.1.6--staging.59-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/lunch-test)
+[![Version](https://img.shields.io/badge/version-1.1.6--staging.60-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/lunch-test)
 [![Platform](https://img.shields.io/badge/platform-Lumiverse%20Spindle-purple.svg)](https://docs.lumiverse.chat/)
-[![Tests](https://img.shields.io/badge/tests-615%20tests-blue.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-617%20tests-blue.svg)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 An installable Lumiverse Spindle extension for multi-voice narration, dialogue attribution, sound effects, ambience and background music.
 
 </div>
 
-Version **1.1.6-staging.59** preserves restrained Fish S2 directions such as “barely amused” and “scared but not panicked,” including saved narrator base styles and negative constraints. Clear delivery synonyms retain their degree and qualifiers. Existing preset cues still take priority, selected voices remain unchanged, and no extra model calls are added. Replan, then Play to generate the revised performance; saved Replay retains its original audio. Repeated transcript comparisons are cached and audio cleanup no longer blocks opening a chat.
+Version **1.1.6-staging.60** preserves documented Gemini vocal events such as `<sigh>` and `<short pause>` through story filtering and request chunking. Empty Gemini 3.8 narrator styles stay empty, with saved directions still respected. Cast tools explain regional/custom voices and separate custom-voice turns, including temporary Gemini voice keys. No additional model calls are added. Replan, then Play for the revised performance; saved Replay keeps its original audio. See [Gemini speech behavior and limitations](docs/gemini-speech.md).
 
 Version **1.1.6-staging.58** adds optional **Paranoid mode** in **Settings → Planner**, revealing **Playback → TTS inspector**. Inspect prepared requests before Play, or the exact request bodies used for the last 20 attempted TTS calls: final text, model, voice ID, delivery parameters and per-speaker grouped turns. The inspector shares the real request builder and captures actual bodies at the fetch boundary, independent of whether LLM or Jev planned the reply. It makes no extra provider calls and includes no connection credentials. Request logs stay in memory and clear on reload, chat change, disabling the mode or Clear call log. Cache hits and saved Replay do not invent new calls. These are Choir-to-Lumiverse bodies; the relay can format the downstream provider request further. See [the inspector guide](docs/tts-inspector.md).
 

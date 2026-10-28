@@ -21,7 +21,7 @@ writeFileSync(new URL('docs/setup-guides.md', root), guideBuildMarkdown());
 const theme = readFileSync(new URL('src/abyssal-theme.js', root), 'utf8').replace(/^export /gm, '');
 const playedAudio = readFileSync(new URL('src/played-audio.js', root), 'utf8').replace(/^export /gm, '');
 const drawerUi = readFileSync(new URL('src/drawer-ui.js', root), 'utf8').replace(/^export /gm, '');
-const delivery = readFileSync(new URL('src/delivery.js', root), 'utf8').replace(/^export /gm, '');
+const delivery = readFileSync(new URL('src/delivery.js', root), 'utf8').replace(/^import .* from '\.\/core\.js';\r?\n/gm, '').replace(/^export /gm, '');
 for (const target of ['backend', 'frontend']) {
   let entry = readFileSync(new URL(`src/${target}.js`, root), 'utf8').replace(/^import .* from '\.\/core\.js';\r?\n/gm, '');
   entry = entry.replaceAll("'__CHOIR_VERSION__'", JSON.stringify(manifest.version));
