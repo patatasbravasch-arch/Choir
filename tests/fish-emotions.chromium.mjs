@@ -11,8 +11,8 @@ const fixture=playbackFixture
  .replace("providers:[{id:'openai_tts',capabilities:{parameters:{instructions:{type:'string'}}}}]","providers:[{id:'google_tts',capabilities:{parameters:{speech_style:{type:'string'}}}},{id:'fish_audio',capabilities:{parameters:{voice_direction:{type:'string',models:['s2.1-pro']}},multiSpeaker:{maxSpeakers:5,models:['s2.1-pro']}}},{id:'openrouter_tts',capabilities:{multiSpeaker:{maxSpeakers:5,models:['fish-audio/s2-pro']}}}]")
  .replace("provider:'openai_tts',model:'model-a'","provider:'google_tts',model:'gemini-3.8-flash-tts'")
  .replace("id:'b',name:'Characters',provider:'openai_tts',model:'model-b'","id:'b',name:'Characters',provider:window.openRouterFish?'openrouter_tts':'fish_audio',model:window.openRouterFish?'fish-audio/s2-pro':'s2.1-pro'")
- .replace("voice:actor.voice,style:''","voice:actor.voice,style:unit.kind==='dialogue'?(window.fixtureStyle || 'cheerful'):''");
-assert.ok(fixture.includes("window.fixtureStyle || 'cheerful'"));
+ .replace("voice:actor.voice,style:''","voice:actor.voice,style:unit.kind==='dialogue'?(window.fixtureStyle || 'Slightly amused, conversational'):''");
+assert.ok(fixture.includes("window.fixtureStyle || 'Slightly amused, conversational'"));
 const server=createServer(async(req,res)=>{
  try{res.setHeader('Content-Type',req.url==='/'?'text/html':'text/javascript');res.end(req.url==='/'?fixture:await readFile(new URL('..'+req.url,import.meta.url)));}
  catch{res.writeHead(404);res.end();}
@@ -27,19 +27,19 @@ try{
   await page.evaluate(async openRouter=>{
    await window.cleanup();window.openRouterFish=openRouter;
    const saved=window.fixtureStore.get('chat:fixture');Object.assign(saved,{connectionMode:'several',useStyle:true,skipMeta:false,batchSpeech:false,enableMixer:false,enableSfx:false,enableAmbience:false,enableMusic:false});
-   Object.assign(saved.fixed[2],{style:'',deliveryMode:'auto'});window.fixtureStore.set('chat:fixture',saved);window.cleanup=await window.mountChoir();
+   Object.assign(saved.fixed[2],{style:'Dramatic and theatrical',deliveryMode:'auto'});window.fixtureStore.set('chat:fixture',saved);window.cleanup=await window.mountChoir();
   },openRouter);
   assert.equal(await page.getByRole('combobox',{name:'Add Fish emotion or delivery cue',exact:true}).count(),0,'automatic TTS emotions need no manual picker');
   const plan=async()=>{await withDrawerControl(page,'latest',()=>page.locator('[data-et="latest"]').click());await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Ready:'));};
   const play=async()=>{await withDrawerControl(page,'drawerPlay',()=>page.locator('[data-et="drawerPlay"]').click());await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.includes('Playback finished'));};
   await plan();assert.equal(await page.evaluate(()=>window.calls.length),0,'planning does not synthesize audio');await play();
-  let calls=await page.evaluate(()=>window.calls),fish=calls.find(call=>call.voice==='m');assert.equal(calls.length,3);assert.ok(fish);assert.match(fish.text,/^\[happy\] /);
+  let calls=await page.evaluate(()=>window.calls),fish=calls.find(call=>call.voice==='m');assert.equal(calls.length,3);assert.ok(fish);assert.match(fish.text,/^\[Slightly amused\]\[conversational\] /);
   if(!openRouter)assert.equal(fish.parameters.voice_direction,'','native direction must not duplicate the injected cues');
-  assert.ok(calls.filter(call=>call.voice==='n').every(call=>call.parameters.speech_style==='Measured narration' && !call.text.includes('[happy]')),'Gemini narrator retains its own stable delivery');
+  assert.ok(calls.filter(call=>call.voice==='n').every(call=>call.parameters.speech_style==='Measured narration' && !call.text.includes('[Slightly amused]')),'Gemini narrator retains its own stable delivery');
   await play();assert.equal(await page.evaluate(()=>window.calls.length),3,'unchanged playback reuses the effective emotion request');
-  await page.evaluate(()=>{window.fixtureStyle='sad; whispering';});await plan();await play();
+  await page.evaluate(()=>{window.fixtureStyle='Clearly sorrowful; softly spoken';});await plan();await play();
   calls=await page.evaluate(()=>window.calls);assert.equal(calls.length,4,'a newly planned emotion regenerates only that Fish passage');fish=calls.at(-1);
-  assert.equal(fish.voice,'m');assert.match(fish.text,/^\[sad\]\[whispering\] /);
+  assert.equal(fish.voice,'m');assert.match(fish.text,/^\[Clearly sorrowful\]\[softly spoken\] /);
   await page.evaluate(()=>{window.calls=[];window.fixtureStyle='angry; shouting';window.fixtureMessage.content='The hall fell silent. "This is [whispering] important." A new story begins.';});await plan();await play();
   calls=await page.evaluate(()=>window.calls);fish=calls.find(call=>call.voice==='m');assert.ok(fish);assert.equal((fish.text.match(/\[whispering\]/g) || []).length,1);
   assert.ok(!JSON.stringify(fish).includes('shouting') && !JSON.stringify(fish).includes('angry'),'preset cue suppresses generated acting even inside the line');
@@ -53,7 +53,7 @@ try{
   assert.equal((grouped.parameters.turns[0].text.match(/\[whispering\]/g) || []).length,1);assert.ok(!grouped.parameters.turns[0].text.includes('[sad]'));
   assert.match(grouped.parameters.turns[1].text,/^\[sad\]\[whispering\] /);assert.ok(grouped.parameters.turns.every(turn=>turn.style===''),'grouped relays must not add another style');
   await page.getByRole('tab',{name:'Cast',exact:true}).click();await page.getByRole('button',{name:'Edit Mira',exact:true}).click();
-  assert.equal(await page.getByRole('combobox',{name:'Delivery',exact:true}).inputValue(),'auto');assert.equal(await page.getByRole('textbox',{name:'Base style',exact:true}).inputValue(),'','no fixed emotion was saved into character settings');
+  assert.equal(await page.getByRole('combobox',{name:'Delivery',exact:true}).inputValue(),'auto');assert.equal(await page.getByRole('textbox',{name:'Base style',exact:true}).inputValue(),'Dramatic and theatrical','planning preserves the saved base without stacking it on automatic delivery');
   assert.equal(await page.locator('.ensemble-tts').evaluate(node=>node.scrollWidth<=node.clientWidth+1),true);
   if(process.env.CHOIR_EMOTION_SCREENSHOTS){await mkdir(process.env.CHOIR_EMOTION_SCREENSHOTS,{recursive:true});await page.locator('main').screenshot({path:path.join(process.env.CHOIR_EMOTION_SCREENSHOTS,`${mobile?'mobile':'desktop'}-${openRouter?'openrouter':'native'}.png`)});}
   console.log(`PASS ${mobile?'mobile':'desktop'} S2 ${openRouter?'OpenRouter':'native'} automatic TTS injection, emotion changes, voice stability, cache reuse, preset priority, Gemini isolation and grouped dialogue`);

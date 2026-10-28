@@ -4,14 +4,16 @@
 
 # Choir
 
-[![Version](https://img.shields.io/badge/version-1.1.6--staging.53-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/lunch-test)
+[![Version](https://img.shields.io/badge/version-1.1.6--staging.55-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/lunch-test)
 [![Platform](https://img.shields.io/badge/platform-Lumiverse%20Spindle-purple.svg)](https://docs.lumiverse.chat/)
-[![Tests](https://img.shields.io/badge/tests-607%20tests-blue.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-609%20tests-blue.svg)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 An installable Lumiverse Spindle extension for multi-voice narration, dialogue attribution, sound effects, ambience and background music.
 
 </div>
+
+Version **1.1.6-staging.55** asks the LLM to choose emotion and acting intensity together in its existing casting call. Ordinary dialogue defaults to restrained, conversational delivery; stronger acting needs support from the scene. Jev offers mild, clear and intense reactions within its existing emotion evaluation. Automatic acting uses the planned turn direction instead of stacking an expressive base over it; Base style only, explicit Fish preset cues, accents and narrator settings retain their priority. Gemini receives the degree in its delivery instructions and Fish S2 receives it in bracket cues. Replan, then Play to apply the new guidance; saved Replay keeps its original recording. TTS models can still interpret the instructions differently.
 
 Version **1.1.6-staging.54** lets Gemini multi-speaker grouping work with loudness matching enabled. Compatible alternating turns use one request, and the shared audio clip is balanced as a whole. The grouping status explains the two-speaker limit (including the narrator) and when the Lumiverse server needs multi-speaker relay support. Fish retains its separate per-voice loudness matching.
 

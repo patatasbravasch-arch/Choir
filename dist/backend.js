@@ -1182,7 +1182,9 @@ const DELIVERY_CONTEXT_RULES = `Delivery guidance:
 - Read the whole passage, including narration before AND after the quote, and identify this speaker's intent before choosing a tone. Nearby speech tags, actions and emotional reactions belong to the performance; another character's feelings do not.
 - Profanity, insults, commands, rhetorical disbelief, bold text and capitals are not by themselves evidence of anger or shouting. Distinguish delighted disbelief, affectionate teasing and playful mock outrage from genuine hostility.
 - A delighted reaction or amused grin can make harsh words playful; a cruel, threatening or bitter grin need not be happy. Use the surrounding scene rather than a single keyword. Preserve genuine anger when the scene supports it.
-- Emotion and volume are separate: a soft or breathed-out line can be delighted, and an emphatic command can be playful. Use a short positive direction describing the intended performance. When the intent is unclear, choose neutral rather than inventing an intense emotion.`;
+- Choose emotion AND acting intensity together for each line in this same planning step. Ordinary dialogue is restrained and conversational: a small smile suggests slightly amused, not ecstatic. Use clear emotion for an explicit reaction and intense acting only when the passage supports that degree. A character's expressive personality alone does not make every line intense.
+- Emotion and volume are separate: a soft or breathed-out line can be delighted, and an emphatic command can be playful. Profanity, punctuation and bold text do not raise acting intensity. Do not add laughter, sobbing, growling or shouting unless the scene calls for it.
+- Write one short positive direction, usually 2-10 words: one primary emotion with its degree, optionally one pacing or volume cue. Examples: slightly amused, conversational; clearly delighted, softly spoken; intensely angry, controlled. Avoid stacking competing moods or adding a dramatic flourish to every turn. When intent is unclear or unmarked, use Natural, conversational delivery rather than an empty style or an invented emotion.`;
 
 // cast-r1e, the winner of the castbench casting benchmark: one compact request casts the whole reply.
 // Keep the measured speaker-attribution baseline verbatim. Delivery guidance,
@@ -1194,7 +1196,7 @@ Rules:
 - A speaker not in the cast is a new NPC: use their story name if given, otherwise a stable description (e.g. 'the black-haired twin', 'Gate guard'), never placeholders like NPC_1. Keep different unnamed people as different identities and reuse the same identity for the same person.
 - Write NOT_SPOKEN for quoted text nobody says aloud in the scene: written text, signs, messages, titles, thoughts, quoted terms, remembered or hypothetical words, and lines suggested for someone to say.
 - If the reply is not an in-scene story moment (analysis, summary, notes, out-of-character commentary, options, instructions), its quotes are citations: NOT_SPOKEN.
-- style: a short expressive delivery instruction (emotion, tone, pacing), never words to speak.
+- style: a short delivery instruction including emotion and acting intensity, optionally pacing or volume; never words to speak. Use Natural, conversational delivery for unmarked dialogue.
 Output format, plain text only, one line per D id in order, nothing else:
 D<id>|speaker|style
 Then one line per new NPC you used: NPC|name|female/male/neutral|voice id from the available voices (match gender and character).`;
@@ -1787,8 +1789,15 @@ function voiceDelivery({segment, actor, narrator = false, family, connection = {
   const mode = characterDeliveryMode(actor, narrator);
   const s1=family==='fish_audio' && /(?:^|\/)s1$/.test(connection.model || '');
   const fishS2=family==='fish_audio' && !s1;
-  const base=fishS2?String(actor?.style || '').trim():deliveryText(actor?.style);
-  const turn=fishS2?String(segment.style || '').trim():deliveryText(segment.style);
+  const baseSource=String(actor?.style || ''),combined=String(segment.style || '');
+  // Validated plans prepend the saved base for attribution/cache compatibility.
+  // Automatic acting uses the turn direction OR that base, not both: a strong
+  // base must not overpower a deliberately mild or neutral planned delivery.
+  // Remove the exact raw prefix before provider sanitizing changes whitespace
+  // around brackets or punctuation in an imported base style.
+  const planned=baseSource && combined.startsWith(`${baseSource}. `)?combined.slice(baseSource.length+2):combined===baseSource?'':combined;
+  const base=fishS2?baseSource.trim():deliveryText(baseSource);
+  const turn=fishS2?planned.trim():deliveryText(planned);
   const inline=family==='fish_audio' && (s1?[...String(segment.text).matchAll(/\(([^()]+)\)/gu)].some(match=>S1_CUES.has(match[1].trim().toLowerCase())):/\[[^\]\r\n]+\]/u.test(segment.text));
   // Explicit inline delivery belongs to the preset. Do not stack generated
   // acting on it; persistent accent and pronunciation still travel separately.
@@ -1905,17 +1914,32 @@ const UNLISTED_SPEAKER = 'Someone not listed';
 const NOT_SPOKEN = 'Nobody (not spoken aloud)';
 const NOT_SPOKEN_CHOICE = { name: NOT_SPOKEN, description: "Not dialogue: these quoted words are not said aloud by anyone at this moment. Examples: a quoted word, name, nickname or term being talked about; written, typed or displayed text; words someone said earlier that the narration is only quoting; out-of-character notes; or a noise. A character's own quoted thoughts are not Nobody: they belong to that character." };
 const UNNAMED_SPEAKER = 'Unnamed (the story never gives this speaker a name)';
-const JEV_DELIVERY_CHOICES = {
-  neutral: 'Natural, restrained speaking tone; the emotional intent is unclear or unmarked',
-  cheerful: 'Warm, upbeat or happy',
-  delighted: 'Amused, delighted surprise or happy disbelief',
-  playful: 'Teasing, mischievous or playfully commanding; mock outrage without genuine hostility',
-  sarcastic: 'Dry, ironic or sardonic',
-  whispering: 'Explicitly whispered or hushed speech',
-  angry: 'Genuine anger, irritation or hostility supported by the scene, not just harsh wording',
-  sad: 'Sad or sorrowful',
-  sigh: 'Sighing or weary'
+// Each choice includes intensity in the existing emotion evaluation. Keep the
+// provider direction separate from the classification description: TTS receives
+// a short performance cue, not the reasoning or instructions for choosing it.
+const JEV_DELIVERY = {
+  neutral: ['Natural, conversational delivery', 'Default for ordinary dialogue with unclear or unmarked emotion'],
+  cheerful: ['Lightly cheerful, conversational', 'Low intensity: a little warm, upbeat or pleased'],
+  amused: ['Slightly amused, conversational', 'Low intensity: a small smile, quiet amusement or mild happy disbelief'],
+  delighted: ['Clearly delighted, warm', 'Moderate intensity: an explicit delighted reaction or happy surprise'],
+  ecstatic: ['Intensely delighted, exuberant', 'High intensity: overwhelming joy or excitement explicitly supported by the scene'],
+  playful: ['Lightly teasing, conversational', 'Low intensity: teasing, mischievous or playfully commanding; mock outrage without genuine hostility'],
+  sarcastic: ['Subtly dry and ironic', 'Low intensity: dry, ironic or sardonic humour'],
+  whispering: ['Quiet whisper, restrained', 'Explicitly whispered or hushed speech; quiet volume alone does not imply an intense emotion'],
+  irritated: ['Slightly irritated, conversational', 'Low intensity: mild annoyance or frustration'],
+  angry: ['Clearly angry, firm', 'Moderate intensity: genuine anger or hostility supported by the scene, not just harsh wording'],
+  furious: ['Intensely angry', 'High intensity: explicit fury or rage, beyond ordinary annoyance'],
+  sad: ['Slightly sad, subdued', 'Low intensity: disappointment or mild sadness'],
+  sorrowful: ['Clearly sorrowful', 'Moderate intensity: explicit sadness or sorrow'],
+  grieving: ['Deeply grief-stricken', 'High intensity: overwhelming grief explicitly supported by the scene'],
+  nervous: ['Slightly nervous, hesitant', 'Low intensity: mild unease or apprehension'],
+  scared: ['Clearly afraid, tense', 'Moderate intensity: explicit fear'],
+  terrified: ['Intensely frightened', 'High intensity: explicit terror or panic'],
+  interested: ['Mildly interested, conversational', 'Low intensity: curiosity or anticipation'],
+  excited: ['Clearly excited, animated', 'Moderate intensity: explicit enthusiasm or excitement'],
+  sigh: ['Soft sigh, weary', 'A sigh or weary exhalation explicitly present in the scene']
 };
+const JEV_DELIVERY_CHOICES = Object.fromEntries(Object.entries(JEV_DELIVERY).map(([key,[style,description]])=>[key,`${style}. ${description}`]));
 
 // Jev can only choose, so a new speaker's name must be offered: capitalised word runs that appear mid-sentence,
 // or that never appear in lowercase and occur in the narration. Uncased scripts yield none and keep the fallback.
@@ -2113,8 +2137,10 @@ async function planWithJev({ transcript, config, apiKey, endpoint, context = '',
     const notSpoken = speakerChoices[i] === NOT_SPOKEN;
     dialogueSpeakerMap.set(u.id, notSpoken ? narrator?.speaker || 'Narrator' : speakerChoices[i] === UNLISTED_SPEAKER ? 'Unknown speaker' : speakerChoices[i]);
     const emotion = emotionChoices[i];
-    if (!notSpoken && emotion && emotion.toLowerCase() !== 'neutral') {
-      dialogueEmotionMap.set(u.id, emotion);
+    if (!notSpoken && Object.hasOwn(JEV_DELIVERY, emotion)) {
+      // Neutral must override an expressive base style in Automatic acting;
+      // leaving it empty would silently fall back to that character's base.
+      dialogueEmotionMap.set(u.id, JEV_DELIVERY[emotion][0]);
     }
   }
 
@@ -2483,7 +2509,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
   (async () => {
     const input = message.input || {};
     if (message.action === 'ping') {
-      send({result:{version:"1.1.6-staging.54",ready:true,decisionsAvailable:typeof spindle.decisions?.evaluate==='function'}});return;
+      send({result:{version:"1.1.6-staging.55",ready:true,decisionsAvailable:typeof spindle.decisions?.evaluate==='function'}});return;
     }
     if(message.action==='cardCast'){
       const card=input.card;

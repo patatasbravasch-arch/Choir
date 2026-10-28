@@ -25,8 +25,15 @@ export function voiceDelivery({segment, actor, narrator = false, family, connect
   const mode = characterDeliveryMode(actor, narrator);
   const s1=family==='fish_audio' && /(?:^|\/)s1$/.test(connection.model || '');
   const fishS2=family==='fish_audio' && !s1;
-  const base=fishS2?String(actor?.style || '').trim():deliveryText(actor?.style);
-  const turn=fishS2?String(segment.style || '').trim():deliveryText(segment.style);
+  const baseSource=String(actor?.style || ''),combined=String(segment.style || '');
+  // Validated plans prepend the saved base for attribution/cache compatibility.
+  // Automatic acting uses the turn direction OR that base, not both: a strong
+  // base must not overpower a deliberately mild or neutral planned delivery.
+  // Remove the exact raw prefix before provider sanitizing changes whitespace
+  // around brackets or punctuation in an imported base style.
+  const planned=baseSource && combined.startsWith(`${baseSource}. `)?combined.slice(baseSource.length+2):combined===baseSource?'':combined;
+  const base=fishS2?baseSource.trim():deliveryText(baseSource);
+  const turn=fishS2?planned.trim():deliveryText(planned);
   const inline=family==='fish_audio' && (s1?[...String(segment.text).matchAll(/\(([^()]+)\)/gu)].some(match=>S1_CUES.has(match[1].trim().toLowerCase())):/\[[^\]\r\n]+\]/u.test(segment.text));
   // Explicit inline delivery belongs to the preset. Do not stack generated
   // acting on it; persistent accent and pronunciation still travel separately.

@@ -551,20 +551,23 @@ test('planWithJev classifies dialogue speakers and emotion tags into valid speec
     // The persona speaks in replies too, and a speaker outside the cast has its own choice.
     assert.deepEqual(Object.keys(calls[0].body.questions.q0.criteria), ['Persona', 'Alice', 'Bob', 'Someone not listed', 'Nobody (not spoken aloud)']);
     assert.equal(calls[0].body.questions.q0.instructions, 'Which character speaks this dialogue: ""Good morning!""?');
-    assert.deepEqual(Object.keys(calls[1].body.questions.q1.criteria), ['neutral', 'cheerful', 'delighted', 'playful', 'sarcastic', 'whispering', 'angry', 'sad', 'sigh']);
+    const deliveryChoices=calls[1].body.questions.q1.criteria;
+    assert.match(deliveryChoices.cheerful,/Low intensity/);
+    assert.match(deliveryChoices.delighted,/Moderate intensity/);
+    assert.match(deliveryChoices.ecstatic,/High intensity/);
 
     // Check segments attribution and emotion styles
     const aliceSeg = plan.segments.find(s => s.text === '"Good morning!"');
     assert.ok(aliceSeg, 'Alice dialogue segment found');
     assert.equal(aliceSeg.speaker, 'Alice');
     assert.equal(aliceSeg.voice, 'Kore');
-    assert.equal(aliceSeg.style, 'cheerful');
+    assert.equal(aliceSeg.style, 'Lightly cheerful, conversational');
 
     const bobSeg = plan.segments.find(s => s.text === '"Keep your voice down,"');
     assert.ok(bobSeg, 'Bob dialogue segment found');
     assert.equal(bobSeg.speaker, 'Bob');
     assert.equal(bobSeg.voice, 'Charon');
-    assert.equal(bobSeg.style, 'whispering');
+    assert.equal(bobSeg.style, 'Quiet whisper, restrained');
 
     // Narration segments
     const narrSeg = plan.segments.find(s => s.text === 'The room fell quiet.');
@@ -623,7 +626,7 @@ test('backend RPC handler supports action planJev and planWithJev', async () => 
   assert.ok(res.message.result);
   const heroSeg = res.message.result.segments.find(s => s.text === '"Farewell,"');
   assert.equal(heroSeg.speaker, 'Hero');
-  assert.equal(heroSeg.style, 'sigh');
+  assert.equal(heroSeg.style, 'Soft sigh, weary');
 
   // Test action alias planWithJev
   const h2 = await harness(null, corsHandler);

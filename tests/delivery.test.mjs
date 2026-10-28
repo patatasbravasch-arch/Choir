@@ -6,15 +6,15 @@ const segment={speaker:'Mira',text:'Welcome home.',style:'Warm. whispering'},act
 const request=options=>voiceDelivery({segment,actor,family:'gemini',connection:{provider:'google_tts',model:'gemini-3.8-flash-tts'},supported:{speech_style:{type:'string'}},...options});
 
 test('Gemini metadata carries persistent accent and turn delivery without modifying spoken text',()=>{
- const result=request({});assert.equal(result.text,segment.text);assert.equal(result.parameters.speech_style,'Warm. whispering. Accent: Irish');
+ const result=request({});assert.equal(result.text,segment.text);assert.equal(result.parameters.speech_style,'whispering. Accent: Irish');
 });
 test('Fish S2 injects delivery at the TTS boundary and clears relay directions to avoid duplicate cues',()=>{
  const result=request({family:'fish_audio',connection:{provider:'fish_audio',model:'s2.1-pro'},supported:{voice_direction:{models:['s2.1-pro']}}});
- assert.equal(result.text,'[Warm][whispering][Accent: Irish] Welcome home.');assert.equal(result.parameters.voice_direction,'');
+ assert.equal(result.text,'[whispering][Accent: Irish] Welcome home.');assert.equal(result.parameters.voice_direction,'');
 });
 test('older Fish relays receive free-form S2 tags and their accent instructions',()=>{
  const result=request({family:'fish_audio',connection:{provider:'fish_audio',model:'s2-pro'},supported:{}});
- assert.equal(result.text,'[Warm][whispering][Accent: Irish] Welcome home.');
+ assert.equal(result.text,'[whispering][Accent: Irish] Welcome home.');
 });
 test('Fish S1 receives fixed parenthesis tags and never a fabricated accent tag',()=>{
  const result=request({family:'fish_audio',connection:{provider:'fish_audio',model:'s1'},supported:{voice_direction:{models:['s2-pro']}}});
@@ -23,7 +23,7 @@ test('Fish S1 receives fixed parenthesis tags and never a fabricated accent tag'
 });
 test('mixed Fish and Gemini voices select their own provider adapter',()=>{
  const gemini=request({}),fish=request({family:'fish_audio',connection:{provider:'openrouter_tts',model:'fish-audio/s2-pro'},supported:{instructions:{}}});
- assert.deepEqual(Object.keys(gemini.parameters),['speech_style']);assert.deepEqual(fish.parameters,{});assert.equal(fish.text,'[Warm][whispering][Accent: Irish] Welcome home.');
+ assert.deepEqual(Object.keys(gemini.parameters),['speech_style']);assert.deepEqual(fish.parameters,{});assert.equal(fish.text,'[whispering][Accent: Irish] Welcome home.');
 });
 
 test('preset Fish cues are not duplicated or contradicted, while accents remain persistent',()=>{
@@ -42,7 +42,7 @@ test('Fish S1 supports advanced documented cues and older OpenRouter Gemini uses
   assert.equal(result.text,`(${cue}) Welcome home.`);
  }
  const result=request({connection:{provider:'openrouter_tts',model:'google/gemini-2.5-flash-tts'},supported:{instructions:{},speech_style:{}}});
- assert.match(result.text,/Delivery: Warm\. whispering\. Accent: Irish/);assert.deepEqual(result.parameters,{});
+ assert.match(result.text,/Delivery: whispering\. Accent: Irish/);assert.deepEqual(result.parameters,{});
 });
 test('narrator defaults to base style and discards planner emotions',()=>{
  const result=request({segment:{...segment,speaker:'Narrator',style:'Measured. [shouting] [sobbing]'},actor:{speaker:'Narrator',style:'Measured',accent:'Irish'},narrator:true});
@@ -64,7 +64,7 @@ test('global delivery off preserves accent and explicitly clears relay defaults 
 });
 test('legacy Gemini receives a bounded delivery prompt rather than Fish tone syntax',()=>{
  const result=request({connection:{provider:'google_tts',model:'gemini-2.5-pro-preview-tts'},supported:{}});
- assert.match(result.text,/Delivery: Warm\. whispering\. Accent: Irish\n\nText:\nWelcome home\.$/);assert.ok(!result.text.includes('[Warm'));
+ assert.match(result.text,/Delivery: whispering\. Accent: Irish\n\nText:\nWelcome home\.$/);assert.ok(!result.text.includes('[Warm'));
 });
 test('enumerated provider accents validate option objects and reject unsupported values',()=>{
  assert.equal(request({supported:{accent:{options:[{id:'Irish',label:'Irish'}]}}}).parameters.accent,'Irish');
@@ -92,4 +92,32 @@ test('Fish source cues keep position and suppress generated tones without discar
  assert.equal(off.text,'[sad] Welcome home.');
  const narrator=request({family:'fish_audio',narrator:true,segment:{...segment,style:'angry; sobbing'},actor:{speaker:'Narrator',style:'Calm narration'},connection:{model:'s2.1-pro'},supported:{}});
  assert.equal(narrator.text,'[Calm narration] Welcome home.');
+});
+
+test('acting intensity survives mixed Gemini and Fish routing without weakening explicit bases or preset cues',()=>{
+ for(const style of ['Slightly amused, conversational','Clearly delighted, softly spoken','Intensely angry']){
+  assert.equal(request({segment:{...segment,style},actor:{}}).parameters.speech_style,style);
+  const fish=request({family:'fish_audio',segment:{...segment,style},actor:{},connection:{model:'s2.1-pro'},supported:{}});
+  assert.equal(fish.text,`${style.split(', ').map(cue=>`[${cue}]`).join('')} Welcome home.`);
+ }
+ const actor={style:'Intensely delighted',deliveryMode:'base',accent:'Irish'};
+ assert.equal(request({actor,segment:{...segment,style:'Slightly amused'}}).parameters.speech_style,'Intensely delighted. Accent: Irish');
+ const fish=request({family:'fish_audio',actor,segment:{...segment,text:'[furious] Welcome home.',style:'Slightly amused'},connection:{model:'s2.1-pro'},supported:{}});
+ assert.equal(fish.text,'[Accent: Irish] [furious] Welcome home.');
+});
+
+test('automatic acting removes the validated base prefix once while base-only and fallback retain it',()=>{
+ const actor={style:'Dramatic and theatrical',accent:'Irish'};
+ const segment={speaker:'Mira',text:'Welcome home.',style:'Dramatic and theatrical. Slightly amused, conversational'};
+ assert.equal(request({actor,segment}).parameters.speech_style,'Slightly amused, conversational. Accent: Irish');
+ const fish=request({family:'fish_audio',actor,segment,connection:{model:'s2.1-pro'},supported:{}});
+ assert.equal(fish.text,'[Slightly amused][conversational][Accent: Irish] Welcome home.');
+ assert.equal(request({actor:{...actor,deliveryMode:'base'},segment}).parameters.speech_style,'Dramatic and theatrical. Accent: Irish');
+ assert.equal(request({actor,segment:{...segment,style:actor.style}}).parameters.speech_style,'Dramatic and theatrical. Accent: Irish');
+ assert.equal(request({actor,segment:{...segment,style:''}}).parameters.speech_style,'Dramatic and theatrical. Accent: Irish');
+ for(const style of ['[dramatic]',' Dramatic\n and theatrical ']){
+  const actor={style},segment={text:'Welcome home.',style:`${style}. Slightly amused`};
+  assert.equal(request({actor,segment}).parameters.speech_style,'Slightly amused');
+  assert.equal(request({family:'fish_audio',actor,segment,connection:{model:'s2.1-pro'},supported:{}}).text,'[Slightly amused] Welcome home.');
+ }
 });

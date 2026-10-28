@@ -70,17 +70,32 @@ export const UNLISTED_SPEAKER = 'Someone not listed';
 export const NOT_SPOKEN = 'Nobody (not spoken aloud)';
 const NOT_SPOKEN_CHOICE = { name: NOT_SPOKEN, description: "Not dialogue: these quoted words are not said aloud by anyone at this moment. Examples: a quoted word, name, nickname or term being talked about; written, typed or displayed text; words someone said earlier that the narration is only quoting; out-of-character notes; or a noise. A character's own quoted thoughts are not Nobody: they belong to that character." };
 const UNNAMED_SPEAKER = 'Unnamed (the story never gives this speaker a name)';
-const JEV_DELIVERY_CHOICES = {
-  neutral: 'Natural, restrained speaking tone; the emotional intent is unclear or unmarked',
-  cheerful: 'Warm, upbeat or happy',
-  delighted: 'Amused, delighted surprise or happy disbelief',
-  playful: 'Teasing, mischievous or playfully commanding; mock outrage without genuine hostility',
-  sarcastic: 'Dry, ironic or sardonic',
-  whispering: 'Explicitly whispered or hushed speech',
-  angry: 'Genuine anger, irritation or hostility supported by the scene, not just harsh wording',
-  sad: 'Sad or sorrowful',
-  sigh: 'Sighing or weary'
+// Each choice includes intensity in the existing emotion evaluation. Keep the
+// provider direction separate from the classification description: TTS receives
+// a short performance cue, not the reasoning or instructions for choosing it.
+const JEV_DELIVERY = {
+  neutral: ['Natural, conversational delivery', 'Default for ordinary dialogue with unclear or unmarked emotion'],
+  cheerful: ['Lightly cheerful, conversational', 'Low intensity: a little warm, upbeat or pleased'],
+  amused: ['Slightly amused, conversational', 'Low intensity: a small smile, quiet amusement or mild happy disbelief'],
+  delighted: ['Clearly delighted, warm', 'Moderate intensity: an explicit delighted reaction or happy surprise'],
+  ecstatic: ['Intensely delighted, exuberant', 'High intensity: overwhelming joy or excitement explicitly supported by the scene'],
+  playful: ['Lightly teasing, conversational', 'Low intensity: teasing, mischievous or playfully commanding; mock outrage without genuine hostility'],
+  sarcastic: ['Subtly dry and ironic', 'Low intensity: dry, ironic or sardonic humour'],
+  whispering: ['Quiet whisper, restrained', 'Explicitly whispered or hushed speech; quiet volume alone does not imply an intense emotion'],
+  irritated: ['Slightly irritated, conversational', 'Low intensity: mild annoyance or frustration'],
+  angry: ['Clearly angry, firm', 'Moderate intensity: genuine anger or hostility supported by the scene, not just harsh wording'],
+  furious: ['Intensely angry', 'High intensity: explicit fury or rage, beyond ordinary annoyance'],
+  sad: ['Slightly sad, subdued', 'Low intensity: disappointment or mild sadness'],
+  sorrowful: ['Clearly sorrowful', 'Moderate intensity: explicit sadness or sorrow'],
+  grieving: ['Deeply grief-stricken', 'High intensity: overwhelming grief explicitly supported by the scene'],
+  nervous: ['Slightly nervous, hesitant', 'Low intensity: mild unease or apprehension'],
+  scared: ['Clearly afraid, tense', 'Moderate intensity: explicit fear'],
+  terrified: ['Intensely frightened', 'High intensity: explicit terror or panic'],
+  interested: ['Mildly interested, conversational', 'Low intensity: curiosity or anticipation'],
+  excited: ['Clearly excited, animated', 'Moderate intensity: explicit enthusiasm or excitement'],
+  sigh: ['Soft sigh, weary', 'A sigh or weary exhalation explicitly present in the scene']
 };
+const JEV_DELIVERY_CHOICES = Object.fromEntries(Object.entries(JEV_DELIVERY).map(([key,[style,description]])=>[key,`${style}. ${description}`]));
 
 // Jev can only choose, so a new speaker's name must be offered: capitalised word runs that appear mid-sentence,
 // or that never appear in lowercase and occur in the narration. Uncased scripts yield none and keep the fallback.
@@ -278,8 +293,10 @@ export async function planWithJev({ transcript, config, apiKey, endpoint, contex
     const notSpoken = speakerChoices[i] === NOT_SPOKEN;
     dialogueSpeakerMap.set(u.id, notSpoken ? narrator?.speaker || 'Narrator' : speakerChoices[i] === UNLISTED_SPEAKER ? 'Unknown speaker' : speakerChoices[i]);
     const emotion = emotionChoices[i];
-    if (!notSpoken && emotion && emotion.toLowerCase() !== 'neutral') {
-      dialogueEmotionMap.set(u.id, emotion);
+    if (!notSpoken && Object.hasOwn(JEV_DELIVERY, emotion)) {
+      // Neutral must override an expressive base style in Automatic acting;
+      // leaving it empty would silently fall back to that character's base.
+      dialogueEmotionMap.set(u.id, JEV_DELIVERY[emotion][0]);
     }
   }
 
