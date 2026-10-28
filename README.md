@@ -4,7 +4,7 @@
 
 # Choir
 
-[![Version](https://img.shields.io/badge/version-1.1.6--staging.62-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/lunch-test)
+[![Version](https://img.shields.io/badge/version-1.1.6--staging.63-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/lunch-test)
 [![Platform](https://img.shields.io/badge/platform-Lumiverse%20Spindle-purple.svg)](https://docs.lumiverse.chat/)
 [![Tests](https://img.shields.io/badge/tests-622%20tests-blue.svg)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -12,6 +12,8 @@
 An installable Lumiverse Spindle extension for multi-voice narration, dialogue attribution, sound effects, ambience and background music.
 
 </div>
+
+Version **1.1.6-staging.63** keeps Saved audio download controls registered when Lumiverse sets up an inactive drawer off-screen. After reloading or restarting Choir, completed recordings show their WAV-ready status and download button without requiring another Play. Audio and Download all continue to use the completed saved mix.
 
 Version **1.1.6-staging.62** restores saved Replay when a card is named after a real lead and also contains other characters. The recording check distinguishes an assigned character from an obsolete group title, preserving protection against genuinely merged cast recordings. Existing valid audio replays without planning or synthesis.
 

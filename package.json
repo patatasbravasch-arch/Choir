@@ -1,6 +1,6 @@
 {
   "name": "choir",
-  "version": "1.1.6-staging.62",
+  "version": "1.1.6-staging.63",
   "private": true,
   "type": "module",
   "scripts": {
@@ -11,6 +11,7 @@
     "test:download:chromium": "node scripts/build.mjs && node tests/audio-download.chromium.mjs",
     "test:mix:chromium": "node scripts/build.mjs && node tests/played-audio.chromium.mjs",
     "test:retention:chromium": "node scripts/build.mjs && node tests/retention.chromium.mjs",
+    "test:saved:chromium": "node scripts/build.mjs && node tests/saved-library.chromium.mjs",
     "test:audit:chromium": "node scripts/build.mjs && node tests/audit-regressions.chromium.mjs",
     "test:transport:chromium": "node scripts/build.mjs && node tests/download-transport.chromium.mjs",
     "test:fixes:chromium": "node scripts/build.mjs && node tests/audit-v40.chromium.mjs",

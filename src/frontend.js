@@ -4164,7 +4164,9 @@ export async function setup(ctx) {
     const targetChat=chatId,reads=new Map();
     await Promise.all([...messageDownloads].map(async entry=>{
       const {button,messageId}=entry;
-      if(!button.isConnected){messageDownloads.delete(entry);return;}
+      // Lumiverse mounts inactive drawer roots off-document. Keep their Saved
+      // controls registered; only discard buttons actually removed from Choir.
+      if(!button.isConnected && !root.contains(button)){messageDownloads.delete(entry);return;}
       const version=++entry.version,content=ctx.messages.getContent(messageId);
       if(!targetChat || entry.chatId!==targetChat || entry.content!==content){button.hidden=true;entry.changed?.();}
       button.disabled=busy;if(!targetChat)return;
