@@ -1244,6 +1244,35 @@ test('a card with two men creates independent leads and passes each profile to J
  }finally{await h.close();}
 });
 
+for(const grouped of [false,true])test(`a real lead matching the card title replays ${grouped?'grouped Gemini':'separate'} speech without new TTS`,async()=>{
+ const h=await (grouped?openRouterGroupingHarness('gemini'):harness());try{
+  const saved=h.store.get('chat:chat-a');saved.cardGroupName='Mira';saved.fixed.push({speaker:'Lady Kazehara',voice:grouped?'Puck':'g',style:''});h.store.set('chat:chat-a',saved);
+  await h.reload();await h.plan();await h.play();
+  assert.equal(h.store.get('chat:chat-a').cardGroupName,'Mira');
+  const calls=h.synthesis.length,plans=h.requests.filter(request=>request.action==='plan').length;
+  if(grouped)assert.ok(h.synthesis.some(input=>input.parameters.turns?.some(turn=>turn.speaker==='Mira')));
+  const replay=()=>[...h.$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay').click();
+  replay();await until(()=>h.$('status').textContent==='Replay finished.');
+  await h.reload();replay();await until(()=>h.$('status').textContent==='Replay finished.');
+  assert.equal(h.synthesis.length,calls);assert.equal(h.requests.filter(request=>request.action==='plan').length,plans);
+ }finally{await h.close();}
+});
+
+test('an obsolete group title still blocks recordings that merged independently cast characters',async()=>{
+ const h=await harness();try{
+  const saved=h.store.get('chat:chat-a');saved.cardGroupName='Show and Tell';saved.fixed.push({speaker:'Ethan',voice:'g',style:''});h.store.set('chat:chat-a',saved);
+  await h.reload();await h.plan();await h.play();
+  const row=(await recordings()).find(row=>row.value.content===h.message.content);
+  let changed=0;for(const segment of (row.value.attribution?.segments || row.value.segments).flatMap(segment=>segment.turns || [segment]))if(segment.speaker==='Mira'){segment.speaker='Show and Tell';changed++;}
+  assert.ok(changed>0);
+  const db=await openRecordings();await new Promise((resolve,reject)=>{const tx=db.transaction('recordings','readwrite');tx.objectStore('recordings').put(row.value,row.key);tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);});db.close();
+  await h.reload();const calls=h.synthesis.length;
+  [...h.$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay').click();
+  await until(()=>h.$('status').textContent.includes('combines several card characters'));
+  assert.equal(h.synthesis.length,calls);
+ }finally{await h.close();}
+});
+
 test('Fish voice IDs can be assigned, described, auditioned and restored in both connection modes',async()=>{
  for(const mode of ['one','several']){
   const h=await harness();try{

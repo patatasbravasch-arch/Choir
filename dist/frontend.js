@@ -6161,7 +6161,12 @@ export async function setup(ctx) {
     const expected=speechSourceUnits(transcript).filter(unit=>unisonSpeakers(transcript,unit,casting(config))?.length>=2).length;
     const actual=(recording.attribution?.segments || recording.segments || []).flatMap(segment=>segment.turns || [segment]).filter(segment=>segment.unison?.length>=2).length;
     if(expected>actual)return true;
-    return Boolean(config?.cardGroupName && config.fixed.length>3 && (recording.attribution?.segments || recording.segments || []).flatMap(speechMembers).some(segment=>normalizeName(segment.speaker)===normalizeName(config.cardGroupName)));
+    const groupName=normalizeName(config?.cardGroupName);
+    // A card can be named after its real lead while also describing other people.
+    // Only an obsolete title, absent from the independently assigned cast, marks
+    // a recording that still combines those people into the old group voice.
+    const namedLead=(config?.fixed || []).slice(2).some(actor=>normalizeName(actor.speaker)===groupName);
+    return Boolean(groupName && !namedLead && config.fixed.length>3 && (recording.attribution?.segments || recording.segments || []).flatMap(speechMembers).some(segment=>normalizeName(segment.speaker)===groupName));
   }
   function aliasedLeadRecording(recording){
     return (recording.segments || []).flatMap(speechMembers).some(segment=>(config?.fixed || []).some(actor=>normalizeName(actor.speaker)!==normalizeName(segment.speaker) && (actor.aliases || []).some(alias=>normalizeName(alias)===normalizeName(segment.speaker))));
