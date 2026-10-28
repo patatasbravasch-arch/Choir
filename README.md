@@ -4,7 +4,7 @@
 
 # Choir
 
-[![Version](https://img.shields.io/badge/version-1.1.6--staging.56-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/lunch-test)
+[![Version](https://img.shields.io/badge/version-1.1.6--staging.57-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/lunch-test)
 [![Platform](https://img.shields.io/badge/platform-Lumiverse%20Spindle-purple.svg)](https://docs.lumiverse.chat/)
 [![Tests](https://img.shields.io/badge/tests-611%20tests-blue.svg)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -12,6 +12,8 @@
 An installable Lumiverse Spindle extension for multi-voice narration, dialogue attribution, sound effects, ambience and background music.
 
 </div>
+
+Version **1.1.6-staging.57** restores the hidden **Playback → Speech plan** entry and shows the effective delivery direction beneath each spoken block. Emotion and intensity are expressed together (for example, “Slightly amused, conversational”), rather than as a separate numeric intensity setting. The display reflects the current delivery mode, base override, accent and pronunciation, updates when voice settings change, and makes no provider calls. A hint beside each character's Delivery setting points to the plan. Play uses the displayed directions; saved Replay retains its recorded performance.
 
 Version **1.1.6-staging.56** fixes grouped message controls throwing a global error when a saved reply still needs an automatic voice choice. This could obscure the status of a different reply being planned or played. Such controls now show a message-specific **Plan message** action; opening them makes no provider calls, and explicit planning chooses missing voices without starting playback. Voice selection still requires a real planner choice and does not fall back to the first catalogue voice.
 

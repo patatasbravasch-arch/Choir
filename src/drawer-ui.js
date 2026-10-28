@@ -71,7 +71,11 @@ export function createDrawerNavigation(root) {
   move('extraVoicesWrap',destinations.castTools);const castTools=field('castJson').closest('details');castTools.querySelector('summary')?.remove();destinations.castTools.append(...castTools.childNodes);castTools.remove();
   destinations.castTools.querySelector('.et-pagebar').after(defaults,field('defaultStatus'));
   // Plan and JSON editors are separate destinations too.
-  const plan=move('planDetails',playHome);const planLink=button('Speech plan →',plan);planLink.className='et-link-row';const planPage=page('plan','Speech plan','play',planLink);move('planSummary',planPage);move('preview',planPage);const json=field('planJson').closest('details');json.querySelector('summary')?.remove();const jsonLink=button('Edit attribution JSON →',plan);jsonLink.className='et-link-row';const jsonPage=page('attribution','Attribution JSON','play',jsonLink);jsonPage.append(...json.childNodes);json.remove();
+  const plan=move('planDetails',playHome);plan.hidden=false;
+  const planLink=button('Speech plan →',plan);planLink.className='et-link-row';
+  const planPage=page('plan','Speech plan','play',planLink);move('planSummary',planPage);
+  const deliveryHint=el('p','Automatic acting chooses emotion and intensity per spoken line, such as “slightly amused”. Directions below reflect your current voice settings. Play uses these directions; Replay keeps the saved performance. Preset cues remain in the text.',planPage);deliveryHint.className='et-hint';
+  move('preview',planPage);const json=field('planJson').closest('details');json.querySelector('summary')?.remove();const jsonLink=button('Edit attribution JSON →',plan);jsonLink.className='et-link-row';const jsonPage=page('attribution','Attribution JSON','play',jsonLink);jsonPage.append(...json.childNodes);json.remove();
   for(const node of originalSettings)if(node.parentElement===settingsHome){if(node.nodeType===1 && (node.matches('[data-et]') || node.querySelector('[data-et]')))node.hidden=true;else node.remove();}
   for(const control of settings.querySelectorAll('select'))control.closest('label')?.classList.add('et-inline-field');
   select('cast');

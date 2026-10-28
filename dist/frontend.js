@@ -2894,7 +2894,11 @@ function createDrawerNavigation(root) {
   move('extraVoicesWrap',destinations.castTools);const castTools=field('castJson').closest('details');castTools.querySelector('summary')?.remove();destinations.castTools.append(...castTools.childNodes);castTools.remove();
   destinations.castTools.querySelector('.et-pagebar').after(defaults,field('defaultStatus'));
   // Plan and JSON editors are separate destinations too.
-  const plan=move('planDetails',playHome);const planLink=button('Speech plan →',plan);planLink.className='et-link-row';const planPage=page('plan','Speech plan','play',planLink);move('planSummary',planPage);move('preview',planPage);const json=field('planJson').closest('details');json.querySelector('summary')?.remove();const jsonLink=button('Edit attribution JSON →',plan);jsonLink.className='et-link-row';const jsonPage=page('attribution','Attribution JSON','play',jsonLink);jsonPage.append(...json.childNodes);json.remove();
+  const plan=move('planDetails',playHome);plan.hidden=false;
+  const planLink=button('Speech plan →',plan);planLink.className='et-link-row';
+  const planPage=page('plan','Speech plan','play',planLink);move('planSummary',planPage);
+  const deliveryHint=el('p','Automatic acting chooses emotion and intensity per spoken line, such as “slightly amused”. Directions below reflect your current voice settings. Play uses these directions; Replay keeps the saved performance. Preset cues remain in the text.',planPage);deliveryHint.className='et-hint';
+  move('preview',planPage);const json=field('planJson').closest('details');json.querySelector('summary')?.remove();const jsonLink=button('Edit attribution JSON →',plan);jsonLink.className='et-link-row';const jsonPage=page('attribution','Attribution JSON','play',jsonLink);jsonPage.append(...json.childNodes);json.remove();
   for(const node of originalSettings)if(node.parentElement===settingsHome){if(node.nodeType===1 && (node.matches('[data-et]') || node.querySelector('[data-et]')))node.hidden=true;else node.remove();}
   for(const control of settings.querySelectorAll('select'))control.closest('label')?.classList.add('et-inline-field');
   select('cast');
@@ -3119,6 +3123,7 @@ export async function setup(ctx) {
     .ensemble-tts .et-plan-block{padding:7px 0;margin:0;border:0;border-bottom:1px solid #8883;border-radius:0;background:none}
     .ensemble-tts .et-plan-heading{display:flex;gap:8px;justify-content:space-between;align-items:baseline;font-size:0.85em}
     .ensemble-tts .et-plan-heading small{font-size:0.85em;opacity:0.75;text-align:right}
+    .ensemble-tts .et-plan-delivery{display:block;font-size:.82em;margin:4px 0;overflow-wrap:anywhere}
     .ensemble-tts details{margin:10px 0;border:1px solid rgba(128,128,128,0.2);border-radius:6px;padding:8px 12px}
     .ensemble-tts details summary{cursor:pointer;font-size:0.88em;font-weight:500;opacity:0.8;user-select:none}
     .ensemble-tts details[open] summary{margin-bottom:10px}
@@ -4805,6 +4810,7 @@ export async function setup(ctx) {
     if(JSON.stringify(namePronunciations(pronunciationActors(candidate)))!==JSON.stringify(namePronunciations(pronunciationActors(config))))stop(false);
     $('readingPreview').hidden=true;
     config=candidate;pendingSettings={chatId,value:structuredClone(config),edit:++settingsEdit};
+    refreshDeliveryGuidance();
     updateCastVisibility();
     if(!config.autoPlan && !config.auto)cancelAutoReplies();
     if(autoReplyActive?.token===revision){
@@ -5387,6 +5393,7 @@ export async function setup(ctx) {
       if(node===voiceWrap)wrap.style.cssText='grid-column:1 / -1;margin-top:2px';
     }
     style.closest('label').before(deliveryPair);
+    const deliveryHelp=document.createElement('small');deliveryHelp.className='et-hint';deliveryHelp.textContent='Automatic acting chooses emotion and intensity per line. After planning, see Playback → Speech plan for the directions.';deliveryPair.after(deliveryHelp);
     const speedSection=document.createElement('div');speedSection.className='et-tuning et-character-speed';
     const speedHeading=document.createElement('span');speedHeading.className='et-tuning-title';speedHeading.textContent='Voice speed';
     const speedSlot=document.createElement('div');speedSlot.className='et-tuning-slot';
@@ -5786,6 +5793,23 @@ export async function setup(ctx) {
       if(!disposed && version===latestNoticeVersion && targetChat===chatId && sameSpeech(ctx.messages.getContent(latest.id),content))$('latestNotice').hidden=!matches;
     })().catch(()=>{});
   }
+  function refreshDeliveryGuidance(){
+    if(!plan)return;
+    const snapshot=capture();
+    for(const node of $('preview').querySelectorAll('[data-choir-delivery]')){
+      const segment=plan.segments[Number(node.dataset.choirDelivery)];node.replaceChildren();
+      const members=speechMembers(segment);
+      for(const member of members){
+        const line=document.createElement('div'),actor=actorFor(member,snapshot);
+        const mode=characterDeliveryMode(actor,normalizeName(member.speaker)==='narrator');
+        const label=snapshot.useStyle===false || mode==='off'?'Tone directions off':mode==='base'?'Base style only':'Automatic acting';
+        const speaker=members.length>1?`${member.speaker} · `:'';
+        try{line.textContent=`${speaker}${label} · ${synthesisSettings(member,snapshot).segment.style || 'No added direction'}`;}
+        catch(error){line.textContent=`${speaker}Delivery unavailable: ${error.message}`;}
+        node.append(line);
+      }
+    }
+  }
   function renderPreview() {
     updateCastVisibility();
     refreshLatestNotice();
@@ -5799,14 +5823,16 @@ export async function setup(ctx) {
       const label=document.createElement('strong');
       const connectionLabel=nativeConnections.find(c=>`native:${c.id}`===segment.route)?.name;
       label.textContent=`${index+1}. ${segment.speaker}${segment.unison?' · in unison':''} · ${segment.unison?segment.unison.map(member=>member.voice).join(' + '):segment.voice}${connectionLabel?` · ${connectionLabel}`:''}${isMutedNarrator?' · Muted':''}`;
-      label.title=segment.style || 'Default delivery';
       const text=document.createElement('div');text.className='et-transcript';text.textContent=segment.text;
       const cacheStatus=document.createElement('small');cacheStatus.dataset.cacheIndex=index;cacheStatus.textContent='Checking cache…';
       const heading=document.createElement('div');heading.className='et-plan-heading';heading.append(label,cacheStatus);
-      card.append(heading,text);$('preview').append(card);
+      card.append(heading);
+      if(!segment.kind){const delivery=document.createElement('small');delivery.className='et-plan-delivery';delivery.dataset.choirDelivery=index;card.append(delivery);}
+      card.append(text);$('preview').append(card);
     }
     // Editing uses delivery-only styles, so re-validation does not double the base style.
     $('planJson').value=JSON.stringify({segments:plan.segments.map(segment=>withoutBase(segment,casting(config)))},null,2);
+    refreshDeliveryGuidance();
     renderMixer();void refreshCacheStatus();refreshSectionControls();
   }
   async function refreshCacheStatus(){

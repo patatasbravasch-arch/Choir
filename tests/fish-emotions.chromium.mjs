@@ -32,7 +32,15 @@ try{
   assert.equal(await page.getByRole('combobox',{name:'Add Fish emotion or delivery cue',exact:true}).count(),0,'automatic TTS emotions need no manual picker');
   const plan=async()=>{await withDrawerControl(page,'latest',()=>page.locator('[data-et="latest"]').click());await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Ready:'));};
   const play=async()=>{await withDrawerControl(page,'drawerPlay',()=>page.locator('[data-et="drawerPlay"]').click());await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.includes('Playback finished'));};
-  await plan();assert.equal(await page.evaluate(()=>window.calls.length),0,'planning does not synthesize audio');await play();
+  await plan();assert.equal(await page.evaluate(()=>window.calls.length),0,'planning does not synthesize audio');
+  await page.getByRole('tab',{name:'Playback',exact:true}).click();
+  assert.equal(await page.getByRole('button',{name:'Speech plan →',exact:true}).isVisible(),true,'delivery guidance must have a visible entry in Playback');
+  await page.getByRole('button',{name:'Speech plan →',exact:true}).click();
+  assert.equal(await page.locator('[data-choir-delivery]').filter({hasText:/Automatic acting · Slightly amused[.,] conversational/}).isVisible(),true,JSON.stringify(await page.locator('[data-choir-delivery]').allTextContents()));
+  assert.equal(await page.locator('[data-choir-delivery]').filter({hasText:'Base style only · Measured narration'}).count(),2);
+  assert.ok(!(await page.locator('[data-choir-delivery]').allTextContents()).some(text=>text.includes('theatrical')),'show effective delivery, not the overridden dramatic base');
+  if(process.env.CHOIR_EMOTION_SCREENSHOTS){await mkdir(process.env.CHOIR_EMOTION_SCREENSHOTS,{recursive:true});await page.locator('main').screenshot({path:path.join(process.env.CHOIR_EMOTION_SCREENSHOTS,`delivery-${mobile?'mobile':'desktop'}-${openRouter?'openrouter':'native'}.png`)});}
+  await play();
   let calls=await page.evaluate(()=>window.calls),fish=calls.find(call=>call.voice==='m');assert.equal(calls.length,3);assert.ok(fish);assert.match(fish.text,/^\[Slightly amused\]\[conversational\] /);
   if(!openRouter)assert.equal(fish.parameters.voice_direction,'','native direction must not duplicate the injected cues');
   assert.ok(calls.filter(call=>call.voice==='n').every(call=>call.parameters.speech_style==='Measured narration' && !call.text.includes('[Slightly amused]')),'Gemini narrator retains its own stable delivery');
@@ -52,8 +60,18 @@ try{
   const grouped=await page.evaluate(()=>window.calls.find(call=>call.parameters.turns?.length===2));assert.ok(grouped,'compatible Fish actors use a grouped request');
   assert.equal((grouped.parameters.turns[0].text.match(/\[whispering\]/g) || []).length,1);assert.ok(!grouped.parameters.turns[0].text.includes('[sad]'));
   assert.match(grouped.parameters.turns[1].text,/^\[sad\]\[whispering\] /);assert.ok(grouped.parameters.turns.every(turn=>turn.style===''),'grouped relays must not add another style');
+  await page.evaluate(()=>{window.fixtureMessage.content='"Welcome home."';});await plan();
   await page.getByRole('tab',{name:'Cast',exact:true}).click();await page.getByRole('button',{name:'Edit Mira',exact:true}).click();
   assert.equal(await page.getByRole('combobox',{name:'Delivery',exact:true}).inputValue(),'auto');assert.equal(await page.getByRole('textbox',{name:'Base style',exact:true}).inputValue(),'Dramatic and theatrical','planning preserves the saved base without stacking it on automatic delivery');
+  const callsBeforeSettings=await page.evaluate(()=>window.calls.length);
+  await page.getByRole('combobox',{name:'Delivery',exact:true}).selectOption('base');
+  await page.getByRole('tab',{name:'Playback',exact:true}).click();await page.getByRole('button',{name:'Speech plan →',exact:true}).click();
+  assert.equal(await page.locator('[data-choir-delivery]').filter({hasText:'Base style only · Dramatic and theatrical'}).count(),1,'guidance updates immediately when a base overrides planned emotion');
+  await page.getByRole('tab',{name:'Cast',exact:true}).click();await page.getByRole('button',{name:'Edit Mira',exact:true}).click();
+  await page.getByRole('combobox',{name:'Delivery',exact:true}).selectOption('off');
+  await page.getByRole('tab',{name:'Playback',exact:true}).click();await page.getByRole('button',{name:'Speech plan →',exact:true}).click();
+  assert.equal(await page.locator('[data-choir-delivery]').filter({hasText:'Tone directions off · No added direction'}).count(),1,'the selected Fish turn shows that generated acting is disabled');
+  assert.equal(await page.evaluate(()=>window.calls.length),callsBeforeSettings,'viewing directions and changing modes makes no TTS requests');
   assert.equal(await page.locator('.ensemble-tts').evaluate(node=>node.scrollWidth<=node.clientWidth+1),true);
   if(process.env.CHOIR_EMOTION_SCREENSHOTS){await mkdir(process.env.CHOIR_EMOTION_SCREENSHOTS,{recursive:true});await page.locator('main').screenshot({path:path.join(process.env.CHOIR_EMOTION_SCREENSHOTS,`${mobile?'mobile':'desktop'}-${openRouter?'openrouter':'native'}.png`)});}
   console.log(`PASS ${mobile?'mobile':'desktop'} S2 ${openRouter?'OpenRouter':'native'} automatic TTS injection, emotion changes, voice stability, cache reuse, preset priority, Gemini isolation and grouped dialogue`);
