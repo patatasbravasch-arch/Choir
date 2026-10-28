@@ -2888,6 +2888,7 @@ function createDrawerNavigation(root) {
   }
   for(const name of ['connectionMode','connection','styleParam','fishVoiceSource'])moveLabel(name,destinations.connections);move('testTts',destinations.connections);move('load',destinations.connections);
   for(const name of ['plannerMode','planner','decisionConnection','allowLlmFallback','plannerTokens'])moveLabel(name,destinations.planner);for(const name of ['jevKey','jevEndpoint','plannerHint','testPlanner'])move(name,destinations.planner);
+  moveLabel('paranoidMode',destinations.planner);
   const filters=field('ignoredTags').closest('details');filters.querySelector('summary')?.remove();destinations.filters.append(...filters.childNodes);filters.remove();
   const performance=field('concurrency').closest('section');for(const name of ['concurrency','chunk','prefetch','apiBase'])moveLabel(name,destinations.performance);destinations.performance.append(field('batchSpeech').closest('.et-row'));for(const hint of [...performance.querySelectorAll(':scope>p')])destinations.performance.append(hint);
   for(const name of ['sectionButtons','abyssalMixerTheme','showAutoPlanAction'])moveLabel(name,destinations.interface);
@@ -2899,6 +2900,9 @@ function createDrawerNavigation(root) {
   const planPage=page('plan','Speech plan','play',planLink);move('planSummary',planPage);
   const deliveryHint=el('p','Automatic acting chooses emotion and intensity per spoken line, such as “slightly amused”. Directions below reflect your current voice settings. Play uses these directions; Replay keeps the saved performance. Preset cues remain in the text.',planPage);deliveryHint.className='et-hint';
   move('preview',planPage);const json=field('planJson').closest('details');json.querySelector('summary')?.remove();const jsonLink=button('Edit attribution JSON →',plan);jsonLink.className='et-link-row';const jsonPage=page('attribution','Attribution JSON','play',jsonLink);jsonPage.append(...json.childNodes);json.remove();
+  const inspect=button('TTS inspector →',plan);inspect.dataset.et='ttsInspectorOpen';inspect.className='et-link-row';inspect.hidden=true;
+  const inspectorPage=page('ttsInspector','TTS inspector','play',inspect),inspector=field('ttsInspector');inspectorPage.append(...inspector.childNodes);inspector.remove();
+  const inspectPlan=button('TTS inspector →',planPage,()=>openPage('ttsInspector'));inspectPlan.dataset.et='ttsInspectorFromPlan';inspectPlan.className='et-link-row';inspectPlan.hidden=true;
   for(const node of originalSettings)if(node.parentElement===settingsHome){if(node.nodeType===1 && (node.matches('[data-et]') || node.querySelector('[data-et]')))node.hidden=true;else node.remove();}
   for(const control of settings.querySelectorAll('select'))control.closest('label')?.classList.add('et-inline-field');
   select('cast');
@@ -3124,6 +3128,8 @@ export async function setup(ctx) {
     .ensemble-tts .et-plan-heading{display:flex;gap:8px;justify-content:space-between;align-items:baseline;font-size:0.85em}
     .ensemble-tts .et-plan-heading small{font-size:0.85em;opacity:0.75;text-align:right}
     .ensemble-tts .et-plan-delivery{display:block;font-size:.82em;margin:4px 0;overflow-wrap:anywhere}
+    .ensemble-tts .et-tts-request{padding:10px 0;border-bottom:1px solid #8883;overflow-wrap:anywhere}
+    .ensemble-tts .et-tts-request textarea{font-family:monospace;font-size:12px;white-space:pre-wrap;margin-top:6px;resize:vertical}
     .ensemble-tts details{margin:10px 0;border:1px solid rgba(128,128,128,0.2);border-radius:6px;padding:8px 12px}
     .ensemble-tts details summary{cursor:pointer;font-size:0.88em;font-weight:500;opacity:0.8;user-select:none}
     .ensemble-tts details[open] summary{margin-bottom:10px}
@@ -3399,6 +3405,7 @@ export async function setup(ctx) {
       <label class="et-check" title="Scroll the chat to the passage being read. Scrolling yourself pauses this until the next Play."><input data-et="followNarration" type="checkbox"> Follow narration</label>
       <label class="et-check"><input data-et="auto" type="checkbox"> Auto-play new replies</label>
       <label class="et-check" hidden><input data-et="useStyle" type="checkbox" checked> Delivery styles</label>
+      <label class="et-check" title="Inspect final Choir TTS request bodies after planning. Keeps the last 20 attempted calls in memory for this chat; no credentials or saved debug logs."><input data-et="paranoidMode" type="checkbox"> Paranoid mode · inspect TTS requests</label>
       <label class="et-check" hidden><input data-et="useFastClassifier" type="checkbox"> Fast Attribution (0ms instant for narration & 1-on-1 dialogue)</label>
     </div>
     </section><section data-choir-page="settings"><details>
@@ -3442,6 +3449,12 @@ export async function setup(ctx) {
       <textarea data-et="planJson" rows="6" spellcheck="false" style="margin-top:8px"></textarea>
       <button data-et="apply" style="margin-top:8px">Apply JSON</button>
     </details></section>
+    <section data-et="ttsInspector" hidden>
+      <p class="et-hint">Exact request bodies from Choir to the Lumiverse TTS relay, after attribution, voice selection, pronunciation and tone injection. For grouped speech, parameters.turns contains each speaker's text and voice. The relay may format the provider request further.</p>
+      <div class="et-row"><label>Show<select data-et="ttsInspectorView"><option value="prepared">Prepared requests</option><option value="sent">Attempted calls (0)</option></select></label><button data-et="refreshTtsInspector">Refresh view</button><button data-et="clearTtsLog">Clear call log</button></div>
+      <p data-et="ttsInspectorNote" class="et-hint"></p>
+      <div data-et="ttsRequests"></div>
+    </section>
     <details hidden><summary>Import / export cast</summary><p>Exports include routes and preferences, never credentials. Imported routes must exist on this host.</p>
       <textarea data-et="castJson" aria-label="Cast JSON"></textarea><button data-et="exportCast">Export cast</button><button data-et="importCast">Validate and import cast</button>
     </details>
@@ -3743,6 +3756,8 @@ export async function setup(ctx) {
   toolbarAutoPlan.innerHTML=`${ICON_SPARKLE}<span></span>`;toolbarAutoPlan.onclick=()=>run(toggleAutoPlan);
   const messageStatuses=new Map(),messageSections=new Set(),seekControls=new Set();let messagePlaybackId=null,messageOperation=null;
   let disposed=false, loadVersion=0, revision=0, config, chatId=null, plan=null, planSource=null, planAttribution=null, planningSource=null, busy=false;
+  const ttsRequestLog=[];let ttsRequestSequence=0;
+  unsubs.push(()=>{ttsRequestLog.length=0;});
   let activeCharacterCard=null,activePersonaName='',activeCardKey='';
   const autoReplyQueue=new Map(),seenAutoGenerations=new Set();let autoReplyTimer=null,autoReplyActive=null;
   let voices=[...GEMINI_VOICES], nativeConnections=[], nativeProviders=[], castRows=[], npcRows=[], voiceIdEditorCount=0;
@@ -3750,7 +3765,7 @@ export async function setup(ctx) {
   let controller=null, currentAudio=null, finishAudio=null, objectUrl=null;
   const paragraphPrefetchControllers=new Set();
   const defaults = () => ({planner:'',connection:'',decisionConnection:'',styleParam:'',apiBase:'/api/v1',chunk:1800,batchSpeech:false,concurrency:1,plannerTokens:8192,
-    prefetch:1,normalizeLoudness:true,skipMeta:true,allowLlmFallback:false,sectionButtons:false,connectionMode:'several',enableMixer:false,singleVoices:{},
+    prefetch:1,normalizeLoudness:true,skipMeta:true,allowLlmFallback:false,sectionButtons:false,paranoidMode:false,connectionMode:'several',enableMixer:false,singleVoices:{},
     extraVoices:'',ignoredTags:'',useStyle:true,auto:false,autoPlan:false,showAutoPlanAction:false,muteNarrator:false,enableSfx:true,enableAmbience:true,enableMusic:false,loopMusic:false,freesoundApiKey:'',npcPolicy:{mode:'llm',route:'',voice:'',voices:[]},fishVoiceSource:'community',plannerMode:'llm',useFastClassifier:false,useJev:false,jevApiKey:'',jevEndpoint:'https://api.typesafe.ai/v1',planBatchChars:3600,planBatchUnits:24,retention:'forever',readAlong:'off',followNarration:false,casts:{},fixed:[
       {speaker:'Narrator',voice:'Charon',style:'Clear, measured narration'},
       {speaker:'Persona',voice:'',style:''},
@@ -4450,7 +4465,7 @@ export async function setup(ctx) {
   const settingsKey = id => `chat:${id}`;
   const GLOBAL_SETTINGS_KEY='settings:global';
   const CAPTURED_DEFAULTS_KEY='settings:captured-defaults';
-  const preferenceFields=['planner','decisionConnection','connection','connectionMode','enableMixer','styleParam','apiBase','chunk','batchSpeech','plannerTokens','retention','concurrency','prefetch','normalizeLoudness','skipMeta','allowLlmFallback','sectionButtons','extraVoices','extraVoiceRoutes','useStyle','auto','autoPlan','showAutoPlanAction','ignoredTags','fishVoiceSource','plannerMode','useFastClassifier','useJev','jevEndpoint','enableSfx','enableAmbience','enableMusic','loopMusic','freesoundApiKey','readAlong','followNarration'];
+  const preferenceFields=['planner','decisionConnection','connection','connectionMode','enableMixer','styleParam','apiBase','chunk','batchSpeech','plannerTokens','retention','concurrency','prefetch','normalizeLoudness','skipMeta','allowLlmFallback','sectionButtons','paranoidMode','extraVoices','extraVoiceRoutes','useStyle','auto','autoPlan','showAutoPlanAction','ignoredTags','fishVoiceSource','plannerMode','useFastClassifier','useJev','jevEndpoint','enableSfx','enableAmbience','enableMusic','loopMusic','freesoundApiKey','readAlong','followNarration'];
   const defaultVoiceFields=['voice','route','gender','style','accent','deliveryMode','excluded'];
   let capturedDefaults=null,defaultOperation=false,defaultsRevision=0;
   let closeDefaultEditor;
@@ -4810,6 +4825,7 @@ export async function setup(ctx) {
     if(JSON.stringify(namePronunciations(pronunciationActors(candidate)))!==JSON.stringify(namePronunciations(pronunciationActors(config))))stop(false);
     $('readingPreview').hidden=true;
     config=candidate;pendingSettings={chatId,value:structuredClone(config),edit:++settingsEdit};
+    syncTtsInspector();
     refreshDeliveryGuidance();
     updateCastVisibility();
     if(!config.autoPlan && !config.auto)cancelAutoReplies();
@@ -4892,24 +4908,77 @@ export async function setup(ctx) {
     }
     return response;
   }
-  async function nativeSpeech(connection,{voice,text,parameters},signal,speaker='Voice'){
+  // Keep this body builder shared by the preview and the actual fetch. Never
+  // serialize the connection object: it can contain authentication fields.
+  const ttsRequestBody=(connection,{voice,text,parameters})=>JSON.stringify({connectionId:connection.id,model:connection.model,voice,text,parameters});
+  function clearTtsRequestLog(){ttsRequestLog.length=0;$('ttsRequests').replaceChildren();renderTtsInspector();}
+  function syncTtsInspector(){
+    const enabled=Boolean(config?.paranoidMode);
+    for(const name of ['ttsInspectorOpen','ttsInspectorFromPlan'])$(name).hidden=!enabled;
+    if(!enabled)ttsRequestLog.length=0;
+    renderTtsInspector();
+  }
+  function renderTtsInspector(){
+    const node=$('ttsRequests');
+    $('ttsInspectorView').options[1].textContent=`Attempted calls (${ttsRequestLog.length})`;
+    if(!config?.paranoidMode){node.replaceChildren();$('ttsInspectorNote').textContent='Enable Paranoid mode in Settings → Planner.';return;}
+    if(node.closest('[data-choir-destination]').hidden)return;
+    node.replaceChildren();
+    const sent=$('ttsInspectorView').value==='sent';
+    $('clearTtsLog').disabled=!ttsRequestLog.length;
+    $('ttsInspectorNote').textContent=sent?'Last 20 attempted calls in this open chat, newest first. Cache hits and saved Replay make no new TTS call. This log clears on reload, chat change or disabling the mode.':'Prepared with your current settings; these are not proof of a call. Cached audio may be reused. Plan a message first to inspect its requests.';
+    const append=(title,body,metadata)=>{
+      const card=document.createElement('section');card.className='et-tts-request';
+      const heading=document.createElement('strong');heading.textContent=title;
+      const details=document.createElement('div');details.className='et-hint';details.textContent=metadata;
+      const payload=JSON.parse(body),voices=payload.parameters?.turns?.map(turn=>`${turn.speaker}: ${turn.voice}`).join(' · ') || `Voice: ${payload.voice || '(provider default)'}`;
+      const voiceLabel=document.createElement('div');voiceLabel.textContent=voices;
+      const json=document.createElement('textarea');json.readOnly=true;json.rows=9;json.setAttribute('aria-label',title);json.dataset.choirTtsPayload=sent?'sent':'prepared';json.value=JSON.stringify(payload,null,2);
+      card.append(heading,details,voiceLabel,json);node.append(card);
+    };
+    if(sent){
+      for(const entry of [...ttsRequestLog].reverse())append(`Call ${entry.id} · ${entry.speaker} · ${entry.status}`,entry.body,`${entry.time} · ${entry.origin} · ${entry.connection}`);
+      if(!ttsRequestLog.length)node.textContent='No TTS calls recorded while Paranoid mode is enabled.';
+      return;
+    }
+    if(!plan?.segments?.length){node.textContent='No speech plan loaded. Use Plan latest or plan a saved message.';return;}
+    try{
+      const snapshot=capture(),batches=playbackBatches(plan.segments.map((segment,passageIndex)=>({...segment,passageIndex})),snapshot).filter(segment=>!segment.kind);
+      let count=0;
+      for(const batch of batches)for(const segment of batch.unison?speechMembers(batch):[batch]){
+        const request=synthesisSettings(segment,snapshot);
+        if(!request.connection)throw new Error(`TTS connection for ${segment.speaker} is unavailable.`);
+        append(`Prepared ${++count} · ${segment.speaker}`,ttsRequestBody(request.connection,{voice:segment.voice,text:request.text,parameters:request.parameters}),`${request.connection.name || request.connection.id} · ${request.connection.provider} · ${request.connection.model || 'default model'}`);
+      }
+      if(!count)node.textContent='No speech requests: the current speakers are muted or excluded.';
+    }catch(error){node.textContent=`Cannot prepare request preview: ${error.message}`;}
+  }
+  for(const name of ['ttsInspectorOpen','ttsInspectorFromPlan'])$(name).addEventListener('click',renderTtsInspector);
+  $('ttsInspectorView').onchange=renderTtsInspector;$('refreshTtsInspector').onclick=renderTtsInspector;$('clearTtsLog').onclick=clearTtsRequestLog;
+  async function nativeSpeech(connection,{voice,text,parameters},signal,speaker='Voice',origin='Voice preview'){
     if(signal?.aborted)throw abortError();
     const request=new AbortController();let timedOut=false;
     const cancel=()=>request.abort();signal?.addEventListener('abort',cancel,{once:true});
     // Bound both the relay response and its audio download; do not retry paid requests automatically.
     const timeout=setTimeout(()=>{timedOut=true;request.abort();},185000);
+    let inspected;
     try{
       if(speechProviderFamily(connection.provider,connection.model)==='fish_audio' && [...GEMINI_VOICES,...OPENAI_VOICES].some(item=>item.id===voice))throw new Error(`Fish Audio requires a Fish voice ID; ${voice} belongs to Gemini or OpenAI. Edit this speaker and choose a Fish voice.`);
-      const response=await api('/tts/synthesize',{method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({connectionId:connection.id,model:connection.model,voice,text,parameters}),signal:request.signal});
-      return await response.blob();
+      const body=ttsRequestBody(connection,{voice,text,parameters});
+      if(config?.paranoidMode && !disposed){
+        inspected={id:++ttsRequestSequence,speaker,origin,body,connection:`${connection.name || connection.id} · ${connection.provider}`,time:new Date().toLocaleTimeString(),status:'Sending'};
+        ttsRequestLog.push(inspected);if(ttsRequestLog.length>20)ttsRequestLog.shift();renderTtsInspector();
+      }
+      const response=await api('/tts/synthesize',{method:'POST',headers:{'Content-Type':'application/json'},body,signal:request.signal});
+      const blob=await response.blob();if(inspected)inspected.status='Succeeded';return blob;
     }catch(error){
+      if(inspected)inspected.status=signal?.aborted || error.name==='AbortError' && !timedOut?'Cancelled':'Failed';
       if(signal?.aborted || error.name==='AbortError' && !timedOut)throw error;
       if(timedOut)error=new Error('TTS request timed out after 185 seconds. Try a smaller Max characters per request or check the Lumiverse relay.');
       const provider=nativeProviders.find(item=>item.id===connection.provider);
       const label=provider?.displayName || (connection.provider==='fish_audio'?'Fish Audio':connection.provider==='openai_tts'?'GPT TTS':connection.provider || 'TTS');
       throw new Error(`${label} speech failed for ${speaker} (${connection.name || connection.id}; model ${connection.model || 'default'}; voice ${voice || 'default'}): ${error.message}`);
-    }finally{clearTimeout(timeout);signal?.removeEventListener('abort',cancel);}
+    }finally{clearTimeout(timeout);signal?.removeEventListener('abort',cancel);if(inspected && !disposed)renderTtsInspector();}
   }
   function option(select,value,label) {const node=document.createElement('option');node.value=value;node.textContent=label;select.append(node);}
   let previewAudio = null;
@@ -5464,7 +5533,7 @@ export async function setup(ctx) {
     // record their own route before capture, including non-default Fish voices.
     scopeLegacyExtraVoices();
     for(const voice of additionalVoices($('extraVoices').value))if(!Object.hasOwn(config.extraVoiceRoutes || {},voice.id))rememberExtraVoiceRoute(voice.id,scope(config));
-    return reconcileCardCast({...config,showAutoPlanAction:$('showAutoPlanAction').checked,fixed:castRows.filter(v=>root.contains(v.row)).map(v=>v.read()),
+    return reconcileCardCast({...config,paranoidMode:$('paranoidMode').checked,showAutoPlanAction:$('showAutoPlanAction').checked,fixed:castRows.filter(v=>root.contains(v.row)).map(v=>v.read()),
       singleVoices:config.connectionMode==='one'?{...config.singleVoices,[scope(config)]:Object.fromEntries([...castRows,...npcRows].filter(v=>v.row.isConnected || v.row.parentElement).map(v=>v.voiceChoice()))}:config.singleVoices,
       casts:{...config.casts,[scope(config)]:npcRows.filter(v=>root.contains(v.row)).map(v=>v.read())},
       planner:$('planner').value,connection:$('connection').value,decisionConnection:$('decisionConnection')?$('decisionConnection').value:(config.decisionConnection||''),
@@ -5594,6 +5663,7 @@ export async function setup(ctx) {
     $('connectionMode').value=config.connectionMode;
     $('useStyle').checked=config.useStyle;$('auto').checked=config.auto;
     $('showAutoPlanAction').checked=Boolean(config.showAutoPlanAction);
+    $('paranoidMode').checked=Boolean(config.paranoidMode);syncTtsInspector();
     if($('enableSfx'))$('enableSfx').checked=config.enableSfx!==false;
     $('enableAmbience').checked=config.enableAmbience!==false;$('enableMusic').checked=config.enableMusic===true;$('loopMusic').checked=config.loopMusic===true;
     if($('enableMixer'))$('enableMixer').checked=Boolean(config.enableMixer);
@@ -5623,7 +5693,7 @@ export async function setup(ctx) {
     const narrator=castRows[0]?.row.querySelector('input');if(narrator && config.fixed[0]?.speaker==='Narrator')narrator.disabled=true;
     refreshDefaultControls();
   }
-  function clearPlan() {plan=null;planSource=null;planAttribution=null;mixerPlaybackSegments=null;$('preview').replaceChildren();$('planJson').value='';$('planSummary').textContent='Speech plan';$('latestNotice').hidden=true;updateCastVisibility();renderMixer();refreshSectionControls();}
+  function clearPlan() {plan=null;planSource=null;planAttribution=null;mixerPlaybackSegments=null;$('preview').replaceChildren();$('planJson').value='';$('planSummary').textContent='Speech plan';$('latestNotice').hidden=true;updateCastVisibility();renderMixer();refreshSectionControls();renderTtsInspector();}
   // Cue keeps the current ambience bed running into its next paragraph.
   function stop(show=true,keepBed=false,keepMusic=false) {
     if(show)cancelAutoReplies();
@@ -5705,7 +5775,7 @@ export async function setup(ctx) {
     const version=++loadVersion;
     cataloguesReady=false;
     closeDefaultEditor?.();
-    cancelAutoReplies();stop(false);clearPlan();
+    cancelAutoReplies();stop(false);clearPlan();clearTtsRequestLog();
     try{await flushSettings();}catch(error){status(`Previous chat settings could not be saved: ${error.message}`,true);}
     if(disposed || version!==loadVersion)return;
     chatId=id;
@@ -5833,6 +5903,7 @@ export async function setup(ctx) {
     // Editing uses delivery-only styles, so re-validation does not double the base style.
     $('planJson').value=JSON.stringify({segments:plan.segments.map(segment=>withoutBase(segment,casting(config)))},null,2);
     refreshDeliveryGuidance();
+    renderTtsInspector();
     renderMixer();void refreshCacheStatus();refreshSectionControls();
   }
   async function refreshCacheStatus(){
@@ -6567,7 +6638,7 @@ export async function setup(ctx) {
     const request=synthesisSettings(segment,snapshot),route=segment.route || scope(snapshot);
     const connection=request.connection;
     if(!connection)throw new Error(`TTS connection for ${segment.speaker} is no longer available. Choose another connection and plan again.`);
-    return nativeSpeech(connection,{voice:segment.voice,text:request.text,parameters:request.parameters},signal,segment.speaker);
+    return nativeSpeech(connection,{voice:segment.voice,text:request.text,parameters:request.parameters},signal,segment.speaker,'Speech playback');
   }
   async function synthesizeUnisonBlob(segment,snapshot,signal,loadMember){
     const Context=globalThis.AudioContext || globalThis.webkitAudioContext;

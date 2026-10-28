@@ -1,6 +1,6 @@
 {
   "name": "choir",
-  "version": "1.1.6-staging.57",
+  "version": "1.1.6-staging.58",
   "private": true,
   "type": "module",
   "scripts": {
@@ -23,7 +23,8 @@
     "test:voices:chromium": "node scripts/build.mjs && node tests/voice-fixes.chromium.mjs",
     "test:emotions:chromium": "node scripts/build.mjs && node tests/fish-emotions.chromium.mjs",
     "test:drawer:chromium": "node scripts/build.mjs && node tests/drawer-v42.chromium.mjs",
-    "test:messages:chromium": "node scripts/build.mjs && node tests/message-controls.chromium.mjs"
+    "test:messages:chromium": "node scripts/build.mjs && node tests/message-controls.chromium.mjs",
+    "test:inspector:chromium": "node scripts/build.mjs && node tests/tts-inspector.chromium.mjs"
   },
   "devDependencies": {"jsdom":"26.1.0","fake-indexeddb":"6.2.4"}
 }

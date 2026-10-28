@@ -65,6 +65,7 @@ export function createDrawerNavigation(root) {
   }
   for(const name of ['connectionMode','connection','styleParam','fishVoiceSource'])moveLabel(name,destinations.connections);move('testTts',destinations.connections);move('load',destinations.connections);
   for(const name of ['plannerMode','planner','decisionConnection','allowLlmFallback','plannerTokens'])moveLabel(name,destinations.planner);for(const name of ['jevKey','jevEndpoint','plannerHint','testPlanner'])move(name,destinations.planner);
+  moveLabel('paranoidMode',destinations.planner);
   const filters=field('ignoredTags').closest('details');filters.querySelector('summary')?.remove();destinations.filters.append(...filters.childNodes);filters.remove();
   const performance=field('concurrency').closest('section');for(const name of ['concurrency','chunk','prefetch','apiBase'])moveLabel(name,destinations.performance);destinations.performance.append(field('batchSpeech').closest('.et-row'));for(const hint of [...performance.querySelectorAll(':scope>p')])destinations.performance.append(hint);
   for(const name of ['sectionButtons','abyssalMixerTheme','showAutoPlanAction'])moveLabel(name,destinations.interface);
@@ -76,6 +77,9 @@ export function createDrawerNavigation(root) {
   const planPage=page('plan','Speech plan','play',planLink);move('planSummary',planPage);
   const deliveryHint=el('p','Automatic acting chooses emotion and intensity per spoken line, such as “slightly amused”. Directions below reflect your current voice settings. Play uses these directions; Replay keeps the saved performance. Preset cues remain in the text.',planPage);deliveryHint.className='et-hint';
   move('preview',planPage);const json=field('planJson').closest('details');json.querySelector('summary')?.remove();const jsonLink=button('Edit attribution JSON →',plan);jsonLink.className='et-link-row';const jsonPage=page('attribution','Attribution JSON','play',jsonLink);jsonPage.append(...json.childNodes);json.remove();
+  const inspect=button('TTS inspector →',plan);inspect.dataset.et='ttsInspectorOpen';inspect.className='et-link-row';inspect.hidden=true;
+  const inspectorPage=page('ttsInspector','TTS inspector','play',inspect),inspector=field('ttsInspector');inspectorPage.append(...inspector.childNodes);inspector.remove();
+  const inspectPlan=button('TTS inspector →',planPage,()=>openPage('ttsInspector'));inspectPlan.dataset.et='ttsInspectorFromPlan';inspectPlan.className='et-link-row';inspectPlan.hidden=true;
   for(const node of originalSettings)if(node.parentElement===settingsHome){if(node.nodeType===1 && (node.matches('[data-et]') || node.querySelector('[data-et]')))node.hidden=true;else node.remove();}
   for(const control of settings.querySelectorAll('select'))control.closest('label')?.classList.add('et-inline-field');
   select('cast');
