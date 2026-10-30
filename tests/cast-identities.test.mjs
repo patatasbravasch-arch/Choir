@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {reconcileCastDuplicates,mergeSettingsChanges,castReply,validatePlan,resolvePlanReferences} from '../src/core.js';
+import {reconcileCastDuplicates,characterCardRoles,mergeSettingsChanges,castReply,validatePlan,resolvePlanReferences} from '../src/core.js';
 
 test('Kian and Kian Frost become one lead with aliases, the original voice, and provider choices retained',()=>{
  const lead={speaker:'Kian',voice:'chosen',route:'native:fish',style:'theatrical',accent:'Irish'};
@@ -62,4 +62,14 @@ test('reconciling a concurrent settings merge prevents the same name appearing a
   const clean=reconcileCastDuplicates(mergeSettingsChanges(latest,baseline,local));
   assert.equal(clean.fixed.at(-1).voice,'manual');
   assert.deepEqual(clean.casts['native:fish'],[]);
+});
+
+test('a lead saved twice, once from a card name ending in a full stop, merges into one row that keeps the voice',()=>{
+  const fixed=[{speaker:'Narrator',voice:'n'},{speaker:'Persona',voice:''},{speaker:'Weston',voice:'',aliases:['Weston "Wes" Vance.']},
+    {speaker:'Weston "Wes" Vance',voice:'w',route:'g',aliases:['Wes','Wes Carter']},{speaker:'Hannah Voss',voice:'h',aliases:['Hannah']}];
+  const result=reconcileCastDuplicates({fixed,npcs:[],casts:{},singleVoices:{g:{Weston:'','Weston "Wes" Vance':'w'}}});
+  assert.deepEqual(result.fixed.map(actor=>actor.speaker),['Narrator','Persona','Weston','Hannah Voss']);
+  assert.equal(result.fixed[2].voice,'w');assert.deepEqual(result.fixed[2].aliases,['Weston "Wes" Vance','Wes','Wes Carter']);
+  assert.deepEqual(result.singleVoices,{g:{Weston:'w'}});
+  assert.deepEqual(characterCardRoles({name:'Weston',description:'<wes>\n- Name: Weston "Wes" Vance.\n</wes>'})[0].aliases,['Weston "Wes" Vance']);
 });

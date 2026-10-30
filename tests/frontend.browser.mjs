@@ -183,6 +183,12 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
     assert.equal(nativeRequests.length,beforeRegeneration+3);
     message.content='The hall fell silent. Hello, {{user}}. Welcome.';
     events.get('MESSAGE_EDITED')({messageId:'message-a'});
+    // Without a persona, Lumiverse shows {{user}} as "User"; the placeholder persona row voices it.
+    $('fixed').querySelectorAll('.et-card')[1].querySelector('input').value='Persona';
+    $('latest').click();await until(()=>$('status').textContent.startsWith('Ready:'));
+    const fallback=requests.filter(request=>request.action==='plan').at(-1).input;
+    assert.ok(fallback.transcript.includes('Hello, User.'));
+    assert.ok(fallback.config.fixed[1].aliases.includes('User'));
     $('fixed').querySelectorAll('.et-card')[1].querySelector('input').value='Sona';
     $('latest').click();await until(()=>$('status').textContent.startsWith('Ready:'));
     assert.ok(requests.filter(request=>request.action==='plan').at(-1).input.transcript.includes('Hello, Sona.'));

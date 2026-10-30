@@ -174,14 +174,22 @@ export function reconcileCastDuplicates(value) {
   const combine=(first,actor)=>{
     changed=true;
     const key=normalizeName(first.speaker);
-    const aliases=[...new Map([actor.speaker,...(first.aliases || []),...(actor.aliases || [])].filter(alias=>normalizeName(alias)!==key).map(alias=>[normalizeName(alias),alias])).values()].slice(0,30);
-    return aliases.length?{...first,aliases}:first;
+    const spellings=new Map();
+    for(const alias of [actor.speaker,...(first.aliases || []),...(actor.aliases || [])])if(normalizeName(alias)!==key && castKey(alias)!==castKey(first.speaker) && !spellings.has(castKey(alias)))spellings.set(castKey(alias),alias);
+    const aliases=[...spellings.values()].slice(0,30);
+    // The first saved voice wins; a row without one takes the duplicate's voice.
+    const voiced=!first.voice && actor.voice?{voice:actor.voice,...(actor.route?{route:actor.route}:{})}:{};
+    return {...first,...voiced,...(aliases.length?{aliases}:{})};
   };
+  // One row naming the other (ignoring case and punctuation) is the same person.
+  const names=actor=>[actor.speaker,...(actor.aliases || [])].map(castKey).filter(Boolean);
+  const namesEachOther=(a,b)=>names(a).includes(castKey(b.speaker)) || names(b).includes(castKey(a.speaker));
   const unique=(actors,protectedSlots=0)=>{
     const result=[],positions=new Map(),families=new Map();
     for(const [slot,actor] of actors.entries()){
       const key=normalizeName(actor.speaker),family=identity(actor.speaker);
-      const index=positions.get(key) ?? (slot>=protectedSlots?families.get(family):undefined);
+      const named=slot>=protectedSlots?result.findIndex((other,index)=>index>=protectedSlots && namesEachOther(other,actor)):-1;
+      const index=positions.get(key) ?? (slot>=protectedSlots?families.get(family):undefined) ?? (named>=0?named:undefined);
       if(index===undefined){if(key)positions.set(key,result.length);if(slot>=protectedSlots)families.set(family,result.length);result.push(actor);continue;}
       positions.set(key,index);result[index]=combine(result[index],actor);
     }
@@ -199,7 +207,7 @@ export function reconcileCastDuplicates(value) {
   const canonical=new Map([...fixed,...Object.values(casts).flat(),...(npcs || [])].flatMap(actor=>(actor.aliases || []).map(alias=>[normalizeName(alias),actor.speaker])));
   const singleVoices=value.singleVoices && Object.fromEntries(Object.entries(value.singleVoices).map(([route,voices])=>{
     const updated={...voices};
-    for(const [name,voice] of Object.entries(voices)){const target=canonical.get(normalizeName(name));if(target && normalizeName(target)!==normalizeName(name)){if(!Object.hasOwn(updated,target))updated[target]=voice;delete updated[name];}}
+    for(const [name,voice] of Object.entries(voices)){const target=canonical.get(normalizeName(name));if(target && normalizeName(target)!==normalizeName(name)){if(!updated[target])updated[target]=voice;delete updated[name];}}
     return [route,updated];
   }));
   return {...value,fixed,casts,...(npcs?{npcs}:{}),...(singleVoices?{singleVoices}:{})};
@@ -259,7 +267,8 @@ const cardSectionName=value=>/^(?:speech|personality|appearance|background|histo
 // Check all card fields and keep each profile inside its own section.
 export function characterCardRoleDiscovery(card={}) {
   const escape=value=>value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
-  const clean=value=>value.replace(/[*_`]/g,'').replace(/^character(?:\s+\d+)?\s*:\s*/i,'').replace(/(?:['’]s)?\s+(?:data|profile|details|character sheet)$/i,'').trim();
+  // "Name: Weston Vance." ends a sentence; the full stop is not part of the name.
+  const clean=value=>value.replace(/[*_`]/g,'').replace(/^character(?:\s+\d+)?\s*:\s*/i,'').replace(/(?:['’]s)?\s+(?:data|profile|details|character sheet)$/i,'').trim().replace(/[\s.,;:!?]+$/u,'');
   const title=String(card.name || '').split(/\s*\|\s*/)[0];
   const titleNames=title.split(/\s+and\s+|\s*[&+]\s*|,\s*/i).map(name=>name.trim()).filter(Boolean);
   const nameFields=text=>[...text.matchAll(/^\s*(?:[-*]\s*)?(?:\*\*)?(?:Character\s+)?Name(?:\*\*)?\s*:\s*([^\n\r]+)/gim)].map(match=>clean(match[1]));
@@ -1112,7 +1121,33 @@ export function splitSegment(segment, maxChars = 350, maxBytes = Infinity, {tran
   return out;
 }
 
-export function speechBatches(segments,maxChars,defaultRoute,limitsForSegment=()=>({})) {
+// Speech plays several times slower than providers generate it, so the first
+// clips start short and grow: playback begins within seconds and each next clip
+// is ready before the one before it ends. Later clips use the normal limits.
+export const STARTUP_CLIP_CHARS=[300,700,1400];
+// A reply this short is sent whole: one call is cheaper, keeps a multi-speaker
+// passage together, and waiting for it is short anyway.
+const SHORT_REPLY_CHARS={plain:1200,sfx:900};
+const startupSizes=(segments,sfx)=>segments.filter(segment=>!segment.kind).reduce((sum,segment)=>sum+segment.text.length,0)>(sfx?SHORT_REPLY_CHARS.sfx:SHORT_REPLY_CHARS.plain)?STARTUP_CLIP_CHARS:[];
+
+// Cut the opening clips down to the startup sizes at sentence boundaries. Only
+// single-voice text is cut here; grouped batches apply the sizes as they form.
+function startupClips(batches,limitsForSegment,defaultRoute) {
+  const out=[],queue=[...batches],sizes=startupSizes(batches,false);let index=0;
+  while(queue.length){
+    const batch=queue.shift(),cap=sizes[index];
+    if(batch.kind){out.push(batch);continue;}
+    index++;
+    if(!cap || batch.unison || batch.turns || batch.text.length<=cap){out.push(batch);continue;}
+    const limits=limitsForSegment(batch,batch.route || defaultRoute);
+    const [head]=splitSegment(batch,cap,limits.maxBytes ?? Infinity,{transform:limits.speechText,atomic:limits.atomicWords});
+    const rest=batch.text.slice(batch.text.indexOf(head.text)+head.text.length).trimStart();
+    out.push(head);if(rest)queue.unshift({...batch,text:rest});
+  }
+  return out;
+}
+
+export function speechBatches(segments,maxChars,defaultRoute,limitsForSegment=()=>({}),{startup=true}={}) {
   const batches=[];
   for(const source of segments) {
     const limits=limitsForSegment(source,source.route || defaultRoute);
@@ -1127,28 +1162,30 @@ export function speechBatches(segments,maxChars,defaultRoute,limitsForSegment=()
     else batches.push({...segment,route});
     }
   }
-  return batches;
+  return startup?startupClips(batches,limitsForSegment,defaultRoute):batches;
 }
 
 // A short opening clip starts playback while later, bounded clips are prefetched.
 // The caller supplies provider capabilities and delivery/mixer compatibility.
 export function groupedSpeechBatches(segments,maxChars,defaultRoute,limitsForSegment,{sfx=false,startup=true}={}) {
   const batches=[],queue=segments.map(segment=>({...segment}));
-  let current=null,first=startup,currentLimits,openingLimit;
-  const flush=()=>{if(current){batches.push(current);if(!current.kind)first=false;current=null;}};
+  let current=null,spoken=0,currentLimits;
+  const sizes=startup?startupSizes(segments,sfx):[];
+  const flush=()=>{if(current){batches.push(current);if(!current.kind)spoken++;current=null;}};
   const turnsFor=batch=>batch.turns || [{...batch}];
   while(queue.length){
     const source=queue.shift(),route=source.route || defaultRoute;
     if(source.kind){flush();batches.push({...source,route});continue;}
     if(source.unison){
       flush();const limits=limitsForSegment(source,route);
-      batches.push(...splitSegment({...source,route},Math.min(maxChars,limits.maxChars || maxChars),limits.maxBytes ?? Infinity,{transform:limits.speechText,atomic:limits.atomicWords}));first=false;continue;
+      const pieces=splitSegment({...source,route},Math.min(maxChars,limits.maxChars || maxChars),limits.maxBytes ?? Infinity,{transform:limits.speechText,atomic:limits.atomicWords});
+      batches.push(...pieces);spoken+=pieces.length;continue;
     }
-    const limits=limitsForSegment(source,route),opening=sfx?900:1200;
-    // Keep a moderate passage intact. A long opening turn still starts with a
-    // short clip; later requests remain bounded by the provider and user limit.
-    openingLimit ??= source.text.length<=opening?opening:600;
-    const cap=Math.min(maxChars,limits.maxChars || maxChars,first?openingLimit:sfx?900:2400);
+    const limits=limitsForSegment(source,route);
+    // A short reply stays whole; a longer one opens with the startup sizes.
+    // Later requests remain bounded by the provider and user limit.
+    const opening=sizes[spoken] ?? (sizes.length || !startup?undefined:sfx?SHORT_REPLY_CHARS.sfx:SHORT_REPLY_CHARS.plain);
+    const cap=Math.min(maxChars,limits.maxChars || maxChars,opening ?? (sfx?900:2400),sfx?900:Infinity);
     const turns=current?turnsFor(current):[],names=new Map(turns.map(turn=>[turn.speaker,turn.voice]));
     const compatible=current && current.route===route && currentLimits.group===limits.group &&
       (!names.has(source.speaker) || names.get(source.speaker)===source.voice) &&

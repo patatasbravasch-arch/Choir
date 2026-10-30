@@ -175,14 +175,22 @@ function reconcileCastDuplicates(value) {
   const combine=(first,actor)=>{
     changed=true;
     const key=normalizeName(first.speaker);
-    const aliases=[...new Map([actor.speaker,...(first.aliases || []),...(actor.aliases || [])].filter(alias=>normalizeName(alias)!==key).map(alias=>[normalizeName(alias),alias])).values()].slice(0,30);
-    return aliases.length?{...first,aliases}:first;
+    const spellings=new Map();
+    for(const alias of [actor.speaker,...(first.aliases || []),...(actor.aliases || [])])if(normalizeName(alias)!==key && castKey(alias)!==castKey(first.speaker) && !spellings.has(castKey(alias)))spellings.set(castKey(alias),alias);
+    const aliases=[...spellings.values()].slice(0,30);
+    // The first saved voice wins; a row without one takes the duplicate's voice.
+    const voiced=!first.voice && actor.voice?{voice:actor.voice,...(actor.route?{route:actor.route}:{})}:{};
+    return {...first,...voiced,...(aliases.length?{aliases}:{})};
   };
+  // One row naming the other (ignoring case and punctuation) is the same person.
+  const names=actor=>[actor.speaker,...(actor.aliases || [])].map(castKey).filter(Boolean);
+  const namesEachOther=(a,b)=>names(a).includes(castKey(b.speaker)) || names(b).includes(castKey(a.speaker));
   const unique=(actors,protectedSlots=0)=>{
     const result=[],positions=new Map(),families=new Map();
     for(const [slot,actor] of actors.entries()){
       const key=normalizeName(actor.speaker),family=identity(actor.speaker);
-      const index=positions.get(key) ?? (slot>=protectedSlots?families.get(family):undefined);
+      const named=slot>=protectedSlots?result.findIndex((other,index)=>index>=protectedSlots && namesEachOther(other,actor)):-1;
+      const index=positions.get(key) ?? (slot>=protectedSlots?families.get(family):undefined) ?? (named>=0?named:undefined);
       if(index===undefined){if(key)positions.set(key,result.length);if(slot>=protectedSlots)families.set(family,result.length);result.push(actor);continue;}
       positions.set(key,index);result[index]=combine(result[index],actor);
     }
@@ -200,7 +208,7 @@ function reconcileCastDuplicates(value) {
   const canonical=new Map([...fixed,...Object.values(casts).flat(),...(npcs || [])].flatMap(actor=>(actor.aliases || []).map(alias=>[normalizeName(alias),actor.speaker])));
   const singleVoices=value.singleVoices && Object.fromEntries(Object.entries(value.singleVoices).map(([route,voices])=>{
     const updated={...voices};
-    for(const [name,voice] of Object.entries(voices)){const target=canonical.get(normalizeName(name));if(target && normalizeName(target)!==normalizeName(name)){if(!Object.hasOwn(updated,target))updated[target]=voice;delete updated[name];}}
+    for(const [name,voice] of Object.entries(voices)){const target=canonical.get(normalizeName(name));if(target && normalizeName(target)!==normalizeName(name)){if(!updated[target])updated[target]=voice;delete updated[name];}}
     return [route,updated];
   }));
   return {...value,fixed,casts,...(npcs?{npcs}:{}),...(singleVoices?{singleVoices}:{})};
@@ -260,7 +268,8 @@ const cardSectionName=value=>/^(?:speech|personality|appearance|background|histo
 // Check all card fields and keep each profile inside its own section.
 function characterCardRoleDiscovery(card={}) {
   const escape=value=>value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
-  const clean=value=>value.replace(/[*_`]/g,'').replace(/^character(?:\s+\d+)?\s*:\s*/i,'').replace(/(?:['’]s)?\s+(?:data|profile|details|character sheet)$/i,'').trim();
+  // "Name: Weston Vance." ends a sentence; the full stop is not part of the name.
+  const clean=value=>value.replace(/[*_`]/g,'').replace(/^character(?:\s+\d+)?\s*:\s*/i,'').replace(/(?:['’]s)?\s+(?:data|profile|details|character sheet)$/i,'').trim().replace(/[\s.,;:!?]+$/u,'');
   const title=String(card.name || '').split(/\s*\|\s*/)[0];
   const titleNames=title.split(/\s+and\s+|\s*[&+]\s*|,\s*/i).map(name=>name.trim()).filter(Boolean);
   const nameFields=text=>[...text.matchAll(/^\s*(?:[-*]\s*)?(?:\*\*)?(?:Character\s+)?Name(?:\*\*)?\s*:\s*([^\n\r]+)/gim)].map(match=>clean(match[1]));
@@ -1113,7 +1122,33 @@ function splitSegment(segment, maxChars = 350, maxBytes = Infinity, {transform=t
   return out;
 }
 
-function speechBatches(segments,maxChars,defaultRoute,limitsForSegment=()=>({})) {
+// Speech plays several times slower than providers generate it, so the first
+// clips start short and grow: playback begins within seconds and each next clip
+// is ready before the one before it ends. Later clips use the normal limits.
+const STARTUP_CLIP_CHARS=[300,700,1400];
+// A reply this short is sent whole: one call is cheaper, keeps a multi-speaker
+// passage together, and waiting for it is short anyway.
+const SHORT_REPLY_CHARS={plain:1200,sfx:900};
+const startupSizes=(segments,sfx)=>segments.filter(segment=>!segment.kind).reduce((sum,segment)=>sum+segment.text.length,0)>(sfx?SHORT_REPLY_CHARS.sfx:SHORT_REPLY_CHARS.plain)?STARTUP_CLIP_CHARS:[];
+
+// Cut the opening clips down to the startup sizes at sentence boundaries. Only
+// single-voice text is cut here; grouped batches apply the sizes as they form.
+function startupClips(batches,limitsForSegment,defaultRoute) {
+  const out=[],queue=[...batches],sizes=startupSizes(batches,false);let index=0;
+  while(queue.length){
+    const batch=queue.shift(),cap=sizes[index];
+    if(batch.kind){out.push(batch);continue;}
+    index++;
+    if(!cap || batch.unison || batch.turns || batch.text.length<=cap){out.push(batch);continue;}
+    const limits=limitsForSegment(batch,batch.route || defaultRoute);
+    const [head]=splitSegment(batch,cap,limits.maxBytes ?? Infinity,{transform:limits.speechText,atomic:limits.atomicWords});
+    const rest=batch.text.slice(batch.text.indexOf(head.text)+head.text.length).trimStart();
+    out.push(head);if(rest)queue.unshift({...batch,text:rest});
+  }
+  return out;
+}
+
+function speechBatches(segments,maxChars,defaultRoute,limitsForSegment=()=>({}),{startup=true}={}) {
   const batches=[];
   for(const source of segments) {
     const limits=limitsForSegment(source,source.route || defaultRoute);
@@ -1128,28 +1163,30 @@ function speechBatches(segments,maxChars,defaultRoute,limitsForSegment=()=>({}))
     else batches.push({...segment,route});
     }
   }
-  return batches;
+  return startup?startupClips(batches,limitsForSegment,defaultRoute):batches;
 }
 
 // A short opening clip starts playback while later, bounded clips are prefetched.
 // The caller supplies provider capabilities and delivery/mixer compatibility.
 function groupedSpeechBatches(segments,maxChars,defaultRoute,limitsForSegment,{sfx=false,startup=true}={}) {
   const batches=[],queue=segments.map(segment=>({...segment}));
-  let current=null,first=startup,currentLimits,openingLimit;
-  const flush=()=>{if(current){batches.push(current);if(!current.kind)first=false;current=null;}};
+  let current=null,spoken=0,currentLimits;
+  const sizes=startup?startupSizes(segments,sfx):[];
+  const flush=()=>{if(current){batches.push(current);if(!current.kind)spoken++;current=null;}};
   const turnsFor=batch=>batch.turns || [{...batch}];
   while(queue.length){
     const source=queue.shift(),route=source.route || defaultRoute;
     if(source.kind){flush();batches.push({...source,route});continue;}
     if(source.unison){
       flush();const limits=limitsForSegment(source,route);
-      batches.push(...splitSegment({...source,route},Math.min(maxChars,limits.maxChars || maxChars),limits.maxBytes ?? Infinity,{transform:limits.speechText,atomic:limits.atomicWords}));first=false;continue;
+      const pieces=splitSegment({...source,route},Math.min(maxChars,limits.maxChars || maxChars),limits.maxBytes ?? Infinity,{transform:limits.speechText,atomic:limits.atomicWords});
+      batches.push(...pieces);spoken+=pieces.length;continue;
     }
-    const limits=limitsForSegment(source,route),opening=sfx?900:1200;
-    // Keep a moderate passage intact. A long opening turn still starts with a
-    // short clip; later requests remain bounded by the provider and user limit.
-    openingLimit ??= source.text.length<=opening?opening:600;
-    const cap=Math.min(maxChars,limits.maxChars || maxChars,first?openingLimit:sfx?900:2400);
+    const limits=limitsForSegment(source,route);
+    // A short reply stays whole; a longer one opens with the startup sizes.
+    // Later requests remain bounded by the provider and user limit.
+    const opening=sizes[spoken] ?? (sizes.length || !startup?undefined:sfx?SHORT_REPLY_CHARS.sfx:SHORT_REPLY_CHARS.plain);
+    const cap=Math.min(maxChars,limits.maxChars || maxChars,opening ?? (sfx?900:2400),sfx?900:Infinity);
     const turns=current?turnsFor(current):[],names=new Map(turns.map(turn=>[turn.speaker,turn.voice]));
     const compatible=current && current.route===route && currentLimits.group===limits.group &&
       (!names.has(source.speaker) || names.get(source.speaker)===source.voice) &&
@@ -3829,7 +3866,7 @@ export async function setup(ctx) {
   const toolbarAutoPlan=document.createElement('button');toolbarAutoPlan.type='button';toolbarAutoPlan.className='choir-auto-plan-action';toolbarAutoPlan.dataset.choirAction='auto-plan-toolbar';
   toolbarAutoPlan.innerHTML=`${ICON_SPARKLE}<span></span>`;toolbarAutoPlan.onclick=()=>run(toggleAutoPlan);
   const messageStatuses=new Map(),messageSections=new Set(),seekControls=new Set();let messagePlaybackId=null,messageOperation=null;
-  let disposed=false, loadVersion=0, revision=0, config, chatId=null, plan=null, planSource=null, planAttribution=null, planningSource=null, busy=false;
+  let disposed=false, loadVersion=0, revision=0, visibleStops=0, connectionSwitch=Promise.resolve(), config, chatId=null, plan=null, planSource=null, planAttribution=null, planningSource=null, busy=false;
   const ttsRequestLog=[];let ttsRequestSequence=0;
   unsubs.push(()=>{ttsRequestLog.length=0;});
   let activeCharacterCard=null,activePersonaName='',activeCardKey='';
@@ -5642,8 +5679,10 @@ export async function setup(ctx) {
   function singleVoice(actor,c){
     const selected=c.singleVoices?.[scope(c)];
     if(selected && Object.hasOwn(selected,actor.speaker))return selected[actor.speaker];
-    const voice=!actor.route || actor.route===scope(c)?actor.voice:'';
-    return (voiceCatalogues.get(scope(c)) || []).some(v=>v.id===voice)?voice || '':(actor.voice || '');
+    if(!actor.route || actor.route===scope(c))return actor.voice || '';
+    // A voice saved for another connection (a Gemini name on Fish, say) only carries
+    // over when this connection offers the same ID; otherwise cast it automatically.
+    return (voiceCatalogues.get(scope(c)) || []).some(v=>v.id===actor.voice)?actor.voice:'';
   }
   function needsVoiceSelection(attribution,cast){
     const actors=[...cast.fixed,...cast.npcs];
@@ -5773,7 +5812,7 @@ export async function setup(ctx) {
   function clearPlan() {plan=null;planSource=null;planAttribution=null;mixerPlaybackSegments=null;$('preview').replaceChildren();$('planJson').value='';$('planSummary').textContent='Speech plan';$('latestNotice').hidden=true;updateCastVisibility();renderMixer();refreshSectionControls();renderTtsInspector();}
   // Cue keeps the current ambience bed running into its next paragraph.
   function stop(show=true,keepBed=false,keepMusic=false) {
-    if(show)cancelAutoReplies();
+    if(show){cancelAutoReplies();visibleStops++;}
     if(activePlayback && currentAudio)savePosition(currentAudio.currentTime || 0);
     revision++;controller?.abort();controller=null;paragraphPlaybackScope=null;playedCapture?.discard();playedCapture=null;
     for(const pending of paragraphPrefetchControllers)pending.abort();paragraphPrefetchControllers.clear();
@@ -6132,7 +6171,14 @@ export async function setup(ctx) {
     if(persona?.name?.trim())return persona.name.trim();
     const name=config.fixed[1]?.speaker?.trim();
     if(name && !leadPlaceholder(config.fixed,1))return name;
-    throw new Error('Set your persona name in Choir’s fixed cast to resolve {{user}}.');
+    // Lumiverse shows {{user}} as "User" when no persona is selected; read it the same way.
+    return 'User';
+  }
+  // Without a named persona, the placeholder persona row voices the lines spoken under the fallback name.
+  function personaFallbackCast(cast,name){
+    if(!leadPlaceholder(cast.fixed,1))return cast;
+    const taken=[...cast.fixed,...(cast.npcs || [])].some(actor=>[actor.speaker,...(actor.aliases || [])].some(alias=>normalizeName(alias)===normalizeName(name)));
+    return taken?cast:{...cast,fixed:cast.fixed.map((actor,index)=>index===1?{...actor,aliases:[...(actor.aliases || []),name]}:actor)};
   }
   async function plannerProfiles(cast,signal){
     const characterId=ctx.getActiveChat().characterId;
@@ -6243,6 +6289,7 @@ export async function setup(ctx) {
         const name=await personaName();
         if(ctrl.signal.aborted || token!==revision)return;
         transcript=replacePersonaMacro(transcript,name);context=replacePersonaMacro(context,name);
+        snapshot=personaFallbackCast(snapshot,name);
       }
       let fastPlan = null;
       if (plannerMode==='heuristic') {
@@ -6992,12 +7039,21 @@ export async function setup(ctx) {
     return {push,finish,playbackPromise};
   }
   async function play(options={}) {
-    const preflightRevision=revision,preflightChat=chatId;
     status('Checking playback settings…');
+    // A connection switch in progress stops playback and reloads voices; finish it first.
+    await connectionSwitch;if(disposed)return;
+    const preflightRevision=revision,preflightChat=chatId,preflightStops=visibleStops;
     await flushSettings();
     const retentionChat=chatId,retentionEdit=settingsEdit;
     const latestPreferences=await ctx.settings.get(GLOBAL_SETTINGS_KEY).catch(()=>null);
-    if(disposed || preflightRevision!==revision || preflightChat!==chatId)return;
+    if(disposed || preflightChat!==chatId)return;
+    if(preflightRevision!==revision){
+      // A settings change (a new provider's voices loading, say) stopped playback
+      // while this Play waited for saving. Start again rather than ignoring the click.
+      if(options.automaticReply || visibleStops!==preflightStops)return;
+      if(!options.restarted)return play({...options,restarted:true});
+      status('Settings changed while starting playback. Press Play again.');return;
+    }
     if(retentionChat===chatId && retentionEdit===settingsEdit && latestPreferences?.retention){config.retention=latestPreferences.retention;$('retention').value=latestPreferences.retention;preferenceBaseline.retention=latestPreferences.retention;}
     const automatic=options.automaticReply;
     if(automatic && (autoReplyActive!==automatic || automatic.token!==revision || !config.auto))return;
@@ -7155,6 +7211,8 @@ export async function setup(ctx) {
   async function playMessage(messageId) {
     if(controller && messagePlaybackId===messageId){stop();return;}
     if(messageOperation?.messageId===messageId && messageOperation.chatId===chatId)return;
+    // Saved plans are checked against the voices of a connection that may still be loading.
+    status('Checking playback settings…');await connectionSwitch;if(disposed)return;
     stop(false,false,true);messagePlaybackId=messageId;
     const operation={messageId,chatId,token:revision};messageOperation=operation;
     const valid=()=>!disposed && chatId===operation.chatId && revision===operation.token;
@@ -7551,7 +7609,7 @@ export async function setup(ctx) {
   $('plannerMode')?.addEventListener('change',updatePlannerVisibility);
   $('allowLlmFallback').onchange=updatePlannerVisibility;
   $('sectionButtons').onchange=()=>run(async()=>{config=capture();refreshSectionControls();if(plan)renderPreview();scheduleSettingsSave();await flushSettings();});
-  $('connectionMode').onchange=()=>run(async()=>{
+  $('connectionMode').onchange=()=>(connectionSwitch=run(async()=>{
     await flushSettings();
     const messageId=planSource?.messageId,targetChat=chatId;stop(false);config=capture();config.connectionMode=$('connectionMode').value;const version=++loadVersion;
     await persistConfig(targetChat,config,true);if(disposed || chatId!==targetChat || version!==loadVersion)return;saveState('Settings saved');
@@ -7559,7 +7617,7 @@ export async function setup(ctx) {
     if(messageId)await restoreSavedPlan(messageId);if(disposed || chatId!==targetChat || version!==loadVersion)return;
     renderMixer();if(chatId){await persistConfig(chatId,config,true);saveState('Settings saved');}
     status(config.connectionMode==='one'?'One TTS now applies to the whole cast. Per-character routes are remembered.':'Several TTS restored your per-character routes.');
-  });
+  }));
   $('testTts').onclick=()=>castRows[0]?.row.querySelector('[data-choir-preview]')?.click();
   $('exportCast').onclick=()=>{$('castJson').value=JSON.stringify(castExport(capture()),null,2);status('Cast exported below. Copy this JSON to transfer it. Credentials are excluded.');};
   $('importCast').onclick=()=>run(async()=>{
@@ -7574,7 +7632,7 @@ export async function setup(ctx) {
     if(planSource)await restoreSavedPlan(planSource.messageId);
     status('Cast imported and validated. Saved attribution reused.');
   });
-  $('connection').onchange=()=>run(async()=>{
+  $('connection').onchange=()=>(connectionSwitch=run(async()=>{
     await flushSettings();
     const messageId=planSource?.messageId,targetChat=chatId;stop(false);config=capture();const version=++loadVersion;
     await persistConfig(targetChat,config,true);if(disposed || chatId!==targetChat || version!==loadVersion)return;saveState('Settings saved');
@@ -7583,7 +7641,7 @@ export async function setup(ctx) {
     const unavailable=config.connectionMode==='several' && config.fixed.some(v=>v.voice && !voices.some(x=>x.id===v.voice));
     await persistConfig(targetChat,config,true);if(disposed || chatId!==targetChat || version!==loadVersion)return;saveState('Settings saved');
     status(unavailable?'Choose valid voices for this provider.':'Provider selected.');
-  });
+  }));
   $('apply').onclick=()=>run(async()=>{
     if(!planSource)throw new Error('Plan a message first.');
     const edited=validatePlan(parsePlanJson($('planJson').value),planSource.transcript,casting(config));

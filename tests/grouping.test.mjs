@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {groupedSpeechBatches,passageKey} from '../src/core.js';
+import {groupedSpeechBatches,speechBatches,passageKey} from '../src/core.js';
 const turn=(speaker,text='Hello.',voice=speaker==='Narrator'?'Charon':'Kore')=>({speaker,text,voice,style:'',route:'native:google'});
 const limits=()=>({maxChars:10000,maxBytes:6000,maxSpeakers:2,group:'same'});
 const batch=(items,options)=>groupedSpeechBatches(items,3000,'native:google',limits,options);
@@ -49,4 +49,16 @@ test('multilingual text plus per-turn instructions stays in the byte budget',()=
 test('cache identity includes every dialogue voice and delivery',()=>{
   const clip=batch([turn('Narrator'),turn('Alice')])[0],key=passageKey(clip,{});
   const changed=structuredClone(clip);changed.turns[1].voice='Puck';assert.notEqual(passageKey(changed,{}),key);
+});
+test('a long reply opens with 300, 700 and 1400 character clips in both batching modes, while a short reply stays whole',()=>{
+  const text='A sentence with a little room to breathe. '.repeat(150).trim();
+  const plain=speechBatches([turn('Narrator',text)],1800,'native:google');
+  for(const result of [batch([turn('Narrator',text)]),plain]){
+    assert.deepEqual(result.slice(0,3).map((item,index)=>item.text.length<=[300,700,1400][index] && item.text.length>[300,700,1400][index]/2),[true,true,true]);
+    assert.equal(result.map(item=>item.text).join(' ').replace(/\s+/g,' '),text);
+    assert.ok(result.slice(0,3).every(item=>/[.!?]$/.test(item.text)));
+  }
+  assert.ok(plain.slice(3).every(item=>item.text.length<=1800));
+  const short='A short reply. '.repeat(50).trim();assert.ok(short.length<1200);
+  assert.equal(speechBatches([turn('Narrator',short)],1800,'native:google').length,1);assert.equal(batch([turn('Narrator',short)]).length,1);
 });

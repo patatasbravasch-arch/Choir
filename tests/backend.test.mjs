@@ -317,6 +317,31 @@ test('cancellation aborts planner and suppresses stale replies',async()=>{
 });
 
 
+test('credential, rate-limit, unknown-model and reasoning-only planner failures stop after one request',async()=>{
+  const transcript=`${'The hall was quiet. '.repeat(70)}"Hello." ${'The road was dark. '.repeat(70)}"Bye."`;
+  for(const [fail,expected] of [
+    [()=>{throw Error('Custom (OpenAI-compatible) generate failed (401): Incorrect API key provided');},/Planner failed: .*401.*Incorrect API key/],
+    [()=>{throw Error('Custom (OpenAI-compatible) generate failed (429): Rate limit reached for requests');},/Planner failed: .*429.*Rate limit/],
+    [()=>{throw Error("Custom (OpenAI-compatible) generate failed (404): The model 'x' does not exist.");},/Planner failed: .*does not exist/],
+    [()=>({content:'',reasoning:'Thinking about speakers…',finish_reason:'length'}),/Planner failed: .*spent its output on reasoning.*Turn off thinking/]
+  ]){
+    let requests=0;const h=await harness(async()=>{requests++;return fail();});
+    h.send('plan',{transcript,config:castConfig});
+    assert.match((await h.result()).message.error,expected);assert.equal(requests,1);
+  }
+});
+
+test('a model that accepts only its default temperature is retried without one, and later requests omit it',async()=>{
+  const sent=[];
+  const h=await harness(async input=>{sent.push(input.parameters);if(input.parameters.temperature!==undefined)throw Error("Custom (OpenAI-compatible) generate failed (400): Unsupported value: 'temperature' does not support 0 with this model. Only the default (1) value is supported.");return {content:'D1|Mira|'};});
+  h.send('plan',{transcript:'Mira smiled. "Hello."',config:castConfig});
+  assert.equal((await h.result()).message.error,undefined);
+  assert.deepEqual(sent.map(parameters=>'temperature' in parameters),[true,false]);
+  h.send('testPlanner',{},'second');
+  for(let i=0;i<100 && !h.sent.some(item=>item.message.id==='second' && item.message.result);i++)await new Promise(resolve=>setTimeout(resolve,5));
+  assert.ok(h.sent.some(item=>item.message.id==='second' && item.message.result));assert.equal('temperature' in sent.at(-1),false);
+});
+
 test('a blocked reply is cast in parts, and a reply blocked in every part names the provider error',async()=>{
   const transcript=`${'The hall was quiet. '.repeat(70)}"Hello." ${'The road was dark. '.repeat(70)}"Bye."`;
   const requests=[];
@@ -889,6 +914,16 @@ test('testPlanner with Jev and spindle.decisions passes userId to evaluate',asyn
   assert.match(result.message.result.response,/READY/);
 });
 
+test('a missing default Decision connection explains where to choose one, while a selected connection keeps the host error',async()=>{
+  const decisions={evaluate:async()=>{throw new Error('No default Decision connection configured');}};
+  const h=await harness(null,null,null,null,null,decisions);
+  h.send('testPlanner',{plannerMode:'jev'});
+  assert.match((await h.result()).message.error,/Settings → Planner → Decision connection/);
+  const selected=await harness(null,null,null,null,null,decisions);
+  selected.send('testPlanner',{plannerMode:'jev',decisionConnection:'decision-a'});
+  assert.equal((await selected.result()).message.error,'No default Decision connection configured');
+});
+
 test('DeepSeek sound choices request JSON mode and recover a truncated response once',async()=>{
  for(const provider of ['deepseek','custom']){
   const requests=[];
@@ -1106,6 +1141,19 @@ test('Jev describes a speaker with the Decision model before the community searc
   assert.deepEqual(urls.map(url=>[url.searchParams.get('language'),...url.searchParams.getAll('tag')]),[['pt','female','clear']]);
   assert.equal(result.segments.find(segment=>segment.speaker==='Mira').voice,'old-1');
   assert.deepEqual(result.communityVoices,[{id:'old-1',description:'Elder — female, old',route:'native:fish'}]);
+});
+
+test('Fish community searches for several speakers run together and earlier choices are not reused',async()=>{
+  let inFlight=0,peak=0;const searched=[];
+  const cors=async url=>{searched.push(new URL(url));inFlight++;peak=Math.max(peak,inFlight);await new Promise(resolve=>setTimeout(resolve,20));inFlight--;
+    return {status:200,body:JSON.stringify({items:[fishItem('voice-a','Alpha'),fishItem('voice-b','Beta')]})};};
+  const cast={...communityCast,fixed:[...communityCast.fixed,{speaker:'Lena',voice:'',style:'',route:'native:fish'}]};
+  const h=await harness(async()=>({content:'D1|Mira|\nD3|Lena|\nNPC|Mira|female|soft\nNPC|Lena|female|soft'}),cors,null,null,null,{evaluate:async()=>({answers:{q0:{choice:'s0'}}})});
+  h.send('plan',{transcript:'Mira smiled. "Hello." Lena nodded. "Hi."',config:cast});
+  const result=(await h.result()).message;
+  assert.equal(result.error,undefined);assert.equal(peak,2);assert.equal(searched.length,2);
+  const voices=['Mira','Lena'].map(name=>result.result.segments.find(segment=>segment.speaker===name).voice);
+  assert.deepEqual(voices,['voice-a','voice-b']);
 });
 
 test('community search drops tag-stuffed voices that also carry the opposite gender, except for neutral requests',async()=>{
