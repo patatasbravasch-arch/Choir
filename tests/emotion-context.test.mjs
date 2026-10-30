@@ -45,21 +45,22 @@ for(const native of [true,false])test(`${native?'Lumiverse Decision':'direct Jev
    const request=voiceDelivery({segment,actor:c.fixed[1],family:'gemini',connection:{model:'gemini-3.8-flash-tts'},supported:{}});
    assert.equal(request.style,expected[index]);assert.ok(!request.style.includes('theatrical'));
    const fish=voiceDelivery({segment,actor:c.fixed[1],family:'fish_audio',connection:{model:'s2.1-pro'},supported:{}});
-   assert.equal(fish.text,`${expected[index].split(', ').map(cue=>`[${cue}]`).join('')} ${segment.text}`);
+   // A neutral line sends no Fish cue; any other direction is one bracket.
+   assert.equal(fish.text,expected[index]==='Natural, conversational delivery'?segment.text:`[${expected[index]}] ${segment.text}`);
   }
  }finally{globalThis.spindle=original;}
 });
 
 test('Fish S2 and Gemini keep distinct emotions distinct and ordinary dialogue restrained',()=>{
   for(const [style,fishPrefix,geminiStyle] of [
-    ['slightly amused, softly spoken','[slightly amused][softly spoken]','slightly amused, softly spoken'],
-    ['clearly delighted, warm','[clearly delighted][warm]','clearly delighted, warm'],
-    ['Natural, conversational delivery','[Natural][conversational delivery]','Natural, conversational delivery'],
+    ['slightly amused, softly spoken','[slightly amused, softly spoken]','slightly amused, softly spoken'],
+    ['clearly delighted, warm','[clearly delighted, warm]','clearly delighted, warm'],
+    ['Natural, conversational delivery','','Natural, conversational delivery'],
   ]){
     const segment={speaker:'Mira',text:'Welcome home.',style};
     const fish=voiceDelivery({segment,actor:{speaker:'Mira'},family:'fish_audio',connection:{model:'s2.1-pro'},supported:{}});
     const gemini=voiceDelivery({segment,actor:{speaker:'Mira'},family:'gemini',connection:{model:'gemini-3.8-flash-tts'},supported:{speech_style:{}}});
-    assert.equal(fish.text,`${fishPrefix} Welcome home.`);
+    assert.equal(fish.text,[fishPrefix,'Welcome home.'].filter(Boolean).join(' '));
     assert.equal(gemini.parameters.speech_style,geminiStyle);
     assert.ok(!fish.text.includes('happy'));
     assert.ok(!/angry|furious|terrified|ecstatic/i.test(gemini.parameters.speech_style));

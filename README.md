@@ -23,6 +23,7 @@ This is the **lunch-test** branch of the original Choir repository, using the or
 - Replies containing `{{user}}` plan without a Lumiverse persona: Choir reads it as "User", as Lumiverse displays it.
 - Jev explains where to choose a Decision connection when none is selected or set as default.
 - Speech starts about twice as fast on long replies: the first clips are short and grow (Gemini 10.7 s → 6.9 s, Fish 16.3 s → 7.1 s to first audio in testing).
+- Fish acting is steadier: each line gets one clean direction such as [warm, slightly amused] instead of several fragments, and neutral lines get no cue.
 - Fish community casting searches for every speaker at once (24.5 s → 12.3 s for three speakers).
 - Planner errors are clearer and cheaper: bad keys, rate limits and unknown models stop after one request, models that accept only their default temperature are retried without one, and a model that spends its output on reasoning says so.
 - Switching between one TTS connection and per-character connections no longer carries Gemini voice names onto Fish, and Play pressed during the switch waits for it instead of doing nothing.

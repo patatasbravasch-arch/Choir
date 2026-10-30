@@ -43,15 +43,22 @@ function canonicalDeliveryCue(text) {
   }
   return token;
 }
+// A direction made only of these words asks for nothing in particular; sent to
+// Fish it is just another cue that can tip ordinary lines into odd delivery.
+const FILLER_CUE = /^(?:\s|,|and|a|the|natural(?:ly)?|neutral|normal|plain|default|conversational|delivery|tone|voice|matching|scene|narration)*$/i;
 // S2 accepts both documented markers and free-form directions. Normalize clear
 // synonyms at the TTS boundary and keep degree-modified cues verbatim, without
-// another model request.
+// another model request. A comma-separated description is one direction
+// ("[warm, slightly amused]"): split pieces such as "[not sarcastic]" or
+// "[Clear]" read as separate, contradictory instructions. Only full stops and
+// semicolons, which join a base style to a turn or Jev labels, separate cues.
 export function fishStyleCues(value) {
   const cues=[];
   for(const match of String(value || '').matchAll(/\[([^\[\]\r\n]+)\]|\(([^()\r\n]+)\)|([^()[\]]+)/gu)){
-    const parts=match[1] || match[2] ? [match[1] || match[2]] : match[3].split(/[.,;]+/u);
+    const parts=match[1] || match[2] ? [match[1] || match[2]] : match[3].split(/[.;]+/u);
     for(const part of parts){
-      const cue=canonicalDeliveryCue(part);
+      const cue=canonicalDeliveryCue(part).replace(/^[\s,]+|[\s,]+$/g,'');
+      if(FILLER_CUE.test(cue))continue;
       // S2 accepts free-form directions, including degree and negative constraints.
       // Keep "barely amused" and "scared but not panicked" intact; filtering by
       // negation words would silently discard their positive delivery guidance.

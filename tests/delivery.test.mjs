@@ -113,7 +113,7 @@ test('acting intensity survives mixed Gemini and Fish routing without weakening 
  for(const style of ['Slightly amused, conversational','Clearly delighted, softly spoken','Intensely angry']){
   assert.equal(request({segment:{...segment,style},actor:{}}).parameters.speech_style,style);
   const fish=request({family:'fish_audio',segment:{...segment,style},actor:{},connection:{model:'s2.1-pro'},supported:{}});
-  assert.equal(fish.text,`${style.split(', ').map(cue=>`[${cue}]`).join('')} Welcome home.`);
+  assert.equal(fish.text,`[${style}] Welcome home.`);
  }
  const actor={style:'Intensely delighted',deliveryMode:'base',accent:'Irish'};
  assert.equal(request({actor,segment:{...segment,style:'Slightly amused'}}).parameters.speech_style,'Intensely delighted. Accent: Irish');
@@ -126,7 +126,7 @@ test('automatic acting removes the validated base prefix once while base-only an
  const segment={speaker:'Mira',text:'Welcome home.',style:'Dramatic and theatrical. Slightly amused, conversational'};
  assert.equal(request({actor,segment}).parameters.speech_style,'Slightly amused, conversational. Accent: Irish');
  const fish=request({family:'fish_audio',actor,segment,connection:{model:'s2.1-pro'},supported:{}});
- assert.equal(fish.text,'[Slightly amused][conversational][Accent: Irish] Welcome home.');
+ assert.equal(fish.text,'[Slightly amused, conversational][Accent: Irish] Welcome home.');
  assert.equal(request({actor:{...actor,deliveryMode:'base'},segment}).parameters.speech_style,'Dramatic and theatrical. Accent: Irish');
  assert.equal(request({actor,segment:{...segment,style:actor.style}}).parameters.speech_style,'Dramatic and theatrical. Accent: Irish');
  assert.equal(request({actor,segment:{...segment,style:''}}).parameters.speech_style,'Dramatic and theatrical. Accent: Irish');
@@ -138,18 +138,18 @@ test('automatic acting removes the validated base prefix once while base-only an
 });
 
 test('Fish S2 normalizes clear synonyms in place without flattening qualifiers, degree or negation',()=>{
-  assert.deepEqual(fishStyleCues('Quiet whisper, restrained'),['Quiet whispering','restrained']);
-  assert.deepEqual(fishStyleCues('Clearly afraid, tense'),['Clearly scared','tense']);
-  assert.deepEqual(fishStyleCues('Soft sigh, weary'),['Soft sighing','weary']);
+  assert.deepEqual(fishStyleCues('Quiet whisper, restrained'),['Quiet whispering, restrained']);
+  assert.deepEqual(fishStyleCues('Clearly afraid, tense'),['Clearly scared, tense']);
+  assert.deepEqual(fishStyleCues('Soft sigh, weary'),['Soft sighing, weary']);
   assert.deepEqual(fishStyleCues('Clearly sorrowful'),['Clearly sad']);
-  assert.deepEqual(fishStyleCues('Slightly irritated, conversational'),['Slightly frustrated','conversational']);
+  assert.deepEqual(fishStyleCues('Slightly irritated, conversational'),['Slightly frustrated, conversational']);
   assert.deepEqual(fishStyleCues('Subtly dry and ironic'),['Subtly dry and sarcastic']);
-  assert.deepEqual(fishStyleCues('Lightly teasing, conversational'),['Lightly playful','conversational']);
-  assert.deepEqual(fishStyleCues('slightly amused, conversational'),['slightly amused','conversational']);
-  assert.deepEqual(fishStyleCues('Clearly delighted, softly spoken'),['Clearly delighted','softly spoken']);
+  assert.deepEqual(fishStyleCues('Lightly teasing, conversational'),['Lightly playful, conversational']);
+  assert.deepEqual(fishStyleCues('slightly amused, conversational'),['slightly amused, conversational']);
+  assert.deepEqual(fishStyleCues('Clearly delighted, softly spoken'),['Clearly delighted, softly spoken']);
   assert.deepEqual(fishStyleCues('Intensely angry'),['Intensely angry']);
   assert.deepEqual(fishStyleCues('Do not shout'),['Do not shout']);
-  assert.deepEqual(fishStyleCues('not cheerful, conversational'),['not cheerful','conversational']);
+  assert.deepEqual(fishStyleCues('not cheerful, conversational'),['not cheerful, conversational']);
 });
 
 test('Fish S2 preserves restrained degrees and negative constraints at the request boundary',()=>{
@@ -177,7 +177,7 @@ test('grouped Fish S2 and Gemini turns keep each speaker voice and per-turn deli
   const fish=turns.map(turn=>({...turn,...voiceDelivery({segment:turn,actor:{speaker:turn.speaker,style:''},family:'fish_audio',connection:{provider:'fish_audio',model:'s2.1-pro'},supported:{}})}));
   assert.equal(fish[0].voice,'Charon');assert.equal(fish[1].voice,'Puck');
   assert.equal(fish[0].text,'[Calm narration] Welcome home.');
-  assert.equal(fish[1].text,'[Quiet whispering][restrained] Please stay.');
+  assert.equal(fish[1].text,'[Quiet whispering, restrained] Please stay.');
   const gemini=turns.map(turn=>({...turn,...voiceDelivery({segment:turn,actor:{speaker:turn.speaker,style:''},family:'gemini',connection:{provider:'google_tts',model:'gemini-3.8-flash-tts'},supported:{speech_style:{}}})}));
   assert.equal(gemini[0].parameters.speech_style,'Calm narration');
   assert.equal(gemini[1].parameters.speech_style,'Quiet whispering, restrained');
@@ -189,4 +189,12 @@ test('Fish S2 maps planner and Jev delivery labels to bracket cues and respects 
   ['angry; shouting','This is [whispering] important.','This is [whispering] important.'],
   ['shouting in alarm','Watch out!','[shouting in alarm] Watch out!']
  ])assert.equal(voiceDelivery({segment:{text,style,voice:'fixed-voice'},actor:{},family:'fish_audio',connection:{model:'s2.1-pro-free'}}).text,expected);
+});
+
+test('Fish S2 keeps a comma-separated direction as one cue and sends nothing for filler directions',()=>{
+  assert.deepEqual(fishStyleCues('Clear, measured narration'),['Clear, measured narration']);
+  assert.deepEqual(fishStyleCues('warm, slightly amused, not sarcastic'),['warm, slightly amused, not sarcastic']);
+  for(const filler of ['natural, matching the scene','Natural, conversational delivery','neutral'])assert.deepEqual(fishStyleCues(filler),[]);
+  const fish=voiceDelivery({segment:{text:'"Hi."',style:'natural, matching the scene'},actor:{},family:'fish_audio',connection:{model:'s2.1-pro'}});
+  assert.equal(fish.text,'"Hi."');
 });
