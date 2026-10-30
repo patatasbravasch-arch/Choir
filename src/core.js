@@ -117,6 +117,15 @@ export function apiErrorMessage(raw,status) {
   return `Lumiverse API HTTP ${status}${detail?`: ${detail}`:': The server or gateway returned no error details.'}`;
 }
 
+// Names a backend action in timeout messages. Speech synthesis goes straight to
+// Lumiverse, so no backend action is a TTS request.
+export function backendRequestKind(action) {
+  return ['plan','planJev','planWithJev','testPlanner','skipCheck','cardCast'].includes(action)?'Planner'
+    : ['sfx','freesound','freesoundPreview'].includes(action)?'Sound effect'
+    : ['music','musicAudio'].includes(action)?'Music'
+    : action==='searchVoices'?'Voice search':'Choir';
+}
+
 export function normalizeName(value) {
   return String(value || '').normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
 }

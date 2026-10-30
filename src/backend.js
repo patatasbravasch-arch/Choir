@@ -1,6 +1,4 @@
-import { cardAnalysisRoles, reconcileCastDuplicates, castIdentityResolver, validateCastConfig, validatePlan, npcCastActor, parsePlanJson, resolvePlanReferences, castReply, speechSourceUnits, normalizeName, unisonSpeakers, fastClassifyPlan, resolvePlannerMode, soundCuePrompt, parseSoundCues, rankMusic, MUSIC_GENRES, skipCheckPrompt, parseSkipRows, skippedLines, DELIVERY_CONTEXT_RULES } from './core.js';
-
-import { voiceDelivery } from './delivery.js';
+import { backendRequestKind, cardAnalysisRoles, reconcileCastDuplicates, castIdentityResolver, validateCastConfig, validatePlan, npcCastActor, parsePlanJson, resolvePlanReferences, castReply, speechSourceUnits, normalizeName, unisonSpeakers, fastClassifyPlan, resolvePlannerMode, soundCuePrompt, parseSoundCues, rankMusic, MUSIC_GENRES, skipCheckPrompt, parseSkipRows, skippedLines, DELIVERY_CONTEXT_RULES } from './core.js';
 
 async function jevPost(url, headers, payload, signal) {
   signal?.throwIfAborted();
@@ -659,9 +657,10 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
   };
   let lastProgress={stage:'Starting request'};
   const progress=update=>{lastProgress=update;send({progress:update});};
-  const timer = setTimeout(() => { send({error:message.action==='plan' || message.action==='testPlanner' || message.action==='cardCast' || message.action==='planJev' || message.action==='planWithJev'
+  const kind=backendRequestKind(message.action);
+  const timer = setTimeout(() => { send({error:kind==='Planner'
     ? `Planner timed out while ${lastProgress.stage}. ${lastProgress.provider || ''} ${lastProgress.model || ''}. Check this LLM connection in Lumiverse. Speech chunk size does not affect planning.`
-    : 'Speech generation timed out. Try a shorter speech request or check the TTS provider.'}); controller.abort(); },message.action==='testPlanner' || message.action==='cardCast'?60000:(message.action==='plan' || message.action==='planJev' || message.action==='planWithJev')?Math.min(600000,Math.max(1000,Number(message.input?.timeoutMs)||600000)):180000);
+    : `${kind} request timed out while ${lastProgress.stage}. Check the network connection and try again.`}); controller.abort(); },message.action==='testPlanner' || message.action==='cardCast'?60000:(message.action==='plan' || message.action==='planJev' || message.action==='planWithJev')?Math.min(600000,Math.max(1000,Number(message.input?.timeoutMs)||600000)):180000);
   let jevFailure;
   (async () => {
     const input = message.input || {};
@@ -739,7 +738,8 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
     }
     if (message.action === 'planJev' || message.action === 'planWithJev') {
       if (typeof input.transcript !== 'string' || !input.transcript.trim()) throw new Error('Choose a message with text to plan.');
-      validateCastConfig(input.config);
+      // Repair duplicate names first, as the plan action does, so both paths accept the same cast.
+      input.config=reconcileCastDuplicates(input.config);validateCastConfig(input.config);
       progress({stage:'Classifying with Jev System 1'});
       const apiKey = input.apiKey || input.config?.jevApiKey;
       const endpoint = input.endpoint || input.config?.jevEndpoint;
@@ -749,25 +749,13 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
         apiKey,
         endpoint,
         decisionConnection: input.decisionConnection || input.config?.decisionConnection,
+        connectionId: input.connectionId || input.config?.planner,
         context: input.context,
         signal: controller.signal,
         userId: userId || input.userId
       });
       if (controller.signal.aborted) return;
       send({result:plan});return;
-    }
-    if (message.action === 'classifyJev' || message.action === 'classifyWithJev') {
-      const apiKey = input.apiKey || input.config?.jevApiKey;
-      const endpoint = input.endpoint || input.config?.jevEndpoint;
-      const result = await classifyWithJev({
-        items: input.items,
-        candidates: input.candidates,
-        apiKey,
-        endpoint,
-        signal: controller.signal
-      });
-      if (controller.signal.aborted) return;
-      send({result});return;
     }
     if (message.action === 'plan') {
       if (typeof input.transcript !== 'string' || !input.transcript.trim()) throw new Error('Choose a message with text to plan.');
@@ -878,24 +866,6 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
         }
       }
       throw new Error(`Sound-effect choices failed for ${connection.name || connection.id} (${connection.provider} · ${connection.model}): ${failure.message}.${finishReason?` Finish reason: ${finishReason}.`:''}`);
-    }
-    if (message.action === 'fishaudio') {
-      if (typeof input.apiKey !== 'string' || !input.apiKey.trim()) throw new Error('Enter a Fish Audio API key for this session.');
-      const segment = input.segment;
-      if (!segment || typeof segment.text !== 'string' || !segment.text.trim()) throw new Error('Invalid speech chunk.');
-      const model = input.model || 's2.1-pro';
-      const {text}=voiceDelivery({segment,actor:{},family:'fish_audio',connection:{model},useStyle:input.useStyle!==false});
-      const response = await spindle.cors('https://api.fish.audio/v1/tts', {
-        method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${input.apiKey.trim()}`,'model':model},
-        body:JSON.stringify({text,reference_id:segment.voice || undefined,format:'mp3'})
-      });
-      if (controller.signal.aborted) return;
-      if (response.status < 200 || response.status >= 300) {
-        let detail = '';
-        try { detail = JSON.parse(response.body)?.message || JSON.parse(response.body)?.error || ''; } catch {}
-        throw new Error(`Fish Audio HTTP ${response.status}${detail ? `: ${detail}` : ''}. Check API key and quota.`);
-      }
-      send({result:{base64:response.body,mimeType:'audio/mpeg'}}); return;
     }
     if (message.action === 'musicAudio') {
       const url = new URL(String(input.url || ''));

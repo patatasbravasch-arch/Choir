@@ -361,49 +361,14 @@ test('a stalled planner test reports its model and cancels generation at the dea
   assert.match(result.message.error,/gemini-flash-text/);assert.ok(signal.aborted);
 });
 
-test('fishaudio synthesizes speech with Authorization header and emotion tag formatting', async () => {
-  let request;
-  const h = await harness(null, async (url, options) => {
-    request = { url, options };
-    return { status: 200, body: 'bXAzLWF1ZGlv' };
-  });
-  h.send('fishaudio', {
-    apiKey: 'fish-secret-123',
-    model: 's2.1-pro',
-    segment: { text: 'Watch out!', voice: 'voice-ref-456', style: 'shouting in alarm' }
-  });
-  const result = await h.result();
-  assert.equal(result.message.result.base64, 'bXAzLWF1ZGlv');
-  assert.equal(result.message.result.mimeType, 'audio/mpeg');
-  assert.equal(request.url, 'https://api.fish.audio/v1/tts');
-  assert.equal(request.options.headers.Authorization, 'Bearer fish-secret-123');
-  assert.equal(request.options.headers.model, 's2.1-pro');
-  const body = JSON.parse(request.options.body);
-  assert.equal(body.text, '[shouting in alarm] Watch out!');
-  assert.equal(body.reference_id, 'voice-ref-456');
-  assert.equal(body.format, 'mp3');
-});
-
-test('direct Fish TTS injects planner delivery, maps Jev labels and respects source cues anywhere',async()=>{
- for(const [style,text,expected] of [
-  ['cheerful; sigh','Hello.','[happy][sighing] Hello.'],
-  ['[sad][whispering]','Hello.','[sad][whispering] Hello.'],
-  ['angry; shouting','This is [whispering] important.','This is [whispering] important.']
- ]){
-  let body;const h=await harness(null,async(url,options)=>{body=JSON.parse(options.body);return {status:200,body:'QUJD'};});
-  h.send('fishaudio',{apiKey:'test',model:'s2.1-pro-free',segment:{text,style,voice:'fixed-voice'}});
-  assert.equal((await h.result()).message.error,undefined);assert.equal(body.text,expected);assert.equal(body.reference_id,'fixed-voice');
- }
-});
-
-test('fishaudio handles missing API key or empty segment', async () => {
-  const h = await harness();
-  h.send('fishaudio', { apiKey: '', segment: { text: 'Hello.' } });
-  assert.match((await h.result()).message.error, /Enter a Fish Audio API key/);
-
-  const h2 = await harness();
-  h2.send('fishaudio', { apiKey: 'key', segment: { text: '' } });
-  assert.match((await h2.result()).message.error, /Invalid speech chunk/);
+test('backend no longer accepts the unused direct Fish and Jev classification actions', async () => {
+  for (const action of ['fishaudio', 'classifyJev', 'classifyWithJev']) {
+    let called = false;
+    const h = await harness(null, async () => { called = true; return { status: 200, body: '' }; });
+    h.send(action, { apiKey: 'key', segment: { text: 'Hello.' }, items: [{ text: 'Hi' }], candidates: ['A'] });
+    assert.match((await h.result()).message.error, /Unknown Choir action/);
+    assert.equal(called, false);
+  }
 });
 
 test('searchVoices searches community voice models and parses items', async () => {

@@ -4,110 +4,33 @@
 
 # Choir
 
-[![Version](https://img.shields.io/badge/version-1.1.6--staging.63-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/lunch-test)
+[![Version](https://img.shields.io/badge/version-1.1.9--staging.64-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/lunch-test)
 [![Platform](https://img.shields.io/badge/platform-Lumiverse%20Spindle-purple.svg)](https://docs.lumiverse.chat/)
-[![Tests](https://img.shields.io/badge/tests-622%20tests-blue.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-621%20tests-blue.svg)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 An installable Lumiverse Spindle extension for multi-voice narration, dialogue attribution, sound effects, ambience and background music.
 
 </div>
 
-Version **1.1.6-staging.63** keeps Saved audio download controls registered when Lumiverse sets up an inactive drawer off-screen. After reloading or restarting Choir, completed recordings show their WAV-ready status and download button without requiring another Play. Audio and Download all continue to use the completed saved mix.
 
-Version **1.1.6-staging.62** restores saved Replay when a card is named after a real lead and also contains other characters. The recording check distinguishes an assigned character from an obsolete group title, preserving protection against genuinely merged cast recordings. Existing valid audio replays without planning or synthesis.
+This is the **lunch-test** branch of the original Choir repository, using the original `choir` identifier and settings. Changes are tested here before they move to `staging` and `main`.
 
-Version **1.1.6-staging.61** fixes Jev delivery treating every sigh as weary. Sighs keep a neutral mood unless context supplies one, and explicit relief has its own warm delivery choice. Speaker and voice assignments remain unchanged. Replan, then Play to hear the revised direction; saved Replay keeps the recorded performance.
+## What's new in 1.1.9-staging.64
 
-Version **1.1.6-staging.60** preserves documented Gemini vocal events such as `<sigh>` and `<short pause>` through story filtering and request chunking. Empty Gemini 3.8 narrator styles stay empty, with saved directions still respected. Cast tools explain regional/custom voices and separate custom-voice turns, including temporary Gemini voice keys. No additional model calls are added. Replan, then Play for the revised performance; saved Replay keeps its original audio. See [Gemini speech behavior and limitations](docs/gemini-speech.md).
+- Timeout messages name the request that stopped: Planner, Sound effect, Music or Voice search.
+- Jev planning allows 90 seconds before a timeout or the enabled LLM fallback, so slower Decision connections can finish.
+- Long chats scroll more smoothly: message Sections menus track the page only while open.
+- The version is numbered above the 1.1.8 release on `main`, so Lumiverse offers it as an update.
+- Unused backend actions are removed and `Install.ps1` copies only the files Lumiverse loads.
 
-Version **1.1.6-staging.58** adds optional **Paranoid mode** in **Settings → Planner**, revealing **Playback → TTS inspector**. Inspect prepared requests before Play, or the exact request bodies used for the last 20 attempted TTS calls: final text, model, voice ID, delivery parameters and per-speaker grouped turns. The inspector shares the real request builder and captures actual bodies at the fetch boundary, independent of whether LLM or Jev planned the reply. It makes no extra provider calls and includes no connection credentials. Request logs stay in memory and clear on reload, chat change, disabling the mode or Clear call log. Cache hits and saved Replay do not invent new calls. These are Choir-to-Lumiverse bodies; the relay can format the downstream provider request further. See [the inspector guide](docs/tts-inspector.md).
-
-Version **1.1.6-staging.57** restores the hidden **Playback → Speech plan** entry and shows the effective delivery direction beneath each spoken block. Emotion and intensity are expressed together (for example, “Slightly amused, conversational”), rather than as a separate numeric intensity setting. The display reflects the current delivery mode, base override, accent and pronunciation, updates when voice settings change, and makes no provider calls. A hint beside each character's Delivery setting points to the plan. Play uses the displayed directions; saved Replay retains its recorded performance.
-
-Version **1.1.6-staging.56** fixes grouped message controls throwing a global error when a saved reply still needs an automatic voice choice. This could obscure the status of a different reply being planned or played. Such controls now show a message-specific **Plan message** action; opening them makes no provider calls, and explicit planning chooses missing voices without starting playback. Voice selection still requires a real planner choice and does not fall back to the first catalogue voice.
-
-Version **1.1.6-staging.55** asks the LLM to choose emotion and acting intensity together in its existing casting call. Ordinary dialogue defaults to restrained, conversational delivery; stronger acting needs support from the scene. Jev offers mild, clear and intense reactions within its existing emotion evaluation. Automatic acting uses the planned turn direction instead of stacking an expressive base over it; Base style only, explicit Fish preset cues, accents and narrator settings retain their priority. Gemini receives the degree in its delivery instructions and Fish S2 receives it in bracket cues. Replan, then Play to apply the new guidance; saved Replay keeps its original recording. TTS models can still interpret the instructions differently.
-
-Version **1.1.6-staging.54** lets Gemini multi-speaker grouping work with loudness matching enabled. Compatible alternating turns use one request, and the shared audio clip is balanced as a whole. The grouping status explains the two-speaker limit (including the narrator) and when the Lumiverse server needs multi-speaker relay support. Fish retains its separate per-voice loudness matching.
-
-Version **1.1.6-staging.52** puts **Open mixer / Close mixer** beside the drawer's Play, Plan latest and Stop controls, reachable from every drawer tab. The button stays in sync with the floating mixer's own open and collapse controls.
-
-Version **1.1.6-staging.51** improves acting guidance for LLM and Jev: intent and nearby narration take priority over harsh wording, and Jev can choose delighted, playful or sarcastic delivery. Existing explicit Fish cues and narrator delivery settings retain priority. No additional model calls are added. Replan a message to replace an older emotional interpretation; cached Replay keeps its saved performance. **Settings → Performance → Group speech requests** now displays the batch count and explains restrictions directly, including loudness matching, voice gaps, different connections, channel volumes and character speeds. Shared dialogue clips require compatible provider capabilities and settings; independent loudness matching still keeps different voices separate.
-
-Version **1.1.6-staging.50** on **lunch-test** flattens the drawer into **Cast / Playback / Saved / Settings**, with direct settings pages, one character editor, and separate Mixer layout and Volume limits actions. **Setup guide** stays in the header and offers **Quick start**, three-step **Guided**, or direct-category **Custom** setup. Switching modes keeps the draft; finishing preserves existing chat casts. Inactive cast use an **In this reply / All saved** selector. See [drawer navigation](docs/drawer-navigation.md) and [setup guide](ONBOARDING.md).
-
-Version **1.1.6-staging.49** on **lunch-test** merges automatic Fish S2/S2.1 emotion cues from **emotion-fish-audio**. The existing LLM or Jev planner supplies the passage delivery; Choir injects separate bracket cues when preparing the TTS request, including Jev's cheerful → happy and sigh → sighing. Explicit preset cues take priority. Grouped Fish turns carry their own cues, while Gemini retains its existing instructions. No new drawer controls or model calls are added. See [Fish delivery flow](docs/fish-emotions.md).
-
-Version **1.1.6-staging.48** fixes the audit's casting and download findings. Multi-character cards keep each person's voice profile separate. Both planners use compatible owned Fish voices first in **Both** mode, with community search when needed. Fish briefs ignore negated traits and explicitly named other people, and can use scenario/greeting evidence when the profile lacks voice details. Malformed catalogue rows are skipped. Next, Previous and seeking mark the played mix incomplete; one uninterrupted cached Replay restores the full-message download without new synthesis. Pause/resume remains supported.
-
-Version **1.1.6-staging.47** makes Fish casting practical: a short brief such as **clear, calm narrator** or **playful, confident male** guides the choice. Age and fine character details no longer restrict catalogue searches. The chooser picks the closest available speaking voice instead of rejecting imperfect matches, in both Standard LLM and Jev modes. Obvious soundboards, compilations and unrequested announcers are excluded, and refused or failed choices fall back to matching those simple traits instead of catalogue popularity. Saved choices remain stable.
-
-Version **1.1.6-staging.46** unifies unambiguous short/full character names such as Kian and Kian Frost, retaining the first saved voice and adding the other spelling as an alias. Exact cast names take priority over punctuation/article matching, and ambiguous shared first names remain separate. Fish community casting uses character profiles and a dedicated chooser with Planner fallback; selection errors never silently assign the most popular voice. Both Jev and LLM must make a real choice when a voice is unassigned, even with cached attribution. Existing inline Fish cues take priority over generated acting while accents remain persistent. Fish through OpenRouter receives inline directions, older Gemini receives its delivery prompt, and legacy S1 supports its documented cues. Loudness matching balances different voices in separate clips and handles a wider range of input levels while retaining silence gating and peak headroom.
-
-Existing saved voice choices and recordings remain available. If an earlier automatic choice was unsuitable, select **Let LLM choose** again for that character and use **Plan latest** or **Play** to choose a new voice. Replay or download of an existing recording retains its previously generated speech; a new voice requires new speech synthesis.
-
-Version **1.1.6-staging.45** repairs exact-name cast duplicates while keeping the first saved voice and connection. Optional characters have a visible Remove control in their row and main editor; removals persist across reloads and provider changes. Narrator and persona remain protected. Duplicate renames are reported before saving, and new characters receive unused names.
-
-Version **1.1.6-staging.44** replaces the Freesound website diagrams with real screenshots of the API application, credentials column headings, and official token instructions. The pictures work offline, enlarge on phones, and contain no private credentials. The guide now follows **Playback → Soundscape** in the refreshed setup wizard. See [setup guide](ONBOARDING.md).
-
-Version **1.1.6-staging.42** brings the refined drawer to `lunch-test`: **Cast / Sound / Saved / Setup**, compact character rows and focused voice/pronunciation pages. **Sound → Customize mixer → Volume limits** sets persistent ceilings for Master, Voices, Music, Ambience and SFX. **Saved → Download all** exports complete played mixes as individual WAVs in one ZIP (256 MB maximum), skipping partial, expired or changed recordings. The setup wizard still opens on first install and remains available from Setup. See [drawer usage](docs/ui-cleanup.md).
-
-Version **1.1.6-staging.40** fixes the three findings from the v39 audit. Clear/delete and expiry also invalidate Cue/companion speech and scene-audio caches, including pending loads and other tabs on the same device. Valid cached audio remains reusable. Chat/cast and mixer saves merge this tab's edits with the latest saved values; available browser Web Locks serialize overlapping saves, and an untouched mixer no longer writes on page leave. Browsers without native Popover support get an unclipped Sections menu with touch targets, Escape dismissal and focus return. Reload older Choir tabs after updating. The existing setup wizard remains available.
-
-Version **1.1.6-staging.39** adds an optional **Message controls** quick button in **Customize mixer**. **Messages** toggles the existing **Show message play controls** setting without changing audio or making provider requests. Message Play, Sections and the download icon share the swipe row in Lumiverse's bubble and minimal layouts. Sections open in a compact menu. The download icon appears only for a complete saved playback matching the selected swipe; unfinished, edited, expired or deleted audio stays hidden. It remains available when Play controls are hidden and is temporarily disabled while Choir is busy.
-
-Version **1.1.6-staging.38** moves **Customize mixer** into the Choir drawer, beside **Open mixer**, and adds **Channel levels** as a show/hide choice. Hiding the section preserves its levels and expanded state. **Follow narration** is an optional mixer quick button, hidden by default, with the same saved setting as Reading in the drawer. Turning it on during speech follows the current passage immediately without restarting audio or making new planning or speech requests.
-
-Version **1.1.6-staging.37** adds **Customize mixer**: independently show or hide speed presets, the global speed slider, voice gaps, individual character speeds and each quick button. Reorder quick buttons with the arrows or reset the layout; hiding controls keeps their saved audio settings. Layout choices are saved with the mixer and add no background work. After planning, characters absent from the latest reply move into a collapsed **Other characters** list in the drawer. Their voices and settings stay saved, and they return when the plan uses them or the reply mentions a name or alias. Narrator and the persona stay available for setup.
-
-Version **1.1.6-staging.36** fixes the audit's retention, replay and casting issues. Recording saves check shared policy and deletion markers in the same database transaction, so an older tab cannot restore audio deleted or expired elsewhere. Repairing clips preserves the original creation date and deadline. Drawer Replay refuses missing speech before playback and preserves any previously complete mix; unverified partial mixes cannot be downloaded as complete. Stop/resume explains how to use a cached Replay from the start to create a full WAV without new synthesis. Preferred and shared casting voices are remembered separately for each connection. The recording database upgrades in place and preserves existing audio; older Choir tabs should be reloaded after updating.
-
-Version **1.1.6-staging.35** fixes retention changes being undone when Replay saves its mix, including playback started before a settings change finishes saving. Already expired recordings cannot be revived by extending their retention. Cleanup runs once a minute while Choir is open and when returning to it; overdue recordings are also removed on reopening. Switching to **This session only** removes the disk copy and keeps audio replayable in memory until Choir closes. Real Chrome tests verify removal from IndexedDB, with unexpired and indefinite recordings left intact.
-
-Version **1.1.6-staging.34** removes manual pauses and silent synthesis waits from the downloaded WAV. Configured voice gaps and music or ambience actually heard during a speech wait stay in the file. Music downloads are prepared and saved beside speech, and music carried from an earlier reply is saved with the new message so cached Replay can restore it after reopening Choir. Existing WAVs keep their original mix until you replay the message. This changes recording and replay; the live TTS provider can still take time to generate missing speech.
-
-Version **1.1.6-staging.33** fixes Incompetech music being skipped when its MP3 response is labelled `application/octet-stream`. Choir uses Lumiverse's file-download API, checks the MP3 header, and removes the temporary file after reading it. Music still plays through the recorded mixer, so enabled and audible music is included in **Download audio**. No additional extension permission is needed. Older Lumiverse versions keep the checked audio-proxy fallback; if that host rejects the generic content type, Choir asks you to update Lumiverse for file-download support.
-
-Version **1.1.6-staging.32** improves quick-start playback: effects use a separate download queue and do not consume TTS request slots or speech lookahead. Speech already saved before playback leaves lookahead free for missing clips. **Download audio** now exports the completed playback mix as one WAV, including only the enabled and audible music, ambience and effects, at the speed, levels and gaps heard. Files use `Choir - character initials - chat ID - 001.wav`. Older recordings need one cached replay to save their mix; sparse clip indexes recover their matching saved passages without new synthesis.
-
-Version **1.1.6-staging.31**, available on `lunch-test`, combines all characters in **Cast**, adds Fish Audio browsing and pasted IDs to the active chat’s preferred voices, and adds **Download speech** for a completed message as one WAV. Downloads reuse saved speech at original speed, with no new generation requests; scene sounds are excluded.
-
-Version **1.1.6-staging.30** brings the tested `lunch-test` changes into staging: guided setup with a Fish Audio key guide, chat-wide name pronunciation, cast restoration and NPC category fixes, OpenRouter Fish voice selection, reading skip controls and music planning for mood changes within a reply. It also includes playback speed and voice gaps from PR #4, with **Normal**, **Fast** and **Very fast** mixer buttons and individual speeds inside each character's **Edit** drawer. **Match Abyssal Constellation** in Advanced Settings optionally themes the mixer. Saved voice styles are bounded automatically, and unverifiable card suggestions no longer block playback.
-
-Version **1.1.6-lunch-test.9** adds **Match Abyssal Constellation** in **Advanced Settings**, beside **Floating audio mixer**. It applies the existing Abyssal mixer's deep blue panels, pale blue controls, gold heading and static constellation decoration. The choice applies immediately and is saved with mixer preferences across reloads. It starts unchecked, affects only the mixer and its launcher, and uses the host theme's Abyssal fonts when available.
-
-Version **1.1.6-lunch-test.8** simplifies the mixer speed buttons to **Normal**, **Fast** and **Very fast**, without numerical labels. Their speeds and saved choices are unchanged, with smaller desktop buttons and the existing touch target size on phones.
-
-Version **1.1.6-lunch-test.7** gives the mixer three playback speed buttons: **Normal (1×)**, **Fast (1.5×)** and **Very fast (2×)**. Individual voice speeds live inside each character's **Edit** drawer, including NPCs, and are available before planning. The gap control stays in **Speech & Planner → Playback** alongside the detailed global speed control. Existing speeds and gaps are preserved; character speeds still replace the global speed, and **Use global** clears an individual override.
-
-Version **1.1.6-lunch-test.6** trims saved and imported voice delivery styles to 600 characters before validation, including lead voices, NPCs on every connection and captured defaults. Older hidden style fields no longer block planning, playback or saving defaults. Character cards and story text are unchanged.
-
-Version **1.1.6-lunch-test.5** prevents a bad character suggestion from blocking playback. Card evidence tolerates differences in formatting, spacing and quote characters; discarded instruction headings do not need evidence. Suggestions without matching evidence are skipped. The existing cast and recognized profiles remain available when none can be verified, using the existing analysis cache without additional analysis requests.
-
-Version **1.1.6-lunch-test.4** integrates the playback controls from PR #4: global playback speed, per-character speed that replaces the global value, and a gap between voices. These settings live beside mixer levels, persist across reloads, and appear in both the mixer and settings drawer. Typing a speed above the slider maximum expands its range. Speech keeps its pitch; music, ambience, effects and auditions retain normal speed. Dialogue with different character speeds uses separate clips, and a nonzero gap separates speakers even when grouping is enabled. Saved shared recordings rebuild when those controls require a split, using existing attribution without another planner request. Ordinary speed changes reuse cached audio. Changes to an already playing shared clip take effect on the next Play; simultaneous unison voices keep the first speaker's rate so they stay aligned. Excluded opening speakers do not introduce an initial gap, and Pause, Next and Stop control pending gaps.
-
-Version **1.1.6-lunch-test.3** excludes instruction headings such as **NARRATIVE GUIDELINES** and **Writing Instructions** from automatic character discovery, including JSON/XML profiles and cached Planner LLM results. Mentioning "main character" inside those sections no longer makes the heading a lead. Remove any previously saved false character once; the updated detector will not add it back. Existing saved cast rows are preserved until explicitly removed.
-
-Version **1.1.6-lunch-test.2** retains saved cast editors when a voice catalogue is unavailable and restores saved Fish voice IDs through OpenRouter. An empty Fish preset list still offers community selection and pasted IDs. Supporting profiles explicitly labelled NPC are kept out of automatic lead discovery; **Move to NPC cast / Move to lead cast** in each character editor preserves that character's voice and pronunciation and remembers the category on reload. Narrator and persona rows cannot be removed with the character delete buttons; use **No voice** to omit them from playback. Music planning now explicitly checks for sustained mood changes within a message, including frightening scenes becoming romantic, and can place up to three music cues at their spoken trigger words. Existing saved plans keep their music cues until replanned.
-
-This is the **staging branch of the original Choir repository**, using the original `choir` identifier and settings. Version **1.1.6-staging.29** plans each reply with one compact casting request: on a benchmark of real replies, Standard LLM attribution rose from 86% to 99.8%, failed plans disappeared, and planning uses about a tenth of the tokens. Version **1.1.6-staging.28** skips non-story blocks: one short Planner LLM check per reply finds reasoning, trackers, recaps and choice menus that are not part of the story, and Choir no longer reads them aloud. Version **1.1.6-staging.27** removes the legacy direct Gemini key route; Choir speaks only through Lumiverse TTS connections, and settings saved in the old Gemini mode switch back automatically. Version **1.1.6-staging.26** removes every direct `fetch()` from the backend, which Lumiverse now refuses to load: Jev, Freesound and Incompetech requests go through Spindle's CORS proxy only, and Freesound previews are downloaded by that proxy as checked audio instead of by the browser. Version **1.1.6-staging.25** improves Jev attribution. Quoted words nobody says aloud (a quoted term, written text, words only reported) are read by the narrator, while quoted thoughts stay with the thinker. A speaker outside the cast is named by a second Jev question over the names the story uses, so the line gets its own NPC voice instead of the LLM fallback; speakers the story never names keep the previous behaviour. On a benchmark of 2,000 dialogue lines from real chats, overall Jev accuracy rose from 94% to 97% with unchanged accuracy for cast lines. Version **1.1.6-staging.24** declutters the settings drawer: **Speech & Planner** is grouped into Voices, Planner, Sound and Reading, set-and-forget interface toggles move to **Advanced Settings**, and long help texts become short tooltips. Choir preserves connection-specific voice selections when cards split into individual leads, bounds card profiles independently, and checks unstructured card content with a cached Planner LLM analysis. Unison excludes listeners, handles common speech verbs, and mixes all participants in main and Cue playback. Cached unison respects changed NPC policies and mixer levels. Connection-list failures retain the selected adapter, and saved clip controls wait for their voice catalogues. Native Fish/Google/OpenRouter grouping retains the supplied Lumiverse relay patch.
-
-
-Version **1.1.6-staging.23** identifies individual leads across formatted headings, named XML profiles and JSON casts. Freeform cards, scenario titles and content outside recognized profiles use a bounded Planner LLM card analysis in Standard LLM and Jev modes, cached until the card changes. Each lead keeps its own profile, aliases, voice and connection. Card titles are not treated as an individual speaker when they describe several people. Local heuristic mode stays local and needs recognizable profiles or manually configured speakers.
-
-Explicit collective dialogue, such as **“they said in unison,”** retains one text turn with a `unison` list of 2–5 participants. In the main player and Cue, Choir synthesizes each participant with their assigned voice, aligns the audible starts, and overlaps the audio into one cached WAV clip with individual mixer levels and peak protection. The speech tag itself remains narrator text. Each unison voice needs a short TTS request; replay and level changes reuse the separate cached voice tracks. Unison is a boundary between otherwise grouped dialogue clips. Ambiguous collective identities need clearer names or planner attribution.
-
-With grouping enabled, message controls show **Audio clips** instead of sections. Different voices share a multi-speaker request only with **Match passage loudness** off; matching keeps separate clips so each voice can be balanced. A shared narrator–character–narrator passage has one Play button with the speaker order, and all three text turns show the same shared cache entry. Selecting that clip plays its entire grouped recording; selecting a longer message's individual clip generates only that clip. Unison controls explicitly show simultaneous voices and the number of short voice calls. Turning grouping off restores section playback.
-
-Heuristic attribution accepts hyphenated character names and aliases, including decorated card titles such as `Gabrielle - Debug`.
-
-The floating mixer’s panel, launcher, text, tabs, sliders, volume fields and button states update immediately when you edit the theme or switch between light and dark mode. Enabled switches use the theme's success color, Silent uses its warning color, and No voice uses its primary color.
+Earlier releases are described in the [changelog](CHANGELOG.md).
 
 ## Install staging
 
-Install this repository with the **staging** branch selected in Lumiverse. It
-includes these setup and reading features:
+Install this repository with the **staging** branch selected in Lumiverse for
+the tested release, or **lunch-test** for the newest changes. Both include these
+setup and reading features:
 
 - **Set up Choir**: the five-step setup helper, updated for Lumiverse-managed
   connections, with Fish Audio API-key and Freesound tutorials. Setup edits stay
@@ -196,6 +119,16 @@ Fish/Google/OpenRouter connections require a Lumiverse relay that advertises `ca
 
 Choir also applies limits per voice route: Fish Audio uses up to the 10,000-character application ceiling, including delivery tags; [OpenAI speech](https://developers.openai.com/api/reference/resources/audio/subresources/speech/methods/create) is capped at 4,096 characters. Gemini uses a conservative local budget of 6,000 UTF-8 bytes for text and delivery instructions, reserving space under its [8,192-token input limit](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash-tts); multilingual text may therefore use shorter chunks. Unknown providers retain the previous 2,000-character cap. These policies also apply to companion paragraph playback.
 
+### Unison, grouped clips and theming
+
+Explicit collective dialogue, such as **“they said in unison,”** retains one text turn with a `unison` list of 2–5 participants. In the main player and Cue, Choir synthesizes each participant with their assigned voice, aligns the audible starts, and overlaps the audio into one cached WAV clip with individual mixer levels and peak protection. The speech tag itself remains narrator text. Each unison voice needs a short TTS request; replay and level changes reuse the separate cached voice tracks. Unison is a boundary between otherwise grouped dialogue clips. Ambiguous collective identities need clearer names or planner attribution.
+
+With grouping enabled, message controls show **Audio clips** instead of sections. Different voices share a multi-speaker request only with **Match passage loudness** off; matching keeps separate clips so each voice can be balanced. A shared narrator–character–narrator passage has one Play button with the speaker order, and all three text turns show the same shared cache entry. Selecting that clip plays its entire grouped recording; selecting a longer message's individual clip generates only that clip. Unison controls explicitly show simultaneous voices and the number of short voice calls. Turning grouping off restores section playback.
+
+Heuristic attribution accepts hyphenated character names and aliases, including decorated card titles such as `Gabrielle - Debug`.
+
+The floating mixer’s panel, launcher, text, tabs, sliders, volume fields and button states update immediately when you edit the theme or switch between light and dark mode. Enabled switches use the theme's success color, Silent uses its warning color, and No voice uses its primary color.
+
 ### Download a message
 
 Play a whole message, then choose the **download icon** beside its swipe controls or in the drawer’s message list. The icon appears when a complete saved playback is available for that swipe; partial, edited, expired and deleted recordings stay hidden. Choir saves its own playback output and exports one stereo WAV with the speed, voice levels, loudness matching and gaps heard. Music, ambience and SFX are included only while enabled and audible; switched-off and muted sounds stay out. Changes made after playback do not rewrite the saved mix. Replay the message to save a new mix with different settings. Continuous music is included only up to the final clip of that message.
@@ -212,24 +145,15 @@ Files use `Choir - character initials - chat ID - 001.wav`. Initials come from t
 
 ### Local copy
 
-1. Copy the repository into your Lumiverse data directory under `extensions/choir`:
+On Windows, run the installer from a built Choir folder. It copies only the files Lumiverse loads (`spindle.json`, `dist/`, `assets/`, icons and docs) and never overwrites an existing install:
 
-   ```text
-   Lumiverse/
-     data/
-       extensions/
-         choir/
-           spindle.json
-           dist/
-             backend.js
-             frontend.js
-           src/
-   ```
+```powershell
+.\Install.ps1 -LumiverseDataDirectory "C:\path\to\Lumiverse\data"
+```
 
-2. Open **Extensions -> Add -> Import local** as an admin or owner.
-3. Enable **Choir** and grant permissions if prompted.
+On other systems, copy those files into `data/extensions/choir/` yourself. Then open **Extensions -> Add -> Import local** as an admin or owner, enable **Choir** and grant permissions if prompted.
 
-The extension includes pre-built bundles in `dist/`. No build step is required to run it.
+The extension includes pre-built bundles in `dist/`. No build step is required to run it. After editing `src/`, run `npm run build` to regenerate them.
 
 ## Configuration
 
@@ -302,24 +226,29 @@ Paragraph plans may contain `kind: 'sfx'` audio parts when effects are enabled a
 
 ## Development
 
-Install dependencies and run test suites:
+Edit `src/`, then rebuild the committed bundles:
 
 ```bash
 npm ci
+npm run build
+```
+
+Run the automated tests (the build runs first):
+
+```bash
 npm test
-npm run test:ui
+```
+
+`npm test` covers core parsing, Jev and LLM planning, casting, delivery cues, sound, ambience and music cues, settings merges and pronunciation, and runs the jsdom browser-environment suites for the drawer, mixer, setup wizard and companion bridge. The full run takes about 20 minutes, mostly `tests/reliability.browser.mjs`. While iterating, run one file:
+
+```bash
+node --test tests/backend.test.mjs
 ```
 
 If the environment prevents spawning test workers, use `node --test --test-isolation=none --test-concurrency=1 tests/*.test.mjs tests/*.browser.mjs` after building.
 
-`npm test` validates core parsing, Jev integration, sound effect, ambience and music cue validation, music ranking, and cast validation. `npm run test:ui` executes browser-environment DOM, mixer, and companion bridge integration tests.
+### Testing in Lumiverse
 
-The drawer on `lunch-test` uses Cast, Sound, Saved and Setup, with mixer button rows, volume ceilings and per-character accent/delivery routing. See [usage, tone routing and custom voice options](docs/ui-cleanup.md). `npm run test:cleanup:chromium` checks desktop/mobile task navigation, mixer rows and mixed Fish/Gemini requests with synthetic audio. `npm run test:drawer:chromium` checks focused editors, volume ceilings and bulk mixed-WAV archives, including older messages outside the recent list.
+End-to-end checks run in a local Lumiverse **staging** instance. Install Choir from GitHub on the `lunch-test` branch, or point the installed clone in `data/extensions/choir/repo` at your working copy, then reload Lumiverse after each `npm run build`. Multi-speaker grouping also needs the [relay patch](patches/lumiverse-multi-speaker.patch) applied to that Lumiverse checkout; reapply it after updating Lumiverse.
 
-With Playwright and Chromium installed, `npm run test:fluidity:chromium` measures transitions at 0.75–4× with deterministic synthesis delays, checks configured gaps/concurrency, and injects slow decoding to catch loudness work at handoff. It uses synthetic audio and makes no live provider calls.
-
-`npm run test:voices:chromium` checks short/full-name repair, Fish theatrical delivery and preset precedence, quiet/loud voice matching and cached replay on desktop and mobile, using synthetic provider audio.
-
-`npm run test:retention:chromium` checks physical recording deletion, replay deadlines and session-only conversion in an isolated browser using synthetic audio. It leaves unexpired, indefinite and other-installation fixtures intact and never accesses your Lumiverse browser data.
-
-`npm run test:audit:chromium` checks the database upgrade, interrupted Replay, preservation of a complete mix, aged-record repair, stale saves after policy changes or deletion in another tab, resumed-download guidance and Fish voice choices across connections and remounts. It uses isolated synthetic fixtures and makes no provider calls.
+The `tests/*.chromium.mjs` scripts (`npm run test:*:chromium`) are optional real-browser checks with synthetic audio. They need Playwright, which is not a project dependency. Install it separately only if you want to run them. See [usage, tone routing and custom voice options](docs/ui-cleanup.md) for the drawer layout they exercise.

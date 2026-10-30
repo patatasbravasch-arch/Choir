@@ -182,3 +182,11 @@ test('grouped Fish S2 and Gemini turns keep each speaker voice and per-turn deli
   assert.equal(gemini[0].parameters.speech_style,'Calm narration');
   assert.equal(gemini[1].parameters.speech_style,'Quiet whispering, restrained');
 });
+test('Fish S2 maps planner and Jev delivery labels to bracket cues and respects source cues anywhere',()=>{
+ for(const [style,text,expected] of [
+  ['cheerful; sigh','Hello.','[happy][sighing] Hello.'],
+  ['[sad][whispering]','Hello.','[sad][whispering] Hello.'],
+  ['angry; shouting','This is [whispering] important.','This is [whispering] important.'],
+  ['shouting in alarm','Watch out!','[shouting in alarm] Watch out!']
+ ])assert.equal(voiceDelivery({segment:{text,style,voice:'fixed-voice'},actor:{},family:'fish_audio',connection:{model:'s2.1-pro-free'}}).text,expected);
+});

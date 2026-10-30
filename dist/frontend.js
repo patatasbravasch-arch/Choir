@@ -118,6 +118,15 @@ function apiErrorMessage(raw,status) {
   return `Lumiverse API HTTP ${status}${detail?`: ${detail}`:': The server or gateway returned no error details.'}`;
 }
 
+// Names a backend action in timeout messages. Speech synthesis goes straight to
+// Lumiverse, so no backend action is a TTS request.
+function backendRequestKind(action) {
+  return ['plan','planJev','planWithJev','testPlanner','skipCheck','cardCast'].includes(action)?'Planner'
+    : ['sfx','freesound','freesoundPreview'].includes(action)?'Sound effect'
+    : ['music','musicAudio'].includes(action)?'Music'
+    : action==='searchVoices'?'Voice search':'Choir';
+}
+
 function normalizeName(value) {
   return String(value || '').normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
 }
@@ -4939,7 +4948,7 @@ export async function setup(ctx) {
         try{ctx.sendToBackend({namespace:'choir',id,action:'cancel'});}catch{}
         done(new Error(action==='ping'
           ? 'Choir backend did not respond. Update and restart Choir in Extensions, then reload the page. Both backend and frontend must be running.'
-          : `${action==='plan' || action==='testPlanner' || action==='skipCheck'?'Planner':action==='sfx'?'Sound effect':'TTS'} request timed out waiting for the backend. ${lastProgress?`Last reported stage: ${lastProgress.stage}. ${lastProgress.provider || ''} ${lastProgress.model || ''}.`:'The backend did not acknowledge this request; restart Choir and reload the page.'}`));
+          : `${backendRequestKind(action)} request timed out waiting for the backend. ${lastProgress?`Last reported stage: ${lastProgress.stage}. ${lastProgress.provider || ''} ${lastProgress.model || ''}.`:'The backend did not acknowledge this request; restart Choir and reload the page.'}`));
       },timeoutMs);
       const done=(error,result)=>{clearTimeout(timer);signal?.removeEventListener('abort',cancel);pending.delete(id);error?reject(error):resolve(result);};
       done.progress=progress=>{lastProgress=progress;onProgress?.(progress);};
@@ -6258,6 +6267,10 @@ export async function setup(ctx) {
           status('Classifying dialogue with Jev System 1 model…');
           const jevKey = (config.jevApiKey || $('jevKey')?.value || '').trim();
           const jevEndpoint = (config.jevEndpoint || $('jevEndpoint')?.value || '').trim();
+          // Jev plans in several sequential Decision rounds (speakers, delivery, new names,
+          // voice genders). A Lumiverse Decision connection may be backed by a slow model,
+          // so allow more than one quick round; community voice searches need longer still.
+          const jevTimeout = snapshot.communityRoutes ? 245000 : 90000;
           const result = await rpc('planJev', {
             transcript,
             config: {...snapshot,allowLlmFallback:config.allowLlmFallback},
@@ -6265,8 +6278,9 @@ export async function setup(ctx) {
             connectionId:config.planner,
             decisionConnection: snapshot.decisionConnection || $('decisionConnection')?.value || '',
             apiKey: jevKey,
-            endpoint: jevEndpoint
-          }, ctrl.signal, snapshot.communityRoutes ? 245000 : 15000);
+            endpoint: jevEndpoint,
+            timeoutMs: jevTimeout - 5000
+          }, ctrl.signal, jevTimeout);
           if (!result || !Array.isArray(result.segments))throw new Error('Jev returned no valid speech plan.');
           adoptCommunityVoices(result,snapshot);
           fastPlan = validatePlan({ segments: stripBase(result.segments) }, transcript, snapshot);
@@ -7355,6 +7369,7 @@ export async function setup(ctx) {
     const closeSections=(focus=false)=>{
       sections.open=false;
       document.removeEventListener('keydown',dismissKey);document.removeEventListener('pointerdown',dismissOutside,true);
+      document.defaultView.removeEventListener('resize',positionSections);document.removeEventListener('scroll',positionSections,true);
       if(popover){if(sectionList.matches(':popover-open'))sectionList.hidePopover();}
       else{sectionList.hidden=true;delete sectionList.dataset.portal;sections.append(sectionList);}
       if(focus && summary.isConnected)summary.focus();
@@ -7368,14 +7383,16 @@ export async function setup(ctx) {
       for(const other of messageSections)if(other.details!==sections && other.details.open)other.closeSections();
       if(popover && !sectionList.matches(':popover-open'))sectionList.showPopover();
       else if(!popover){sectionList.hidden=false;sectionList.dataset.portal='';document.body.append(sectionList);document.addEventListener('pointerdown',dismissOutside,true);}
-      document.addEventListener('keydown',dismissKey);
+      // Follow scrolling and resizing only while open: one listener per message
+      // footer would otherwise run on every scroll of a long chat.
+      document.addEventListener('keydown',dismissKey);document.defaultView.addEventListener('resize',positionSections);document.addEventListener('scroll',positionSections,true);
       const width=document.documentElement.clientWidth || document.defaultView.innerWidth,height=document.documentElement.clientHeight || document.defaultView.innerHeight;
       const anchor=summary.getBoundingClientRect(),rect=sectionList.getBoundingClientRect();
       sectionList.style.left=`${Math.max(10,Math.min(anchor.right-rect.width,width-rect.width-10))}px`;
       const top=anchor.bottom+rect.height+6>height?anchor.top-rect.height-6:anchor.bottom+6;
       sectionList.style.top=`${Math.max(10,Math.min(top,height-rect.height-10))}px`;
     };
-    sections.addEventListener('toggle',positionSections);document.defaultView.addEventListener('resize',positionSections);document.addEventListener('scroll',positionSections,true);
+    sections.addEventListener('toggle',positionSections);
     const download=speechDownloadButton(messageId),downloadEntry=[...messageDownloads].find(item=>item.button===download);
     const place=()=>{
       const anchor=context.node?.isConnected?context.node:target,card=target.closest?.('[data-message-id]') || anchor.closest?.('[data-message-id]');
@@ -7385,7 +7402,7 @@ export async function setup(ctx) {
     const entry={messageId,target,content:ctx.messages.getContent(messageId),details:sections,summary,list:sectionList,controls,play:button,download,place,closeSections,version:0};messageSections.add(entry);downloadEntry.changed=()=>syncMessageControls(entry);
     button.onclick=()=>run(()=>playMessage(messageId));controls.append(button,sections,download);target.append(progress);place();
     void renderSectionControls(entry).catch(error=>{if(!disposed)status(`Section controls unavailable: ${error.message}`,true);});void refreshMessageDownloads();
-    return ()=>{entry.version++;closeSections();sections.removeEventListener('toggle',positionSections);messageSections.delete(entry);downloadEntry.version++;messageDownloads.delete(downloadEntry);document.defaultView.removeEventListener('resize',positionSections);document.removeEventListener('scroll',positionSections,true);controls.remove();progress.remove();statuses.delete(progress);if(!statuses.size)messageStatuses.delete(messageId);};
+    return ()=>{entry.version++;closeSections();sections.removeEventListener('toggle',positionSections);messageSections.delete(entry);downloadEntry.version++;messageDownloads.delete(downloadEntry);controls.remove();progress.remove();statuses.delete(progress);if(!statuses.size)messageStatuses.delete(messageId);};
   };
   const registerDecorator=ctx.ui.registerDomDecorator?.bind(ctx.ui) || ctx.registerDomDecorator?.bind(ctx);
   if(registerDecorator) {
