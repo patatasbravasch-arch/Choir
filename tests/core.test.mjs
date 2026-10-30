@@ -939,3 +939,37 @@ test('lookahead also requests every clip needed within the time horizon, so a lo
   assert.equal(speechLookaheadEnd([clip(1500),clip(1500),clip(1500)],0,1,{horizonSeconds:45}),1);
   assert.equal(speechLookaheadEnd(replies,0,0,{horizonSeconds:45}),0);
 });
+
+test('a casting block written with the reply is read, hidden from speech, mapped to quotes and sounds',async()=>{
+  const core=await import('../src/core.js');
+  const reply='Hannah crossed the room. "Wes," she said. "Meet someone." The door opened.\n<!--choir\nQ1|Hannah|warm, delighted\nQ2|Hannah|bright\nNPC|Guard|male|old, gruff\nSFX|door open|"The door opened"\nAMB|crowd murmur|Hannah crossed\n-->';
+  const plan=core.readInjectedPlan(reply),text=core.stripInjectedPlan(reply);
+  assert.equal(text,'Hannah crossed the room. "Wes," she said. "Meet someone." The door opened.');
+  assert.equal(core.transcriptFromMessage(reply),text);
+  assert.deepEqual(core.injectedCastRows(text,plan),{rows:'D1|Hannah|warm, delighted\nD3|Hannah|bright\nNPC|Guard|male|old, gruff',covered:true});
+  assert.deepEqual(core.injectedSoundCues([{text}],plan),{cues:[{segment:0,trigger:'The door opened',query:'door open'}],ambience:[{segment:0,trigger:'Hannah crossed',query:'crowd murmur'}]});
+  assert.equal(core.readInjectedPlan('No block here.'),null);assert.equal(core.stripInjectedPlan('Text\n<!--choir\nQ1|Han'),'Text');
+  assert.equal(core.injectedCastRows('"One." "Two."',core.readInjectedPlan('<!--choir\nQ1|A|x\n-->')).covered,false);
+  const prompt=core.injectionPrompt({cast:['Hannah','Weston'],sfx:false});assert.match(prompt,/Cast: Hannah, Weston/);assert.ok(!/SFX\|/.test(prompt));
+});
+
+test('a new speaker folded into its quote row is read as that speaker, and blank-character spacing reads as spaces',async()=>{
+  const core=await import('../src/core.js');
+  const plan=core.readInjectedPlan('<!--choir\nQ1|NPC|Radio announcer|male|middle-aged|flat, official\n-->');
+  assert.deepEqual(plan.quotes.get(1),{speaker:'Radio announcer',style:'flat, official'});assert.deepEqual(plan.npcs,[['Radio announcer','male','middle-aged, flat, official']]);
+  const spoken=core.transcriptFromMessage('The⠀radio⠀hisses⠀between⠀two⠀wall⠀pipes.');
+  assert.equal(spoken,'The radio hisses between two wall pipes.');
+  assert.deepEqual(core.injectedSoundCues([{text:spoken}],{sfx:[{query:'static hiss',trigger:'radio hisses between two wall pipes'}],ambience:[]}).cues.map(cue=>cue.segment),[0]);
+});
+
+test('casting rows align to quotes by their first words, so a model counting a split quote once cannot shift later speakers',async()=>{
+  const core=await import('../src/core.js');
+  const text='Weston looked up. "Small motors, mostly," he said. "Rewinding copper coils." Hannah snorted. "He fixes things." "Smart," Weston said.';
+  const anchored=core.readInjectedPlan('<!--choir\nQ1|Weston|low|Small motors mostly\nQ2|Hannah Voss|sharp|He fixes things\nQ3|Weston|dry|Smart\n-->');
+  assert.deepEqual(core.injectedCastRows(text,anchored),{rows:'D1|Weston|low\nD3|Weston|low\nD5|Hannah Voss|sharp\nD6|Weston|dry',covered:true});
+  const unanchored=core.readInjectedPlan('<!--choir\nQ1|Weston|low\nQ2|Hannah Voss|sharp\nQ3|Weston|dry\n-->');
+  assert.deepEqual(core.injectedCastRows(text,unanchored),{rows:'',covered:false});
+  const far=core.readInjectedPlan('<!--choir\nQ1|Weston|low|Small motors mostly\n-->');
+  assert.equal(core.injectedCastRows('"Small motors," he said.\n\n"Rewinding coils."',far).covered,false);
+  assert.match(core.injectionPrompt({cast:['Weston']}),/Q1\|Speaker\|delivery\|first words/);
+});

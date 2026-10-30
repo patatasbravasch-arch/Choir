@@ -11,7 +11,8 @@
     "cors_proxy",
     "ui_panels",
     "event_tracking",
-    "decisions"
+    "decisions",
+    "interceptor"
   ],
   "entry_backend": "dist/backend.js",
   "entry_frontend": "dist/frontend.js",

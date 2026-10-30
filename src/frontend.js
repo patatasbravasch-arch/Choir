@@ -3,7 +3,7 @@ import { createSetupWizard, saveSetupSettings, ONBOARDING_KEY } from './setup.js
 import { ABYSSAL_THEME_CSS } from './abyssal-theme.js';
 import { randomUuid, sha256Hex, GEMINI_VOICES, OPENAI_VOICES, additionalVoices, apiErrorMessage, MAX_SPEECH_CHARS, MAX_CHANNEL_VOLUME, speechProviderFamily, speechRequestLimits, normalizeName, normalizeVoiceCatalogue, characterCardRoles, validateCardRoles, reconcileCardCast, unisonSpeakers, speechSourceUnits, mixUnisonAudio, speechDownloadWav, transcriptFromMessage, readableText, readAlongIndex, locatePassages, spokenLength, validateCastConfig, validatePlan, npcCastActor, parsePlanJson, speechBatches, groupedSpeechBatches, audioBytes, fastClassifyPlan, resolvePlannerMode, attributionPlan, restoreAttribution, passageKey, mixerVolume, loudnessGain, castExport, castImport, applySoundCues, cueOffset, sfxCueOffset, transcriptLines, withoutLines } from './core.js';
 import { normalizeSpeedSliderMax, normalizePlaybackRate, normalizeVoiceGap, speakerPlaybackRate, effectivePlaybackRate, browserPlaybackRate, PLAYBACK_RATE_LIMITS, VOICE_GAP_LIMITS } from './core.js';
-import { speechLookaheadEnd, backendRequestKind, LIMITED_SPEECH_PEAK, softClipCurve, spaceSoundEffects } from './core.js';
+import { speechLookaheadEnd, backendRequestKind, LIMITED_SPEECH_PEAK, softClipCurve, spaceSoundEffects, readInjectedPlan, injectedCastRows, injectedSoundCues } from './core.js';
 import { createPlayedAudioCapture, playedAudioFilename, createWavArchive } from './played-audio.js';
 import { characterDeliveryMode, voiceDelivery, normalizeMixerColumns, normalizeMixerVolumeLimits } from './delivery.js';
 import { createDrawerNavigation, DRAWER_UI_CSS } from './drawer-ui.js';
@@ -349,6 +349,7 @@ export async function setup(ctx) {
     <div class="et-grid">
       <label>Planner engine<select data-et="plannerMode"><option value="llm">Standard LLM Connection</option><option value="jev">Jev System 1 (TypeSafe AI)</option><option value="heuristic">Heuristic (local only)</option></select></label>
       <label data-et="llmPlannerBox">Planner LLM connection<select data-et="planner"><option value="">Default LLM connection</option></select></label>
+      <label data-et="injectPlanBox" title="The model that writes each reply also writes Choir's casting and sound effects in a hidden note at its end. Saves the planner and sound-choice calls; adds about 250 tokens to each reply request. Choir plans normally when the note is missing. Needs the interceptor permission (Extensions → Choir).">Plan inside the reply<select data-et="injectPlan"><option value="off">Off (separate planner call)</option><option value="auto">Automatic (added to each reply)</option><option value="macro">Preset macro: place {{choirPrompt}}</option></select></label>
       <label data-et="jevPlannerBox" hidden>Decision connection<select data-et="decisionConnection"><option value="">Default Decision connection</option></select></label>
       <input data-et="jevKey" type="hidden">
       <input data-et="jevEndpoint" type="hidden">
@@ -743,7 +744,7 @@ export async function setup(ctx) {
   let controller=null, currentAudio=null, finishAudio=null, objectUrl=null;
   const paragraphPrefetchControllers=new Set();
   const defaults = () => ({planner:'',connection:'',decisionConnection:'',styleParam:'',apiBase:'/api/v1',chunk:1800,batchSpeech:false,concurrency:1,plannerTokens:8192,
-    prefetch:1,normalizeLoudness:true,skipMeta:true,allowLlmFallback:false,sectionButtons:false,paranoidMode:false,connectionMode:'several',enableMixer:false,singleVoices:{},
+    prefetch:1,normalizeLoudness:true,skipMeta:true,allowLlmFallback:false,injectPlan:'off',sectionButtons:false,paranoidMode:false,connectionMode:'several',enableMixer:false,singleVoices:{},
     extraVoices:'',ignoredTags:'',useStyle:true,auto:false,autoPlan:false,showAutoPlanAction:false,muteNarrator:false,enableSfx:true,enableAmbience:true,enableMusic:false,loopMusic:false,freesoundApiKey:'',npcPolicy:{mode:'llm',route:'',voice:'',voices:[]},fishVoiceSource:'community',plannerMode:'llm',useFastClassifier:false,useJev:false,jevApiKey:'',jevEndpoint:'https://api.typesafe.ai/v1',planBatchChars:3600,planBatchUnits:24,retention:'forever',readAlong:'off',followNarration:false,casts:{},fixed:[
       {speaker:'Narrator',voice:'Charon',style:'Clear, measured narration'},
       {speaker:'Persona',voice:'',style:''},
@@ -1443,7 +1444,7 @@ export async function setup(ctx) {
   const settingsKey = id => `chat:${id}`;
   const GLOBAL_SETTINGS_KEY='settings:global';
   const CAPTURED_DEFAULTS_KEY='settings:captured-defaults';
-  const preferenceFields=['planner','decisionConnection','connection','connectionMode','enableMixer','styleParam','apiBase','chunk','batchSpeech','plannerTokens','retention','concurrency','prefetch','normalizeLoudness','skipMeta','allowLlmFallback','sectionButtons','paranoidMode','extraVoices','extraVoiceRoutes','useStyle','auto','autoPlan','showAutoPlanAction','ignoredTags','fishVoiceSource','plannerMode','useFastClassifier','useJev','jevEndpoint','enableSfx','enableAmbience','enableMusic','loopMusic','freesoundApiKey','readAlong','followNarration'];
+  const preferenceFields=['planner','decisionConnection','connection','connectionMode','enableMixer','styleParam','apiBase','chunk','batchSpeech','plannerTokens','retention','concurrency','prefetch','normalizeLoudness','skipMeta','allowLlmFallback','injectPlan','sectionButtons','paranoidMode','extraVoices','extraVoiceRoutes','useStyle','auto','autoPlan','showAutoPlanAction','ignoredTags','fishVoiceSource','plannerMode','useFastClassifier','useJev','jevEndpoint','enableSfx','enableAmbience','enableMusic','loopMusic','freesoundApiKey','readAlong','followNarration'];
   const defaultVoiceFields=['voice','route','gender','style','accent','deliveryMode','excluded'];
   let capturedDefaults=null,defaultOperation=false,defaultsRevision=0;
   let closeDefaultEditor;
@@ -1750,7 +1751,27 @@ export async function setup(ctx) {
   }
   let settingsWriteQueue=null,pendingSettings=null,autosaveTimer=null,settingsEdit=0,preferenceBaseline={};const pendingRetentionPolicies=new Map(),chatBaselines=new Map();
   function saveState(text,error=false){if(disposed)return;$('saveState').textContent=text;$('saveState').classList.toggle('et-error',error);$('save').hidden=!error || !text.startsWith('Save failed');}
+  // Tell the backend whether this chat's replies should carry Choir's casting
+  // (Plan inside the reply), and which names the roleplay model may use.
+  // Only changes are sent; a chat that never used it sends nothing. Opening a
+  // chat sends again (force), so a restarted backend relearns it.
+  const sentInjectContexts=new Map();
+  const injectDelivery=value=>['auto','macro'].includes(value?.injectPlan)?value.injectPlan:'off';
+  function syncInjectContext(targetChat=chatId,value=config,force=false){
+    if(!targetChat || !value?.fixed)return;
+    const placeholders=new Set(['narrator','persona','{{user}}','character','{{char}}']);
+    const cast=[...new Set([...value.fixed,...(value.npcs || [])].map(actor=>String(actor.speaker || '').trim())
+      .filter(name=>name && !placeholders.has(normalizeName(name))).concat(activePersonaName?[activePersonaName]:[]))];
+    const key=String(value.freesoundApiKey || '').trim();
+    const context={chatId:targetChat,delivery:resolvePlannerMode(value)==='llm'?injectDelivery(value):'off',cast,
+      sfx:Boolean(key) && value.enableSfx!==false,ambience:Boolean(key) && value.enableAmbience!==false};
+    const signature=JSON.stringify(context),sent=sentInjectContexts.get(targetChat);
+    if(sent===signature && !force || context.delivery==='off' && sent===undefined)return;
+    sentInjectContexts.set(targetChat,signature);
+    void rpc('injectContext',context,null,8000).catch(()=>{});
+  }
   async function persistConfig(targetChat=chatId,value=config,inherit=false){
+    syncInjectContext(targetChat,value);
     if(pendingSettings?.chatId===targetChat){pendingSettings=null;clearTimeout(autosaveTimer);autosaveTimer=null;inherit=true;}
     validateNumericSettings(value);
     const snapshot=chatSettingsSnapshot(value),localSnapshot=structuredClone(snapshot),edit=settingsEdit;
@@ -2519,7 +2540,7 @@ export async function setup(ctx) {
       planner:$('planner').value,connection:$('connection').value,decisionConnection:$('decisionConnection')?$('decisionConnection').value:(config.decisionConnection||''),
       styleParam:$('styleParam').value,apiBase:$('apiBase').value.trim(),chunk:Number($('chunk').value),
       plannerTokens:Number($('plannerTokens').value),retention:$('retention').value,batchSpeech:$('batchSpeech').checked,concurrency:Number($('concurrency').value),
-      prefetch:Number($('prefetch').value),normalizeLoudness:$('normalizeLoudness').checked,skipMeta:$('skipMeta').checked,allowLlmFallback:$('allowLlmFallback').checked,sectionButtons:$('sectionButtons').checked,enableMixer:Boolean($('enableMixer')?.checked),
+      prefetch:Number($('prefetch').value),normalizeLoudness:$('normalizeLoudness').checked,skipMeta:$('skipMeta').checked,allowLlmFallback:$('allowLlmFallback').checked,injectPlan:$('injectPlan').value,sectionButtons:$('sectionButtons').checked,enableMixer:Boolean($('enableMixer')?.checked),
       extraVoices:$('extraVoices').value,ignoredTags:$('ignoredTags').value,useStyle:$('useStyle').checked,auto:$('auto').checked,muteNarrator:Boolean(config.muteNarrator),enableSfx:$('enableSfx')?Boolean($('enableSfx').checked):(config.enableSfx!==false),enableAmbience:$('enableAmbience').checked,enableMusic:$('enableMusic').checked,loopMusic:$('loopMusic').checked,readAlong:$('readAlong').value,followNarration:$('followNarration').checked,freesoundApiKey:$('freesoundApiKey')?$('freesoundApiKey').value.trim():(config.freesoundApiKey||''),fishVoiceSource:$('fishVoiceSource').value,plannerMode:$('plannerMode')?$('plannerMode').value:resolvePlannerMode(config),useFastClassifier:$('plannerMode')?$('plannerMode').value==='heuristic':Boolean(config.useFastClassifier),useJev:$('plannerMode')?$('plannerMode').value==='jev':Boolean(config.useJev),jevApiKey:$('jevKey')?$('jevKey').value.trim():(config.jevApiKey||''),jevEndpoint:$('jevEndpoint')?$('jevEndpoint').value.trim():(config.jevEndpoint||'')},activeCharacterCard || {});
   }
   function casting(c=config) {
@@ -2601,6 +2622,8 @@ export async function setup(ctx) {
     const isHeuristic=mode==='heuristic';
     if($('llmPlannerBox'))$('llmPlannerBox').hidden=false;
     if($('jevPlannerBox'))$('jevPlannerBox').hidden=!isJev;
+    // Only the LLM planner reads casting written with the reply.
+    if($('injectPlanBox'))$('injectPlanBox').hidden=mode!=='llm';
     if($('useFastClassifier'))$('useFastClassifier').checked=isHeuristic;
     $('plannerHint').textContent=isHeuristic?'Runs on this device. Unclear dialogue stops planning.':isJev?'Jev picks speakers; your Planner LLM reads the card once.':'';
     $('plannerHint').hidden=!$('plannerHint').textContent;
@@ -2657,6 +2680,7 @@ export async function setup(ctx) {
     if($('jevKey'))$('jevKey').value=config.jevApiKey||'';
     if($('jevEndpoint'))$('jevEndpoint').value=config.jevEndpoint||'';
     for(const name of ['allowLlmFallback','normalizeLoudness','skipMeta','sectionButtons'])$(name).checked=Boolean(config[name]);
+    $('injectPlan').value=injectDelivery(config);
     $('prefetch').value=config.prefetch;
     $('batchSpeech').checked=Boolean(config.batchSpeech);syncVoiceControls();
     updatePlannerVisibility();
@@ -2756,6 +2780,7 @@ export async function setup(ctx) {
   function loadChat(force=false){
     const loading=run(()=>switchChat(force));
     voicesLoading=Promise.all([voicesLoading,loading]);
+    void loading.then(()=>{if(!disposed)syncInjectContext(chatId,config,true);});
     return loading;
   }
   async function switchChat(force=false) {
@@ -3165,6 +3190,8 @@ export async function setup(ctx) {
         transcript=replacePersonaMacro(transcript,name);context=replacePersonaMacro(context,name);
         snapshot=personaFallbackCast(snapshot,name);
       }
+      // Casting and sounds the roleplay model wrote with this reply (Plan inside the reply).
+      const written=injectDelivery(config)!=='off' && plannerMode==='llm'?readInjectedPlan(content):null;
       let fastPlan = null;
       if (plannerMode==='heuristic') {
         const failure={};
@@ -3221,6 +3248,7 @@ export async function setup(ctx) {
           result = await rpc('plan', {
             transcript,
             config: snapshot,
+            ...(written ? { injected: injectedCastRows(transcript, written) } : {}),
             timeoutMs: 240000,
             context,
             connectionId: config.planner,
@@ -3246,7 +3274,7 @@ export async function setup(ctx) {
       // Validate the complete original reply before audio or cast persistence.
       const validated=validatePlan({segments:combined},transcript,snapshot);
       plan={...validated,warning:jevFailure};planSource={messageId,content,transcript,chatId:targetChat,soundCues:false,soundCueWarning:''};
-      const cued=await cuePlannedSegments(plan.segments,ctrl,token);
+      const cued=await cuePlannedSegments(plan.segments,ctrl,token,written);
       if(token!==revision || ctrl.signal.aborted)return;
       plan.segments=cued.segments;planSource.soundCues=cued.checked;planSource.soundCueWarning=cued.warning || '';
       rememberPlanCast(validated);
@@ -3657,9 +3685,9 @@ export async function setup(ctx) {
   const soundsEnabled=snapshot=>snapshot.enableSfx!==false || snapshot.enableAmbience!==false;
   const soundCuesWanted=snapshot=>soundsEnabled(snapshot) && Boolean(freesoundKey(snapshot)) || snapshot.enableMusic===true;
   const missingFoleyKey=snapshot=>soundsEnabled(snapshot) && !freesoundKey(snapshot)?'Sound effects and ambience need a Freesound API key in Playback → Soundscape. Speech continues.':'';
-  async function chooseSoundCues(segments,signal,onStage=status,currentMusic){
+  async function chooseSoundCues(segments,signal,onStage=status,currentMusic,written=null){
     onStage('Choosing sound effects…');
-    const result=await rpc('sfx',{segments:segments.map(({speaker,text})=>({speaker,text})),connectionId:config.planner,music:config.enableMusic===true,...(currentMusic?{currentMusic}:{})},signal,60000,
+    const result=await rpc('sfx',{segments:segments.map(({speaker,text})=>({speaker,text})),connectionId:config.planner,music:config.enableMusic===true,...(currentMusic?{currentMusic}:{}),...(written?{injectedCues:injectedSoundCues(segments,written)}:{})},signal,60000,
       progress=>onStage(`Choosing sound effects: ${progress.stage}${progress.model?` · ${progress.model}`:''}`));
     // Music alone needs no Freesound key; Freesound sounds without one would only fail later.
     return freesoundKey(config)?result:{...result,cues:[],ambience:[]};
@@ -3667,10 +3695,10 @@ export async function setup(ctx) {
   // Sound effects are optional: a failed choice never blocks speech.
   // The music playing at the end of earlier text, so the next sound request keeps it unless the scene changes.
   const lastMusic=entries=>{const entry=(entries || []).filter(entry=>!entry.stop).at(-1);return entry && {title:'',feels:entry.feels};};
-  async function cuePlannedSegments(segments,ctrl,token){
+  async function cuePlannedSegments(segments,ctrl,token,written=null){
     if(!soundCuesWanted(config))return {segments,checked:false};
     const currentMusic=continuousMusic() && beds.music && {title:beds.music.title || '',feels:beds.music.feels};
-    try{return {segments:applySoundCues(segments,await chooseSoundCues(segments,ctrl.signal,status,currentMusic)),checked:true};}
+    try{return {segments:applySoundCues(segments,await chooseSoundCues(segments,ctrl.signal,status,currentMusic,written)),checked:true};}
     catch(error){
       if(ctrl.signal.aborted || token!==revision)throw error;
       const warning=`SFX skipped: ${error.message}. Speech continues. Use Plan latest to retry sound-effect choices.`;

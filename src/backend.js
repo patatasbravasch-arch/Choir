@@ -1,4 +1,4 @@
-import { backendRequestKind, cardAnalysisRoles, reconcileCastDuplicates, castIdentityResolver, validateCastConfig, validatePlan, npcCastActor, parsePlanJson, resolvePlanReferences, castReply, speechSourceUnits, normalizeName, unisonSpeakers, fastClassifyPlan, resolvePlannerMode, soundCuePrompt, parseSoundCues, rankMusic, MUSIC_GENRES, skipCheckPrompt, parseSkipRows, skippedLines, DELIVERY_CONTEXT_RULES } from './core.js';
+import { injectionPrompt, backendRequestKind, cardAnalysisRoles, reconcileCastDuplicates, castIdentityResolver, validateCastConfig, validatePlan, npcCastActor, parsePlanJson, resolvePlanReferences, castReply, speechSourceUnits, normalizeName, unisonSpeakers, fastClassifyPlan, resolvePlannerMode, soundCuePrompt, parseSoundCues, rankMusic, MUSIC_GENRES, skipCheckPrompt, parseSkipRows, skippedLines, DELIVERY_CONTEXT_RULES } from './core.js';
 
 async function jevPost(url, headers, payload, signal) {
   signal?.throwIfAborted();
@@ -698,6 +698,45 @@ async function castCommunityVoices(raw, config, chosen, cast, prefetch) {
   return { ...config, voices: [...config.voices, ...[...chosen.values()].map(voice => ({ id: voice.id, name: voice.id, description: voice.description, route: voice.route }))] };
 }
 
+// Planning inside the reply. The frontend saves each chat's choice (off, auto or
+// macro) and cast names to per-user storage, so the choice survives restarts.
+// "auto" appends the instruction through the interceptor; "macro" leaves it to
+// {{choirPrompt}} in the user's preset, so it is never sent twice.
+const injectContexts = new Map(), injectUsers = new Map();
+const injectFile = chatId => `inject/${encodeURIComponent(chatId)}.json`;
+const stripInjectedBlocks = text => text.replace(/<!--\s*choir\b[\s\S]*?-->/gi, '').trimEnd();
+async function loadInjectContext(userId, chatId) {
+  if (!chatId) return null;
+  if (injectContexts.has(chatId)) return injectContexts.get(chatId);
+  let info = null;
+  try { info = await spindle.userStorage?.getJson(injectFile(chatId), { fallback: null, ...(userId ? { userId } : {}) }); } catch {}
+  injectContexts.set(chatId, info);
+  return info;
+}
+const injectionWanted = (info, delivery, generationType) => info?.delivery === delivery && (generationType === undefined || ['normal', 'regenerate', 'swipe'].includes(generationType));
+if (typeof spindle !== 'undefined' && typeof spindle?.registerInterceptor === 'function') {
+  spindle.registerInterceptor(async (messages, context) => {
+    if (context?.chatId && context?.userId) injectUsers.set(context.chatId, context.userId);
+    // Earlier replies keep their blocks in the chat; the model never needs to reread them.
+    const cleaned = messages.map(message => message.role === 'assistant' && typeof message.content === 'string' && message.content.includes('<!--') ? { ...message, content: stripInjectedBlocks(message.content) } : message);
+    const info = await loadInjectContext(context?.userId, context?.chatId);
+    if (!injectionWanted(info, 'auto', context?.generationType ?? '')) return { messages: cleaned };
+    return { messages: [...cleaned, { role: 'system', content: injectionPrompt(info) }], breakdown: [{ messageIndex: cleaned.length, name: 'Choir audio casting' }] };
+  }, 90);
+}
+if (typeof spindle !== 'undefined' && typeof spindle?.registerMacro === 'function') {
+  spindle.registerMacro({
+    name: 'choirPrompt',
+    category: 'extension:choir',
+    description: 'Choir audio casting instruction for this chat, when Plan inside the reply is set to Preset macro.',
+    returnType: 'string',
+    handler: async context => {
+      const chatId = String(context?.env?.chat?.id || '');
+      const info = await loadInjectContext(injectUsers.get(chatId), chatId);
+      return injectionWanted(info, 'macro') ? injectionPrompt(info) : '';
+    }
+  });
+}
 // Spindle supplies this global before importing the backend bundle.
 const running = new Map();
 const identity = (user,session,id) => JSON.stringify([user,session || '',id]);
@@ -722,6 +761,14 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
   let jevFailure;
   (async () => {
     const input = message.input || {};
+    if (message.action === 'injectContext') {
+      if (typeof input.chatId !== 'string' || !input.chatId) throw new Error('Choose a chat for planning inside the reply.');
+      const cast = Array.isArray(input.cast) ? input.cast.filter(name => typeof name === 'string' && name.trim()).map(name => name.trim().slice(0, 100)).slice(0, 40) : [];
+      const info = { delivery: ['auto', 'macro'].includes(input.delivery) ? input.delivery : 'off', cast, sfx: input.sfx === true, ambience: input.ambience === true };
+      injectContexts.set(input.chatId, info);if (userId) injectUsers.set(input.chatId, userId);
+      try { await spindle.userStorage?.setJson(injectFile(input.chatId), info, userId ? { userId } : {}); } catch {}
+      send({ result: { interceptor: typeof spindle.registerInterceptor === 'function', macro: typeof spindle.registerMacro === 'function' } }); return;
+    }
     if (message.action === 'ping') {
       send({result:{version:'__CHOIR_VERSION__',ready:true,decisionsAvailable:typeof spindle.decisions?.evaluate==='function'}});return;
     }
@@ -857,7 +904,10 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
       if(!Number.isInteger(maxTokens) || maxTokens<1024 || maxTokens>32768)throw new Error('Planner output budget must be 1024–32768 tokens.');
       // A thrown provider error counts as a blocked answer, like an empty one; the last error explains a failed plan.
       let requests=0,failure;
+      // Casting written with the reply answers first; only quotes it missed reach the planner.
+      let injectedRows=typeof input.injected?.rows==='string' && input.injected.rows.trim()?input.injected.rows:'';
       const raw=await castReply(input.transcript,input.config,typeof input.context==='string'?input.context:'',async messages=>{
+        if(injectedRows){const rows=injectedRows;injectedRows='';progress({stage:'Using the casting written with the reply'});return rows;}
         progress({stage:`Waiting for planner response${++requests>1?` (request ${requests})`:''}`,provider:connection.provider,model:connection.model});
         // Raw calls use the saved connection credentials without inheriting a chat preset's
         // short output limit, stop strings, response format or reasoning budget.
@@ -907,6 +957,8 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
     if (message.action === 'sfx') {
       const segments=Array.isArray(input.segments)?input.segments.filter(segment=>typeof segment?.text==='string' && segment.text.trim()):[];
       if(!segments.length){send({result:{cues:[],ambience:[],music:[]}});return;}
+      // Sounds written with the reply need no call; music still asks the planner.
+      if(input.injectedCues && input.music!==true){send({result:parseSoundCues(JSON.stringify({cues:input.injectedCues.cues || [],ambience:input.injectedCues.ambience || [],music:[]}),segments)});return;}
       progress({stage:'Resolving saved LLM connection'});
       const connection=input.connectionId?await spindle.connections.get(input.connectionId,userId):(await spindle.connections.list(userId)).find(profile=>profile.is_default);
       if(controller.signal.aborted)return;

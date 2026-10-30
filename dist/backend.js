@@ -520,7 +520,9 @@ function vocalEvent(tag) {
 }
 function transcriptFromMessage(value, ignoredTags=[]) {
   // Remove complete metadata panels before unwrapping ordinary story markup.
-  let text=String(value || '').replace(/\r\n/g,'\n').replace(/\r/g,'\n').replace(/<!--[\s\S]*?(?:-->|$)/g,' ');
+  // Some presets write blank characters (braille blank, Hangul fillers) in place
+  // of spaces. They are spaces to a listener and to text search, not to TTS.
+  let text=String(value || '').replace(/\r\n/g,'\n').replace(/\r/g,'\n').replace(/[⠀ㅤᅟᅠﾠ]/g,' ').replace(/<!--[\s\S]*?(?:-->|$)/g,' ');
   const ranges=speechMarkupRanges(text,ignoredTags);
   for(const [start,end] of ranges.reverse())text=text.slice(0,start)+' '+text.slice(end);
 
@@ -1878,6 +1880,105 @@ function applySoundCues(segments, {cues=[], ambience=[], music=[]}={}) {
 }
 
 
+// Planning inside the reply ("Plan inside the reply"). The roleplay model that
+// writes a reply also appends one hidden HTML comment with Choir's casting,
+// so a valid block needs no planner or sound-choice call:
+// <!--choir
+// Q1|Speaker|delivery       one row per quoted line, in order
+// NPC|Name|gender|tone      a speaker not in the cast
+// SFX|search words|exact words from the reply
+// AMB|search words|exact words from the reply
+// -->
+const INJECT_BLOCK=/<!--\s*choir\b([\s\S]*?)-->/gi;
+// A reply still streaming may hold an unclosed block.
+const INJECT_TAIL=/<!--\s*choir\b(?![\s\S]*-->)[\s\S]*$/i;
+
+function readInjectedPlan(content) {
+  const body=[...String(content || '').matchAll(INJECT_BLOCK)].at(-1)?.[1];
+  if(body===undefined)return null;
+  const quotes=new Map(),npcs=[],sfx=[],ambience=[];
+  for(const line of body.split(/\r?\n/)){
+    const parts=line.trim().replace(/^[-* ]+/,'').split('|').map(part=>part.trim());
+    const tag=(parts[0] || '').toUpperCase();
+    // Models sometimes fold a new speaker into its quote: Q9|NPC|Name|gender|age|tone.
+    if(/^Q\d+$/.test(tag) && parts[1]?.toUpperCase()==='NPC' && parts[2]){
+      quotes.set(Number(tag.slice(1)),{speaker:parts[2],style:parts.length>4?parts.at(-1):''});
+      npcs.push([parts[2],parts[3] || '',parts.slice(4).join(', ')]);
+    }
+    else if(/^Q\d+$/.test(tag) && parts[1])quotes.set(Number(tag.slice(1)),{speaker:parts[1],style:parts[2] || '',opening:parts[3] || ''});
+    else if(tag==='NPC' && parts[1] && parts[2])npcs.push(parts.slice(1,4));
+    else if((tag==='SFX' || tag==='AMB') && parts[1] && parts[2])(tag==='SFX'?sfx:ambience).push({query:parts[1],trigger:parts[2].replace(/^["“'‘]+|["”'’]+$/g,'')});
+  }
+  return quotes.size || sfx.length || ambience.length?{quotes,npcs,sfx,ambience}:null;
+}
+
+function stripInjectedPlan(content) {
+  return String(content || '').replace(INJECT_BLOCK,'').replace(INJECT_TAIL,'').trimEnd();
+}
+
+// The block names quotes by order; Choir's planner rows name dialogue units.
+// Only quotes the block covers become rows, so the planner can be asked for
+// the rest instead of guessing them.
+// Models count quotes differently from Choir ("A," he said. "B." is one quote
+// to many models, two to Choir), so rows are matched by the quote's opening
+// words, never by position alone: a single miscount would shift every later
+// speaker. Without opening words, rows are used only when the counts agree.
+function injectedCastRows(transcript, plan) {
+  const dialogue=speechSourceUnits(transcript).filter(unit=>unit.kind==='dialogue'),assigned=new Map();
+  const words=text=>String(text || '').normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu,' ').trim().split(/\s+/).filter(Boolean);
+  const opens=(unit,opening)=>{const quote=words(unit.text),start=words(opening);return start.length>0 && start.every((word,index)=>quote[index]===word);};
+  const ordered=[...plan.quotes.entries()].sort((a,b)=>a[0]-b[0]).map(([,quote])=>quote);
+  if(ordered.some(quote=>quote.opening)){
+    const placed=[];let from=0;
+    for(const quote of ordered.filter(quote=>quote.opening)){
+      const at=dialogue.findIndex((unit,index)=>index>=from && opens(unit,quote.opening));
+      if(at>=0){placed.push([at,quote]);from=at+1;}
+    }
+    placed.forEach(([at,quote],index)=>{
+      assigned.set(at,quote);
+      // Later pieces of the same counted quote keep its speaker when only a
+      // short speech tag separates them; anything longer goes to the planner.
+      const next=placed[index+1]?.[0] ?? dialogue.length;
+      for(let piece=at+1;piece<next;piece++){
+        const between=transcript.slice(dialogue[piece-1].end,dialogue[piece].start);
+        if(between.length>120 || /\n[ \t]*\n/.test(between))break;
+        assigned.set(piece,quote);
+      }
+    });
+  }else if(ordered.length===dialogue.length)ordered.forEach((quote,index)=>assigned.set(index,quote));
+  const rows=[...assigned].sort((a,b)=>a[0]-b[0]).map(([index,quote])=>`D${dialogue[index].id}|${quote.speaker}|${quote.style}`);
+  for(const npc of plan.npcs)rows.push(['NPC',...npc].join('|'));
+  return {rows:rows.join('\n'),covered:assigned.size===dialogue.length};
+}
+
+// Sound rows name exact words; the sound pipeline wants the segment holding them.
+function injectedSoundCues(segments, plan) {
+  const place=entries=>entries.flatMap(entry=>{
+    const segment=segments.findIndex(item=>cueOffset(String(item.text || ''),entry.trigger)>=0);
+    return segment<0?[]:[{segment,trigger:entry.trigger,query:entry.query}];
+  });
+  return {cues:place(plan.sfx),ambience:place(plan.ambience)};
+}
+
+function injectionPrompt({cast=[], sfx=false, ambience=false}={}) {
+  const sounds=[
+    sfx?'SFX|1 to 3 English search words naming the sound|2 to 6 exact consecutive words from your reply where it happens (at most 4, only concrete sounds that happen now: doors, steps, impacts, weather; never voices or music)':'',
+    ambience?'AMB|1 to 3 English search words for a sustained background|2 to 6 exact words where the scene settles there (at most 2)':''
+  ].filter(Boolean);
+  return [
+    '[Choir audio casting: write your reply exactly as usual, then append this hidden block as the very last thing, with nothing after it. Never mention it in the story.]',
+    '<!--choir',
+    'Q1|Speaker|delivery|first words',
+    'Q2|Speaker|delivery|first words',
+    'NPC|Name|gender|age and tone',
+    ...(sounds.length?sounds:[]),
+    '-->',
+    'One Q row per quoted passage of dialogue in your reply, in order (Q1 is the first "…" quote); first words are the first 3 words inside its quotation marks, copied exactly. Speaker is the exact name of who says it aloud; use NOT_SPOKEN for quoted words nobody says aloud (terms, signs, written text, remembered speech). Cast: '+(cast.length?cast.join(', '):'none listed')+'.',
+    'For each speaker not in the cast, add one separate NPC row: NPC|Name|female, male or neutral|young, middle-aged or old and 1 to 3 tone words. Their Q rows use just the name.',
+    'delivery is 2 to 6 words of tone for that line, restrained unless the scene clearly calls for more, e.g. "warm, slightly amused" or "quiet, tense".'
+  ].join('\n');
+}
+
 
 async function jevPost(url, headers, payload, signal) {
   signal?.throwIfAborted();
@@ -2577,6 +2678,45 @@ async function castCommunityVoices(raw, config, chosen, cast, prefetch) {
   return { ...config, voices: [...config.voices, ...[...chosen.values()].map(voice => ({ id: voice.id, name: voice.id, description: voice.description, route: voice.route }))] };
 }
 
+// Planning inside the reply. The frontend saves each chat's choice (off, auto or
+// macro) and cast names to per-user storage, so the choice survives restarts.
+// "auto" appends the instruction through the interceptor; "macro" leaves it to
+// {{choirPrompt}} in the user's preset, so it is never sent twice.
+const injectContexts = new Map(), injectUsers = new Map();
+const injectFile = chatId => `inject/${encodeURIComponent(chatId)}.json`;
+const stripInjectedBlocks = text => text.replace(/<!--\s*choir\b[\s\S]*?-->/gi, '').trimEnd();
+async function loadInjectContext(userId, chatId) {
+  if (!chatId) return null;
+  if (injectContexts.has(chatId)) return injectContexts.get(chatId);
+  let info = null;
+  try { info = await spindle.userStorage?.getJson(injectFile(chatId), { fallback: null, ...(userId ? { userId } : {}) }); } catch {}
+  injectContexts.set(chatId, info);
+  return info;
+}
+const injectionWanted = (info, delivery, generationType) => info?.delivery === delivery && (generationType === undefined || ['normal', 'regenerate', 'swipe'].includes(generationType));
+if (typeof spindle !== 'undefined' && typeof spindle?.registerInterceptor === 'function') {
+  spindle.registerInterceptor(async (messages, context) => {
+    if (context?.chatId && context?.userId) injectUsers.set(context.chatId, context.userId);
+    // Earlier replies keep their blocks in the chat; the model never needs to reread them.
+    const cleaned = messages.map(message => message.role === 'assistant' && typeof message.content === 'string' && message.content.includes('<!--') ? { ...message, content: stripInjectedBlocks(message.content) } : message);
+    const info = await loadInjectContext(context?.userId, context?.chatId);
+    if (!injectionWanted(info, 'auto', context?.generationType ?? '')) return { messages: cleaned };
+    return { messages: [...cleaned, { role: 'system', content: injectionPrompt(info) }], breakdown: [{ messageIndex: cleaned.length, name: 'Choir audio casting' }] };
+  }, 90);
+}
+if (typeof spindle !== 'undefined' && typeof spindle?.registerMacro === 'function') {
+  spindle.registerMacro({
+    name: 'choirPrompt',
+    category: 'extension:choir',
+    description: 'Choir audio casting instruction for this chat, when Plan inside the reply is set to Preset macro.',
+    returnType: 'string',
+    handler: async context => {
+      const chatId = String(context?.env?.chat?.id || '');
+      const info = await loadInjectContext(injectUsers.get(chatId), chatId);
+      return injectionWanted(info, 'macro') ? injectionPrompt(info) : '';
+    }
+  });
+}
 // Spindle supplies this global before importing the backend bundle.
 const running = new Map();
 const identity = (user,session,id) => JSON.stringify([user,session || '',id]);
@@ -2601,6 +2741,14 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
   let jevFailure;
   (async () => {
     const input = message.input || {};
+    if (message.action === 'injectContext') {
+      if (typeof input.chatId !== 'string' || !input.chatId) throw new Error('Choose a chat for planning inside the reply.');
+      const cast = Array.isArray(input.cast) ? input.cast.filter(name => typeof name === 'string' && name.trim()).map(name => name.trim().slice(0, 100)).slice(0, 40) : [];
+      const info = { delivery: ['auto', 'macro'].includes(input.delivery) ? input.delivery : 'off', cast, sfx: input.sfx === true, ambience: input.ambience === true };
+      injectContexts.set(input.chatId, info);if (userId) injectUsers.set(input.chatId, userId);
+      try { await spindle.userStorage?.setJson(injectFile(input.chatId), info, userId ? { userId } : {}); } catch {}
+      send({ result: { interceptor: typeof spindle.registerInterceptor === 'function', macro: typeof spindle.registerMacro === 'function' } }); return;
+    }
     if (message.action === 'ping') {
       send({result:{version:"1.1.9-staging.64",ready:true,decisionsAvailable:typeof spindle.decisions?.evaluate==='function'}});return;
     }
@@ -2736,7 +2884,10 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
       if(!Number.isInteger(maxTokens) || maxTokens<1024 || maxTokens>32768)throw new Error('Planner output budget must be 1024–32768 tokens.');
       // A thrown provider error counts as a blocked answer, like an empty one; the last error explains a failed plan.
       let requests=0,failure;
+      // Casting written with the reply answers first; only quotes it missed reach the planner.
+      let injectedRows=typeof input.injected?.rows==='string' && input.injected.rows.trim()?input.injected.rows:'';
       const raw=await castReply(input.transcript,input.config,typeof input.context==='string'?input.context:'',async messages=>{
+        if(injectedRows){const rows=injectedRows;injectedRows='';progress({stage:'Using the casting written with the reply'});return rows;}
         progress({stage:`Waiting for planner response${++requests>1?` (request ${requests})`:''}`,provider:connection.provider,model:connection.model});
         // Raw calls use the saved connection credentials without inheriting a chat preset's
         // short output limit, stop strings, response format or reasoning budget.
@@ -2786,6 +2937,8 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
     if (message.action === 'sfx') {
       const segments=Array.isArray(input.segments)?input.segments.filter(segment=>typeof segment?.text==='string' && segment.text.trim()):[];
       if(!segments.length){send({result:{cues:[],ambience:[],music:[]}});return;}
+      // Sounds written with the reply need no call; music still asks the planner.
+      if(input.injectedCues && input.music!==true){send({result:parseSoundCues(JSON.stringify({cues:input.injectedCues.cues || [],ambience:input.injectedCues.ambience || [],music:[]}),segments)});return;}
       progress({stage:'Resolving saved LLM connection'});
       const connection=input.connectionId?await spindle.connections.get(input.connectionId,userId):(await spindle.connections.list(userId)).find(profile=>profile.is_default);
       if(controller.signal.aborted)return;

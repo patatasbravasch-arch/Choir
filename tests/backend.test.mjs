@@ -1271,3 +1271,42 @@ test('non-story check labels lines through the Planner connection, retries a ref
   h=await harness(async()=>{throw Error('Connection refused');});h.send('skipCheck',{lines});
   assert.match((await h.result()).message.error,/Connection refused/);
 });
+
+test('casting written with the reply plans without a planner call, and only missing quotes reach the planner',async()=>{
+  const transcript='Mira smiled. "Hello." She paused. "Goodbye."';
+  let calls=0;const h=await harness(async()=>{calls++;return {content:'D3|Mira|'};});
+  h.send('plan',{transcript,config:castConfig,injected:{rows:'D1|Mira|warm\nD3|Mira|soft'}});
+  const full=(await h.result()).message;assert.equal(full.error,undefined);assert.equal(calls,0);
+  assert.deepEqual(JSON.parse(JSON.stringify(full.result.segments.filter(segment=>segment.speaker==='Mira').map(segment=>segment.style))),['warm','soft']);
+  const partial=await harness(async input=>{calls++;assert.match(input.messages.at(-1).content,/You missed these ids: D3/);return {content:'D3|Mira|'};});
+  partial.send('plan',{transcript,config:castConfig,injected:{rows:'D1|Mira|warm'}});
+  assert.equal((await partial.result()).message.error,undefined);assert.equal(calls,1);
+});
+
+test('sounds written with the reply need no sound-choice call unless music is wanted',async()=>{
+  let calls=0;const segments=[{speaker:'Narrator',text:'The door slammed behind her.'}];
+  const h=await harness(async()=>{calls++;return {content:'{"cues":[],"ambience":[],"music":[]}'};});
+  h.send('sfx',{segments,injectedCues:{cues:[{segment:0,trigger:'The door slammed',query:'door slam'}],ambience:[]}});
+  const result=(await h.result()).message.result;assert.equal(calls,0);assert.deepEqual(JSON.parse(JSON.stringify(result.cues.map(cue=>cue.query))),['door slam']);
+  const music=await harness(async()=>{calls++;return {content:'{"cues":[],"ambience":[],"music":[]}'};});
+  music.send('sfx',{segments,music:true,injectedCues:{cues:[],ambience:[]}});await music.result();assert.equal(calls,1);
+});
+
+test('the casting instruction is added automatically or by {{choirPrompt}}, never both, survives a restart and old blocks leave the history',async()=>{
+  const files=new Map(),userStorage={getJson:async(path,{fallback})=>files.has(path)?structuredClone(files.get(path)):fallback,setJson:async(path,value)=>{files.set(path,structuredClone(value));}};
+  let interceptor,macro;const extra={registerInterceptor:handler=>{interceptor=handler;},registerMacro:definition=>{macro=definition;},userStorage};
+  const h=await harness(null,null,null,null,null,null,{},extra);
+  const history=[{role:'user',content:'Hi'},{role:'assistant',content:'"Hello." <!--choir\nQ1|Mira|warm\n-->'},{role:'user',content:'Go on'}];
+  const off=await interceptor(history,{chatId:'chat-a',userId:'user-a',generationType:'normal'});
+  assert.equal(off.messages.length,3);assert.equal(off.messages[1].content,'"Hello."');assert.equal(await macro.handler({env:{chat:{id:'chat-a'}}}),'');
+  h.send('injectContext',{chatId:'chat-a',delivery:'auto',cast:['Mira'],sfx:true,ambience:false});await h.result();
+  const on=await interceptor(history,{chatId:'chat-a',userId:'user-a',generationType:'normal'});
+  assert.equal(on.messages.length,4);assert.match(on.messages[3].content,/<!--choir/);assert.match(on.messages[3].content,/Cast: Mira/);assert.match(on.messages[3].content,/^SFX\|/m);assert.equal(on.breakdown[0].messageIndex,3);
+  assert.equal(await macro.handler({env:{chat:{id:'chat-a'}}}),'');
+  for(const generationType of ['impersonate','quiet','continue'])assert.equal((await interceptor(history,{chatId:'chat-a',userId:'user-a',generationType})).messages.length,3);
+  // A restarted backend reads the saved choice; macro delivery stays out of the interceptor.
+  files.set('inject/chat-b.json',{delivery:'macro',cast:['Mira'],sfx:false,ambience:false});
+  let restartedInterceptor,restartedMacro;await harness(null,null,null,null,null,null,{},{...extra,registerInterceptor:handler=>{restartedInterceptor=handler;},registerMacro:definition=>{restartedMacro=definition;}});
+  assert.equal((await restartedInterceptor(history,{chatId:'chat-b',userId:'user-a',generationType:'normal'})).messages.length,3);
+  assert.match(await restartedMacro.handler({env:{chat:{id:'chat-b'}}}),/<!--choir/);
+});
