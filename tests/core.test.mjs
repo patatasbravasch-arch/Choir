@@ -930,3 +930,12 @@ test('review fixes: prose is not a heading, names respell only as names, quotes 
   const passage=(text,passageIndex)=>({speaker:'Narrator',voice:'n',text,route:'r',passageIndex});const long='A sentence with a little room to breathe. '.repeat(24).trim();
   assert.ok(core.speechBatches([passage(long,0)],1800,'r')[0].text.length<=300);assert.equal(core.speechBatches([passage(long,2)],1800,'r').length,1);
 });
+
+test('lookahead also requests every clip needed within the time horizon, so a long clip after short ones starts early',async()=>{
+  const {speechLookaheadEnd}=await import('../src/core.js');const clip=chars=>({text:'x'.repeat(chars)});
+  const replies=[clip(80),clip(60),clip(90),clip(50),clip(1700),clip(300)];
+  assert.equal(speechLookaheadEnd(replies,0,1),1);
+  assert.equal(speechLookaheadEnd(replies,0,1,{horizonSeconds:45}),4);
+  assert.equal(speechLookaheadEnd([clip(1500),clip(1500),clip(1500)],0,1,{horizonSeconds:45}),1);
+  assert.equal(speechLookaheadEnd(replies,0,0,{horizonSeconds:45}),0);
+});

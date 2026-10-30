@@ -3593,7 +3593,8 @@ export async function setup(ctx) {
     }
   }
   function ttsBatches(segments,snapshot){
-    if(snapshot.batchSpeech)return groupedSpeechBatches(segments,snapshot.chunk,scope(snapshot),(segment,route)=>groupedLimits(segment,route,snapshot),{sfx:snapshot.enableSfx!==false})
+    // Clip sizes follow the plan's effects, not the SFX toggle, so toggling keeps cached speech.
+    if(snapshot.batchSpeech)return groupedSpeechBatches(segments,snapshot.chunk,scope(snapshot),(segment,route)=>groupedLimits(segment,route,snapshot),{sfx:segments.some(segment=>segment.kind==='sfx')})
       .map(batch=>batch.dialogue?{...batch,groupLevel:mixerVolume(1,batch.turns[0].speaker,mixerState.channels)}:batch);
     return speechBatches(segments,snapshot.chunk,scope(snapshot),(segment,route)=>{
       if(segment.unison)return groupedLimits(segment,route,snapshot);
@@ -3618,11 +3619,14 @@ export async function setup(ctx) {
     const expanded=segments.flatMap(segment=>{
       const {sfx,ambience,music,...speech}=segment;
       const segmentStart=spoken;spoken+=speech.text.length;
+      // Every planned sound cuts the speech, whether or not its kind is switched
+      // on: speech clips, their cache keys and groups then do not change with the
+      // toggles. The player skips switched-off sounds (playbackExcluded).
       const points=[
-        ...(snapshot.enableMusic===true?music || []:[]).map(entry=>sound('music','Music',entry.stop?'[Music stop]':`[Music: ${musicLabel(entry)}]`,entry)),
-        ...(snapshot.enableAmbience===false?[]:ambience || []).map(entry=>sound('ambience','Ambience',entry.stop?'[Ambience stop]':`[Ambience: ${entry.query}]`,entry.stop?entry:{...entry,filter:AMBIENCE_FILTER})),
+        ...(music || []).map(entry=>sound('music','Music',entry.stop?'[Music stop]':`[Music: ${musicLabel(entry)}]`,entry)),
+        ...(ambience || []).map(entry=>sound('ambience','Ambience',entry.stop?'[Ambience stop]':`[Ambience: ${entry.query}]`,entry.stop?entry:{...entry,filter:AMBIENCE_FILTER})),
         // Plans saved before unmatched effects were dropped may still hold them.
-        ...(snapshot.enableSfx===false?[]:sfx || []).filter(cue=>cue.trigger).map(cue=>sound('sfx','SFX',`[SFX: ${cue.query}]`,cue))
+        ...(sfx || []).filter(cue=>cue.trigger).map(cue=>sound('sfx','SFX',`[SFX: ${cue.query}]`,cue))
       ];
       if(!points.length)return [speech];
       // Effects use complete phrase boundaries; background beds keep their exact anchors.
@@ -3699,6 +3703,11 @@ export async function setup(ctx) {
     }
     return new Blob([mixUnisonAudio(tracks,audioContext.sampleRate,{normalize:snapshot.normalizeLoudness})],{type:'audio/wav'});
   }
+  // Request every clip needed within this much playback, beyond the Prefetch
+  // count, so a long clip after short ones is ready when its turn comes.
+  const LOOKAHEAD_SECONDS=45;
+  // How long speech waits for a sound effect that is still downloading.
+  const SFX_WAIT_MS=1000;
   function createStreamingPlayer(snapshot,source,cached,ctrl,token,{pruneStale=false,retain=[],mix=null,fullMessage=false}={}) {
     const recordingMetadata={createdAt:cached?.createdAt ?? Date.now(),...(cached?.expiresAt===null || Number.isFinite(cached?.expiresAt)?{expiresAt:cached.expiresAt}:{}),recordingState:cached?.recordingState,fullMessage};
     const segments=[];
@@ -3728,12 +3737,24 @@ export async function setup(ctx) {
       const passage=segments[playIdx]?.passageIndex ?? playIdx;let next=playIdx+1;
       while(next<segments.length && (segments[next].passageIndex ?? next)===passage)next++;
       for(let index=playIdx;index<next;index++)skipped.add(index);
+      // Requests for the part being skipped would only delay what plays next.
+      if(direction>0)cancelSkipped(playIdx,next);
       if(direction<0){const start=blockStart(playIdx);next=start>0?blockStart(start-1):0;while(next>0 && speakerExcluded(segments[next].speaker))next=blockStart(next-1);if(speakerExcluded(segments[next]?.speaker))next=blockStart(playIdx);for(let index=next;index<segments.length && (segments[index].passageIndex ?? index)===(segments[next].passageIndex ?? next);index++)skipped.delete(index);}
       failed=[...failures].some(index=>!skipped.has(index) && !speakerExcluded(segments[index].speaker));jumpTo=next;pauseNext=heldPaused();skipAudio();
     };
     generationPolicyChanged=()=>{failed=[...failures].some(index=>!skipped.has(index) && !playbackExcluded(segments[index]));if(currentSpeaker==='SFX' && config?.enableSfx===false){pauseNext=heldPaused();skipAudio?.();}nextToSynthesize=Math.min(nextToSynthesize,playIdx);wakePolicy?.({policy:true});pump();};
     const passages={...(cached?.passages || {})};
-    const inflight=new Map();
+    const inflight=new Map(),jobs=new Map();
+    // Free a skipped clip's slot so going back later can request it again.
+    const releaseSlot=index=>{scheduled.delete(index);ready.delete(index);resolvers.delete(index);};
+    function cancelSkipped(from,to){
+      for(let index=from;index<to;index++){
+        if(index===playIdx)continue;
+        const job=jobs.get(index);
+        if(job){job.abort();continue;}
+        for(const queue of synthesisQueues){const at=queue.pending.indexOf(index);if(at>=0){queue.pending.splice(at,1);releaseSlot(index);}}
+      }
+    }
     // Upgrade old complete recordings without discarding their audio.
     if(!cached?.passages)for(const [index,segment] of (cached?.segments || []).entries())if(cached.blobs?.[index] && (!segment.turns || segment.turns.length===1) && recordedSpeechMatches(cached,index,snapshot))passages[cacheKey(segment,snapshot)]=cached.blobs[index];
     // Only audio present before this playback is free to skip in the lookahead
@@ -3799,7 +3820,7 @@ export async function setup(ctx) {
 
     function pump() {
       const prefetchEnd=speechLookaheadEnd(segments,playIdx,Number(snapshot.prefetch ?? 1),{
-        excluded:playbackExcluded,cached:segment=>{try{return cachedSpeechKeys.has(cacheKey(segment,snapshot));}catch{return false;}}
+        excluded:playbackExcluded,horizonSeconds:LOOKAHEAD_SECONDS,cached:segment=>{try{return cachedSpeechKeys.has(cacheKey(segment,snapshot));}catch{return false;}}
       });
       while(!failed && !ctrl.signal.aborted && nextToSynthesize<segments.length && nextToSynthesize<=prefetchEnd) {
         const idx=nextToSynthesize++;
@@ -3813,6 +3834,14 @@ export async function setup(ctx) {
         }
         synthesisQueues[segments[idx].kind==='sfx'?1:0].pending.push(idx);
       }
+      // Effects are short downloads on their own queue: fetch every one now so
+      // each is ready by its moment instead of starting a clip or two before it.
+      if(!ctrl.signal.aborted)for(let idx=playIdx;idx<segments.length;idx++){
+        if(segments[idx].kind!=='sfx' || scheduled.has(idx) || playbackExcluded(segments[idx]))continue;
+        scheduled.add(idx);ensureSlot(idx);
+        if(blobs[idx]){resolvers.get(idx)({blob:blobs[idx]});continue;}
+        synthesisQueues[1].pending.push(idx);
+      }
       // Cached clips need neither a synthesis worker nor another disk write.
       // Decode only nearby audio, even when a missing request lies farther on.
       const prepareEnd=speechLookaheadEnd(segments,playIdx,Number(snapshot.prefetch ?? 1),{excluded:playbackExcluded});
@@ -3822,31 +3851,35 @@ export async function setup(ctx) {
         const idx=queue.pending.shift();
         if(playbackExcluded(segments[idx])){resolvers.get(idx)({skip:true});scheduled.delete(idx);ready.delete(idx);resolvers.delete(idx);continue;}
         queue.active++;
+        // Each request can be cancelled alone (Next) as well as with the playback.
+        const job=new AbortController(),stopJob=()=>job.abort();
+        ctrl.signal.addEventListener('abort',stopJob,{once:true});jobs.set(idx,job);
         (async()=>{
           let resolveFlight,rejectFlight,flightKey;
           try {
             const seg=segments[idx];
-            if(ctrl.signal.aborted)throw abortError();
+            if(job.signal.aborted)throw abortError();
             synthesisStatus(idx,()=>seg.kind==='sfx'?`Loading sound effect ${audioProgress(segments,idx)}`:`Synthesizing ${audioProgress(segments,idx)}: ${seg.speaker} · ${seg.voice}`);
             const request=synthesisSettings(seg,snapshot),key=cacheKey(seg,snapshot);
             let blob=passages[key];
-            if(!blob && inflight.has(key))blob=await inflight.get(key);
+            // A shared request cancelled by Next leaves this clip to request the audio itself.
+            if(!blob && inflight.has(key))blob=await inflight.get(key).catch(error=>{if(error?.name==='AbortError' && !ctrl.signal.aborted)return undefined;throw error;});
             if(!blob){flightKey=key;const promise=new Promise((resolve,reject)=>{resolveFlight=resolve;rejectFlight=reject;});promise.catch(()=>{});inflight.set(key,promise);}
             if(blob) {
               synthesisStatus(idx,()=>`Loading cached audio ${audioProgress(segments,idx)}: ${seg.speaker}`);
             } else if(seg.kind==='sfx') {
-              blob=await fetchFoleyAudio(seg,snapshot,ctrl.signal);
+              blob=await fetchFoleyAudio(seg,snapshot,job.signal);
             } else if(seg.unison){
-              blob=await synthesizeUnisonBlob(seg,snapshot,ctrl.signal,async member=>{
+              blob=await synthesizeUnisonBlob(seg,snapshot,job.signal,async member=>{
                 const memberKey=cacheKey(member,snapshot);
                 let audio=passages[memberKey];
-                if(!audio){audio=await synthesizeSpeechBlob(member,snapshot,ctrl.signal);passages[memberKey]=audio;void persist();}
+                if(!audio){audio=await synthesizeSpeechBlob(member,snapshot,job.signal);passages[memberKey]=audio;void persist();}
                 return audio;
               });
             } else {
-              blob=await synthesizeSpeechBlob(seg,snapshot,ctrl.signal);
+              blob=await synthesizeSpeechBlob(seg,snapshot,job.signal);
             }
-            if(token!==revision || ctrl.signal.aborted)throw abortError();
+            if(token!==revision || job.signal.aborted)throw abortError();
             resolveFlight?.(blob);
             blobs[idx]=blob;passages[key]=blob;
             preparePlayback(blob,seg,snapshot);
@@ -3855,10 +3888,13 @@ export async function setup(ctx) {
             resolvers.get(idx)({blob});
           } catch(error) {
             rejectFlight?.(error);
-            if(segments[idx].kind==='sfx' && !ctrl.signal.aborted && token===revision){warnFoley(error);resolvers.get(idx)({skip:true});}
+            // Cancelled by Next: not a failure; the slot is free if playback returns.
+            if(job.signal.aborted && !ctrl.signal.aborted && token===revision)releaseSlot(idx);
+            else if(segments[idx].kind==='sfx' && !ctrl.signal.aborted && token===revision){warnFoley(error);resolvers.get(idx)({skip:true});}
             else{failures.add(idx);if(!skipped.has(idx) && !speakerExcluded(segments[idx].speaker))failed=true;resolvers.get(idx)({error});}
           } finally {
             if(flightKey)inflight.delete(flightKey);
+            jobs.delete(idx);ctrl.signal.removeEventListener('abort',stopJob);
             queue.active--;
             pump();
           }
@@ -3899,7 +3935,10 @@ export async function setup(ctx) {
         if(playbackExcluded(segments[playIdx]) || isBed(segments[playIdx])){playIdx++;nextToSynthesize=Math.max(nextToSynthesize,playIdx);pump();continue;}
         ensureSlot(playIdx);pump();
         status(synthesisStages.get(playIdx)?.() || `Waiting for audio ${audioProgress(segments,playIdx)}: ${segments[playIdx].speaker}`);updateTransport();
-        const outcome=await Promise.race([ready.get(playIdx),new Promise(resolve=>{wakePolicy=resolve;})]);wakePolicy=null;
+        // Speech never waits long for an effect: a late one is skipped and keeps
+        // downloading, so Replay still has it.
+        const late=segments[playIdx].kind==='sfx'?new Promise(resolve=>setTimeout(()=>resolve({skip:true,late:true}),SFX_WAIT_MS)):null;
+        const outcome=await Promise.race([ready.get(playIdx),new Promise(resolve=>{wakePolicy=resolve;}),...(late?[late]:[])]);wakePolicy=null;
         if(outcome.policy)continue;
         if(token!==revision || ctrl.signal.aborted)throw abortError();
         if(outcome.skip){playIdx++;nextToSynthesize=Math.max(nextToSynthesize,playIdx);pump();continue;}
@@ -4837,7 +4876,10 @@ export async function setup(ctx) {
       const cap = capture();
       const castInfo = casting(cap);
       const snapshot = { ...structuredClone(cap), fixed: castInfo.fixed, voices: castInfo.voices, npcs: castInfo.npcs, defaultRoute: castInfo.defaultRoute, npcPolicy:castInfo.npcPolicy };
-      const batches = planAndBatchParagraph(text, snapshot, false, speaker);
+      // Switched-off sounds stay in the batches only to keep speech cuts stable;
+      // companions see the sounds that will actually play.
+      const off = segment => segment.kind === 'sfx' && snapshot.enableSfx === false || segment.kind === 'ambience' && snapshot.enableAmbience === false || segment.kind === 'music' && snapshot.enableMusic !== true;
+      const batches = planAndBatchParagraph(text, snapshot, false, speaker).filter(segment => !off(segment));
       return { segments: batches };
     },
     playParagraph: async ({ text, speaker, nextText, chatId: targetChat, messageId, paragraphIndex, signal, onStatus } = {}) => {
@@ -4907,7 +4949,7 @@ export async function setup(ctx) {
           if(ctrl.signal.aborted || token!==revision)return;
           const candidates=[...batches,...nextBatches];
           const end=speechLookaheadEnd(candidates,index,Number(snapshot.prefetch)||0,{
-            excluded:playbackExcluded,cached:batch=>{try{return cachedSpeechKeys.has(segmentCacheKey(batch,snapshot));}catch{return false;}}
+            excluded:playbackExcluded,horizonSeconds:LOOKAHEAD_SECONDS,cached:batch=>{try{return cachedSpeechKeys.has(segmentCacheKey(batch,snapshot));}catch{return false;}}
           });
           const prepareEnd=speechLookaheadEnd(candidates,index,Number(snapshot.prefetch)||0,{excluded:playbackExcluded});
           for(let next=index;next<=end && next<candidates.length;next++){

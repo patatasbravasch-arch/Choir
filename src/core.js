@@ -957,15 +957,23 @@ export function mixUnisonAudio(tracks,sampleRate,{normalize=true}={}) {
 
 // Look ahead by speech requests, without spending that budget on effects or
 // speech already available before this playback began.
-export function speechLookaheadEnd(segments,start,prefetch,{excluded=()=>false,cached=()=>false}={}) {
+// Speech plays at roughly this many characters per second at normal speed.
+export const SPOKEN_CHARS_PER_SECOND=15;
+// Prefetch counts clips, but clips differ a lot in length: after several short
+// lines, a long clip requested only one clip ahead cannot be ready in time.
+// horizonSeconds also requests every clip needed within that much estimated
+// playback, so long clips start generating while short ones play.
+export function speechLookaheadEnd(segments,start,prefetch,{excluded=()=>false,cached=()=>false,horizonSeconds=0}={}) {
   if(!(prefetch>0))return start;
-  let remaining=prefetch,end=start;
+  const seconds=segment=>segment && !segment.kind && !excluded(segment)?String(segment.text || '').length/SPOKEN_CHARS_PER_SECOND:0;
+  let remaining=prefetch,end=start,ahead=seconds(segments[start]);
   for(let index=start+1;index<segments.length;index++){
     const segment=segments[index];
     if(!segment.kind && !excluded(segment) && !cached(segment,index)){
-      if(remaining===0)break;
-      remaining--;
+      if(remaining===0 && ahead>=horizonSeconds)break;
+      if(remaining>0)remaining--;
     }
+    ahead+=seconds(segment);
     end=index;
   }
   return end;
