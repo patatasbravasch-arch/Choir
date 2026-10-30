@@ -6632,7 +6632,7 @@ export async function setup(ctx) {
     const seek=()=>{if(offset>0 && Number.isFinite(audio.duration))audio.currentTime=Math.min(offset,Math.max(0,audio.duration-0.05));updateSeekControls();};
     audio.onloadedmetadata=seek;seek();
     let lastSaved=0;
-    audio.ontimeupdate=()=>{updateSeekControls();if(activePlayback && Date.now()-lastSaved>1000){lastSaved=Date.now();savePosition(audio.currentTime);}};
+    audio.ontimeupdate=()=>{updateSeekControls();if(activePlayback && Date.now()-lastSaved>POSITION_SAVE_MS){lastSaved=Date.now();savePosition(audio.currentTime);}};
     audio.ondurationchange=updateSeekControls;
       if(signal.aborted)throw abortError();
       await new Promise((resolve,reject)=>{
@@ -6663,6 +6663,9 @@ export async function setup(ctx) {
       URL.revokeObjectURL(url);if(objectUrl===url)objectUrl=null;
     }
   }
+  // Pause, Stop and the end of a clip save the exact position; while playing, a
+  // save every few seconds keeps resume close without loading the database.
+  const POSITION_SAVE_MS=5000;
   function savePosition(seconds=0){
     if(!activePlayback)return;
     const value={...activePlayback,seconds};
