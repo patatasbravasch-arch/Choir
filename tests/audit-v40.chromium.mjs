@@ -30,7 +30,7 @@ const openDetails=(page,field)=>showDrawerControl(page,field);
 const mount=async(context,shared=false)=>{const page=await context.newPage();page.on('pageerror',e=>errors.push(e.message));await page.goto(`http://127.0.0.1:${server.address().port}/?${shared?'shared':'single'}`);await page.waitForFunction(()=>window.ready);return page;};
 const paragraph=(page,text,messageId='reply')=>page.evaluate(({text,messageId})=>window.__CHOIR_API__.playParagraph({text,messageId}),{text,messageId});
 const calls=page=>page.evaluate(()=>window.calls.length);
-const clear=async page=>{await openDetails(page,'messages');await withDrawerControl(page,'deleteChatAudio',()=>page.locator('[data-et="deleteChatAudio"]').click());await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.includes('All Choir audio deleted'));};
+const clear=async page=>{await openDetails(page,'messages');await withDrawerControl(page,'deleteChatAudio',async()=>{await page.locator('[data-et="deleteChatAudio"]').click();await page.locator('[data-et="deleteChatAudio"]').click();});await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.includes('All Choir audio deleted'));};
 const change=async(page,name,value)=>{await openDetails(page,name);await page.locator(`[data-et="${name}"]`).selectOption(value);await page.waitForFunction(()=>document.querySelector('[data-et="saveState"]').textContent==='Saved automatically');};
 const sharedValue=(page,key)=>page.evaluate(key=>JSON.parse(localStorage.getItem('v40:'+key)||'null'),key);
 try{

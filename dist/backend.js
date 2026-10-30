@@ -240,18 +240,20 @@ function namePronunciations(actors=[]) {
   return [...rules.values()].sort((a,b)=>b.name.length-a.name.length || a.name.localeCompare(b.name));
 }
 
-function wholeNamePattern(names) {
+function wholeNamePattern(names,flags='giu') {
   // Match the same written name through HTML spacing and equivalent accent
   // encodings, while keeping unrelated source text byte-for-byte intact.
   const pattern=name=>name.trim().split(/\s+/u).map(word=>[...word.normalize('NFC')].map(letter=>{
     const composed=escapePattern(letter),decomposed=escapePattern(letter.normalize('NFD'));
     return composed===decomposed?composed:`(?:${composed}|${decomposed})`;
   }).join('')).join('\\s+');
-  return names.length?new RegExp(`(?<![\\p{L}\\p{M}\\p{N}_-])(?:${names.map(pattern).join('|')})(?![\\p{L}\\p{M}\\p{N}_-])`,'giu'):null;
+  return names.length?new RegExp(`(?<![\\p{L}\\p{M}\\p{N}_-])(?:${names.map(pattern).join('|')})(?![\\p{L}\\p{M}\\p{N}_-])`,flags):null;
 }
 
 function respellNames(text,actors=[]) {
-  const rules=namePronunciations(actors),pattern=wholeNamePattern(rules.map(rule=>rule.name));
+  // Match the name as written (or in capitals) only: Will and Rose are names,
+  // "he will go" and "the sun rose" are not.
+  const rules=namePronunciations(actors),pattern=wholeNamePattern(rules.flatMap(rule=>[rule.name,rule.name.toUpperCase()]),'gu');
   const spellings=new Map(rules.map(rule=>[normalizeName(rule.name),rule.sayAs]));
   // One pass prevents rules from rewriting each other's replacement text.
   return pattern?text.replace(pattern,name=>spellings.get(normalizeName(name))):text;
@@ -548,7 +550,9 @@ function transcriptFromMessage(value, ignoredTags=[]) {
     .replace(/^[ \t]*[*_]*(?:(?:\[[^\]\n]*\]|【[^】\n]*】|〔[^〕\n]*〕)[ \t]*)+[*_]*[ \t]*$/gm, '')
     .replace(new RegExp(`^[ \t]*(?:#{1,6}[ \t]*)?(?!["“])(?:${hudKeys})[ \t]*:[^\n]*$`, 'gim'), '')
     .replace(new RegExp(`^[ \\t]*(?:#{1,6}[ \\t]*)?(?:${sysHeaders})\\b[.: \\t]*$`, 'gim'), '')
-    .replace(/^[ \t]*(?:#{1,6}[ \t]*)?(?:Chapter|Act|Episode|Scene|Part|Book|Volume)[ \t]+(?:\d+|[IVXLCDM]+|[A-Za-z]+)(?:[ \t]*[:\-.—–][^\n]*|[ \t]+[^\n]*)?$/gim, '')
+    // A heading is the word plus a number, Roman numeral or number word, alone
+    // or followed by a title after punctuation: "Part of me wanted to stay" is prose.
+    .replace(/^[ \t]*(?:#{1,6}[ \t]*)?(?:Chapter|Act|Episode|Scene|Part|Book|Volume)[ \t]+(?:\d+|[IVXLCDM]+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)(?:[ \t]*[:\-.—–][^\n]*)?[ \t]*$/gim, '')
     .replace(/^[ \t]*#{1,6}[ \t]+/gm, '')
     .replace(/\*|`/g, '')
     .replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'")
@@ -878,7 +882,22 @@ function browserPlaybackRate(rate) {
   return Math.min(BROWSER_PLAYBACK_RATE_LIMITS.max,Math.max(BROWSER_PLAYBACK_RATE_LIMITS.min,number));
 }
 
-function loudnessGain(channels, target=0.12, sampleRate=24000) {
+// peakLimit caps the loudest sample after gain. Played speech passes
+// softClipCurve, so it may use LIMITED_SPEECH_PEAK and reach the target
+// despite brief peaks; only those peaks are rounded off.
+const LIMITED_SPEECH_PEAK=1.4;
+
+// Waveshaper curve over inputs -range…range: unchanged up to 0.8, then rounded
+// smoothly towards ±1 so peaks above full scale never hard-clip.
+function softClipCurve(range=2,points=4096) {
+  const curve=new Float32Array(points),knee=0.8;
+  for(let i=0;i<points;i++){
+    const x=(i/(points-1)*2-1)*range,size=Math.abs(x);
+    curve[i]=Math.sign(x)*(size<=knee?size:knee+(1-knee)*Math.tanh((size-knee)/(1-knee)));
+  }
+  return curve;
+}
+function loudnessGain(channels, target=0.12, sampleRate=24000, peakLimit=0.95) {
   const length=Math.max(0,...channels.map(samples=>samples.length));
   const frameSize=Math.max(1,Math.round((Number.isFinite(sampleRate) && sampleRate>0?sampleRate:24000)*0.01));
   const frames=[];let peak=0,strongest=0;
@@ -906,7 +925,7 @@ function loudnessGain(channels, target=0.12, sampleRate=24000) {
   // Very quiet Fish voices can need more than the old 4× ceiling; loud clips
   // also need enough attenuation to reach the same target. Keep silence gated
   // and retain the peak cap even when the target cannot be reached safely.
-  return rms>0.0001?Math.max(0.05,Math.min(16,target/rms,peak?0.95/peak:16)):1;
+  return rms>0.0001?Math.max(0.05,Math.min(16,target/rms,peak?peakLimit/peak:16)):1;
 }
 
 // All decoded tracks use the browser AudioContext's sample rate. Align their
@@ -1020,8 +1039,12 @@ function speechSourceUnits(transcript) {
     add(text.slice(cursor),'narration');
   };
   let cursor=0;
-  for(const match of transcript.matchAll(/"[^"\n]*(?:\n[^"\n]*)*"|“[^”]*”/g)) {
-    narration(transcript.slice(cursor,match.index));add(match[0],'dialogue');cursor=match.index+match[0].length;
+  // A " after a digit is an inch mark (6'2"), not a quote. A straight quote ends
+  // at its partner or, when a speech runs on to the next paragraph without
+  // closing (the novel convention), at the paragraph's end; never across one.
+  const masked=transcript.replace(/(?<=\d)"/g,'');
+  for(const match of masked.matchAll(/"[^"\n]*(?:\n(?![ \t]*\n)[^"\n]*)*(?:"|(?=\n[ \t]*\n))|“[^”]*”/g)) {
+    narration(transcript.slice(cursor,match.index));add(transcript.slice(match.index,match.index+match[0].length),'dialogue');cursor=match.index+match[0].length;
   }
   narration(transcript.slice(cursor));return units;
 }
@@ -1134,7 +1157,13 @@ const startupSizes=(segments,sfx)=>segments.filter(segment=>!segment.kind).reduc
 // Cut the opening clips down to the startup sizes at sentence boundaries. Only
 // single-voice text is cut here; grouped batches apply the sizes as they form.
 function startupClips(batches,limitsForSegment,defaultRoute) {
-  const out=[],queue=[...batches],sizes=startupSizes(batches,false);let index=0;
+  // Ungrouped playback batches one passage at a time, so its size alone cannot
+  // tell an opening from the middle of a reply. Its plan position can: the first
+  // two passages start short, later ones are never cut for startup. That keeps
+  // cache keys independent of where playback begins.
+  const passages=new Set(batches.filter(batch=>!batch.kind).map(batch=>batch.passageIndex)),single=passages.size===1?[...passages][0]:undefined;
+  const sizes=Number.isInteger(single)?(single<2?STARTUP_CLIP_CHARS:[]):startupSizes(batches,false);
+  const out=[],queue=[...batches];let index=0;
   while(queue.length){
     const batch=queue.shift(),cap=sizes[index];
     if(batch.kind){out.push(batch);continue;}
@@ -1648,6 +1677,23 @@ function cueOffset(text, trigger) {
 
 // An action-word anchor must not cut its subject off from the verb. Keep an
 // explicitly anchored conjunction clause, otherwise back up to punctuation.
+// Effects anchored at the same break would otherwise play back to back with
+// no speech between them. Keep the first and drop any other closer than a few
+// words; effects separated by a clause of speech all play.
+const SFX_MIN_SPACING=12;
+function spaceSoundEffects(points,{start=0,last=-Infinity}={}) {
+  const kept=[];
+  for(const point of points){
+    if(point.part.kind==='sfx'){
+      const at=start+point.at;
+      if(at-last<SFX_MIN_SPACING)continue;
+      last=at;
+    }
+    kept.push(point);
+  }
+  return {kept,last};
+}
+
 function sfxCueOffset(text, trigger) {
   let target=Math.max(0,cueOffset(text,trigger));
   if(!target)return 0;
@@ -1737,7 +1783,11 @@ function segmentSoundCues(value, text, kind='sfx') {
       sound = {query};
     }
     const trigger = typeof cue.trigger === 'string' ? cue.trigger.trim() : '';
-    return [{...sound, trigger: trigger && cueOffset(text, trigger) >= 0 ? trigger : ''}];
+    const found = trigger && cueOffset(text, trigger) >= 0;
+    // An effect without its words would play at the start of the segment, away
+    // from its moment; beds and music may still start there.
+    if (kind === 'sfx' && !found) return [];
+    return [{...sound, trigger: found ? trigger : ''}];
   });
   return cues.length ? cues : null;
 }

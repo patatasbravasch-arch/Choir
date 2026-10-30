@@ -3,7 +3,7 @@ import { createSetupWizard, saveSetupSettings, ONBOARDING_KEY } from './setup.js
 import { ABYSSAL_THEME_CSS } from './abyssal-theme.js';
 import { randomUuid, sha256Hex, GEMINI_VOICES, OPENAI_VOICES, additionalVoices, apiErrorMessage, MAX_SPEECH_CHARS, MAX_CHANNEL_VOLUME, speechProviderFamily, speechRequestLimits, normalizeName, normalizeVoiceCatalogue, characterCardRoles, validateCardRoles, reconcileCardCast, unisonSpeakers, speechSourceUnits, mixUnisonAudio, speechDownloadWav, transcriptFromMessage, readableText, readAlongIndex, locatePassages, spokenLength, validateCastConfig, validatePlan, npcCastActor, parsePlanJson, speechBatches, groupedSpeechBatches, audioBytes, fastClassifyPlan, resolvePlannerMode, attributionPlan, restoreAttribution, passageKey, mixerVolume, loudnessGain, castExport, castImport, applySoundCues, cueOffset, sfxCueOffset, transcriptLines, withoutLines } from './core.js';
 import { normalizeSpeedSliderMax, normalizePlaybackRate, normalizeVoiceGap, speakerPlaybackRate, effectivePlaybackRate, browserPlaybackRate, PLAYBACK_RATE_LIMITS, VOICE_GAP_LIMITS } from './core.js';
-import { speechLookaheadEnd, backendRequestKind } from './core.js';
+import { speechLookaheadEnd, backendRequestKind, LIMITED_SPEECH_PEAK, softClipCurve, spaceSoundEffects } from './core.js';
 import { createPlayedAudioCapture, playedAudioFilename, createWavArchive } from './played-audio.js';
 import { characterDeliveryMode, voiceDelivery, normalizeMixerColumns, normalizeMixerVolumeLimits } from './delivery.js';
 import { createDrawerNavigation, DRAWER_UI_CSS } from './drawer-ui.js';
@@ -733,7 +733,7 @@ export async function setup(ctx) {
   const toolbarAutoPlan=document.createElement('button');toolbarAutoPlan.type='button';toolbarAutoPlan.className='choir-auto-plan-action';toolbarAutoPlan.dataset.choirAction='auto-plan-toolbar';
   toolbarAutoPlan.innerHTML=`${ICON_SPARKLE}<span></span>`;toolbarAutoPlan.onclick=()=>run(toggleAutoPlan);
   const messageStatuses=new Map(),messageSections=new Set(),seekControls=new Set();let messagePlaybackId=null,messageOperation=null;
-  let disposed=false, loadVersion=0, revision=0, visibleStops=0, connectionSwitch=Promise.resolve(), config, chatId=null, plan=null, planSource=null, planAttribution=null, planningSource=null, busy=false;
+  let disposed=false, loadVersion=0, revision=0, visibleStops=0, voicesLoading=Promise.resolve(), config, chatId=null, plan=null, planSource=null, planAttribution=null, planningSource=null, busy=false;
   const ttsRequestLog=[];let ttsRequestSequence=0;
   unsubs.push(()=>{ttsRequestLog.length=0;});
   let activeCharacterCard=null,activePersonaName='',activeCardKey='';
@@ -1586,7 +1586,7 @@ export async function setup(ctx) {
       if(!disposed){
         // Reload through the normal path: saved chats retain their own cast;
         // unsaved/new chats inherit the just-captured defaults.
-        await run(()=>switchChat(true));
+        await loadChat(true);
       }
     }
   });
@@ -2751,6 +2751,13 @@ export async function setup(ctx) {
     if(config.styleParam && !parameters[config.styleParam]){config.styleParam='';$('styleParam').value='';}
     cataloguesReady=true;renderCast();refreshSectionControls();
   }
+  // Opening a chat and switching connections reload voice catalogues; Play waits
+  // for voicesLoading so saved plans are not checked against missing voices.
+  function loadChat(force=false){
+    const loading=run(()=>switchChat(force));
+    voicesLoading=Promise.all([voicesLoading,loading]);
+    return loading;
+  }
   async function switchChat(force=false) {
     const id=ctx.getActiveChat().chatId;
     if(!force && id===chatId && config)return;
@@ -3343,7 +3350,7 @@ export async function setup(ctx) {
   // Decode once when audio arrives, while earlier speech plays. Keep only the
   // measured gain, not the decoded PCM, and observe background failures here.
   const loudnessMeasurements=new WeakMap();
-  let outputBus=null,playedCapture=null;
+  let outputBus=null,speechLimiter=null,playedCapture=null;
   // Exclude pauses and silent synthesis waits. Keep deliberately configured
   // voice gaps and any music or ambience still heard while speech is loading.
   function syncPlayedAudio(){
@@ -3360,6 +3367,21 @@ export async function setup(ctx) {
     if(!outputBus){outputBus=audioContext.createGain();outputBus.connect(audioContext.destination);}
     return outputBus;
   }
+  // Speech passes a soft clipper, so loudness matching can raise quiet voices
+  // fully and high channel volumes do not clip. It has no attack or release
+  // state: a compressor here clamps the first words of a playback while it
+  // settles. Effects and beds bypass it.
+  function speechOutput(){
+    const output=playbackOutput();
+    if(!output || typeof audioContext.createWaveShaper!=='function')return output;
+    if(!speechLimiter){
+      // A shaper maps -1…1, so halve the input to cover peaks up to ±2.
+      const scale=audioContext.createGain(),shaper=audioContext.createWaveShaper();
+      scale.gain.value=0.5;shaper.curve=softClipCurve(2);shaper.oversample='2x';
+      scale.connect(shaper);shaper.connect(output);speechLimiter=scale;
+    }
+    return speechLimiter;
+  }
   function beginPlayedAudio(){
     try{const output=playbackOutput();if(output){playedCapture=createPlayedAudioCapture(audioContext,output);syncPlayedAudio();return playedCapture;}}catch{}
     return playedCapture={continuous:false,markDiscontinuous(){},start(){},pause(){},fail(){},discard(){},finish:async()=>({error:'This browser cannot save the played audio mix.'})};
@@ -3371,7 +3393,8 @@ export async function setup(ctx) {
       if(!AudioContextClass)return {gain:1};
       audioContext ||= new AudioContextClass();
       const decoded=await audioContext.decodeAudioData(await blob.arrayBuffer());
-      return {gain:loudnessGain(Array.from({length:decoded.numberOfChannels},(_,i)=>decoded.getChannelData(i)),undefined,decoded.sampleRate)};
+      const limited=typeof audioContext.createWaveShaper==='function';
+      return {gain:loudnessGain(Array.from({length:decoded.numberOfChannels},(_,i)=>decoded.getChannelData(i)),undefined,decoded.sampleRate,limited?LIMITED_SPEECH_PEAK:undefined)};
     })().catch(error=>({gain:1,error})));
     return loudnessMeasurements.get(blob);
   }
@@ -3413,7 +3436,7 @@ export async function setup(ctx) {
           if(measured.error)throw measured.error;
         }
         mediaSource=audioContext.createMediaElementSource(audio);gain=audioContext.createGain();currentGain=gain;
-        mediaSource.connect(gain);gain.connect(playbackOutput());audio.volume=1;applyVolume();
+        mediaSource.connect(gain);gain.connect(speechOutput());audio.volume=1;applyVolume();
       }catch(error){if(signal.aborted)throw error;playedCapture?.fail(`Speech could not be included: ${error.message}`);status(`${normalize?'Loudness matching':'Volume boost'} unavailable: ${error.message}. Playing at browser volume.`);}
     }
     const seek=()=>{if(offset>0 && Number.isFinite(audio.duration))audio.currentTime=Math.min(offset,Math.max(0,audio.duration-0.05));updateSeekControls();};
@@ -3588,20 +3611,25 @@ export async function setup(ctx) {
   const outdatedSfxRecording=recording=>config.enableSfx!==false && recording.sfxPlacement!==SFX_PLACEMENT_VERSION && recording.segments?.some(segment=>segment.kind==='sfx');
   function playbackBatches(segments,snapshot,{filterMuted=true}={}){
     const sound=(kind,speaker,text,cue)=>({kind,speaker,voice:'',text,route:kind,[kind]:cue});
+    let spoken=0,lastEffect=-Infinity;
     const expanded=segments.flatMap(segment=>{
       const {sfx,ambience,music,...speech}=segment;
+      const segmentStart=spoken;spoken+=speech.text.length;
       const points=[
         ...(snapshot.enableMusic===true?music || []:[]).map(entry=>sound('music','Music',entry.stop?'[Music stop]':`[Music: ${musicLabel(entry)}]`,entry)),
         ...(snapshot.enableAmbience===false?[]:ambience || []).map(entry=>sound('ambience','Ambience',entry.stop?'[Ambience stop]':`[Ambience: ${entry.query}]`,entry.stop?entry:{...entry,filter:AMBIENCE_FILTER})),
-        ...(snapshot.enableSfx===false?[]:sfx || []).map(cue=>sound('sfx','SFX',`[SFX: ${cue.query}]`,cue))
+        // Plans saved before unmatched effects were dropped may still hold them.
+        ...(snapshot.enableSfx===false?[]:sfx || []).filter(cue=>cue.trigger).map(cue=>sound('sfx','SFX',`[SFX: ${cue.query}]`,cue))
       ];
       if(!points.length)return [speech];
       // Effects use complete phrase boundaries; background beds keep their exact anchors.
       const parts=[];let start=0;
-      for(const {part,at,anchor} of points.map(part=>{
+      const placed=points.map(part=>{
         const anchor=Math.max(0,cueOffset(speech.text,part[part.kind].trigger));
         return {part,anchor,at:part.kind==='sfx'?sfxCueOffset(speech.text,part.sfx.trigger):anchor};
-      }).sort((a,b)=>a.at-b.at)){
+      }).sort((a,b)=>a.at-b.at);
+      const spaced=spaceSoundEffects(placed,{start:segmentStart,last:lastEffect});lastEffect=spaced.last;
+      for(const {part,at,anchor} of spaced.kept){
         const head=speech.text.slice(start,Math.max(start,at)).trim();
         if(head)parts.push({...speech,text:head});
         parts.push({...part,passageIndex:segment.passageIndex,moment:speech.text.slice(Math.max(0,anchor-60),anchor+240)});
@@ -3907,8 +3935,8 @@ export async function setup(ctx) {
   }
   async function play(options={}) {
     status('Checking playback settings…');
-    // A connection switch in progress stops playback and reloads voices; finish it first.
-    await connectionSwitch;if(disposed)return;
+    // A chat load or connection switch in progress reloads voices; finish it first.
+    await voicesLoading;if(disposed)return;
     const preflightRevision=revision,preflightChat=chatId,preflightStops=visibleStops;
     await flushSettings();
     const retentionChat=chatId,retentionEdit=settingsEdit;
@@ -4075,22 +4103,31 @@ export async function setup(ctx) {
       return !recording.blobs[index];
     });
   }
-  async function playMessage(messageId) {
+  async function playMessage(messageId,restarted=false) {
     if(controller && messagePlaybackId===messageId){stop();return;}
     if(messageOperation?.messageId===messageId && messageOperation.chatId===chatId)return;
-    // Saved plans are checked against the voices of a connection that may still be loading.
-    status('Checking playback settings…');await connectionSwitch;if(disposed)return;
+    // Saved plans are checked against voices that may still be loading.
+    status('Checking playback settings…');await voicesLoading;if(disposed)return;
     stop(false,false,true);messagePlaybackId=messageId;
-    const operation={messageId,chatId,token:revision};messageOperation=operation;
+    const operation={messageId,chatId,token:revision,stops:visibleStops};messageOperation=operation;
     const valid=()=>!disposed && chatId===operation.chatId && revision===operation.token;
-    try {
+    // Loading the chat or switching voices can restart Choir while this Play is
+    // checking saved audio. Start again once rather than ignoring the click;
+    // a Stop pressed meanwhile still cancels it.
+    const interrupted=()=>!restarted && !operation.started && !disposed && chatId===operation.chatId && revision!==operation.token && visibleStops===operation.stops;
+    try{await playChecked(messageId,operation,valid);}
+    finally{if(messageOperation===operation)messageOperation=null;}
+    if(interrupted())return playMessage(messageId,true);
+  }
+  async function playChecked(messageId,operation,valid) {
+    {
       const content=ctx.messages.getContent(messageId);
       // A validated plan remains playable even if saving it failed or has not finished.
       if(plan && planSource?.chatId===chatId && planSource.messageId===messageId && sameSpeech(planSource.content,content) && await recordingMatchesTranscript(planSource,content)){
-        if(valid()){status('Reusing the current speech plan.');await play();}return;
+        if(valid()){operation.started=true;status('Reusing the current speech plan.');await play();}return;
       }
       status('Checking saved plan and audio…');
-      if(await restoreSavedPlan(messageId)){if(valid())await play();return;}
+      if(await restoreSavedPlan(messageId)){if(valid()){operation.started=true;await play();}return;}
       if(!valid())return;
       let recording;try{recording=await recordingStore('get',recordingKey(operation.chatId,messageId));}catch{}
       if(!valid())return;
@@ -4098,10 +4135,10 @@ export async function setup(ctx) {
         if(!valid())return;
         const canonical=text=>String(text || '').replace(/\s+/g,' ').trim();
         const recordedText=(recording.segments || []).flatMap(segment=>segment.turns || [segment]).filter(segment=>!segment.kind).map(segment=>segment.text).join(' ');
-        if(!outdatedSfxRecording(recording) && canonical(recordedText)===canonical(recording.transcript || filteredTranscript(content)) && !recordingSpeechMissing(recording,capture())){await replayRecording(messageId);return;}
+        if(!outdatedSfxRecording(recording) && canonical(recordedText)===canonical(recording.transcript || filteredTranscript(content)) && !recordingSpeechMissing(recording,capture())){operation.started=true;await replayRecording(messageId);return;}
       }
-      if(valid())await prepare(messageId,true);
-    } finally {if(messageOperation===operation)messageOperation=null;}
+      if(valid()){operation.started=true;await prepare(messageId,true);}
+    }
   }
   function sectionsFor(source,segments){
     const sections=source?.sections,indices=Array.isArray(sections)?sections.flat():[];
@@ -4364,8 +4401,17 @@ export async function setup(ctx) {
     }
     void refreshMessageDownloads();
   }
+  // Recordings cost money to generate, so clearing them all takes a second tap.
+  let clearAudioArmed=null;
   $('deleteChatAudio').onclick=()=>run(async()=>{
     if(!chatId)throw new Error('Open a chat first.');
+    const button=$('deleteChatAudio');
+    if(clearAudioArmed?.chatId!==chatId){
+      clearTimeout(clearAudioArmed?.timer);
+      clearAudioArmed={chatId,timer:setTimeout(()=>{clearAudioArmed=null;button.textContent='Clear chat audio';},5000)};
+      button.textContent='Tap again to delete all';status('Tap Clear chat audio again within 5 seconds to delete every saved recording for this chat. Downloaded WAV files are not affected.');return;
+    }
+    clearTimeout(clearAudioArmed.timer);clearAudioArmed=null;button.textContent='Clear chat audio';
     const targetChat=chatId;stop(false);status('Deleting saved audio for this chat…');
     await recordingStore('deleteChat',recordingKey(targetChat,''));
     if(chatId===targetChat){renderMessages();status('All Choir audio deleted for this chat on this device.');}
@@ -4476,7 +4522,7 @@ export async function setup(ctx) {
   $('plannerMode')?.addEventListener('change',updatePlannerVisibility);
   $('allowLlmFallback').onchange=updatePlannerVisibility;
   $('sectionButtons').onchange=()=>run(async()=>{config=capture();refreshSectionControls();if(plan)renderPreview();scheduleSettingsSave();await flushSettings();});
-  $('connectionMode').onchange=()=>(connectionSwitch=run(async()=>{
+  $('connectionMode').onchange=()=>(voicesLoading=run(async()=>{
     await flushSettings();
     const messageId=planSource?.messageId,targetChat=chatId;stop(false);config=capture();config.connectionMode=$('connectionMode').value;const version=++loadVersion;
     await persistConfig(targetChat,config,true);if(disposed || chatId!==targetChat || version!==loadVersion)return;saveState('Settings saved');
@@ -4499,7 +4545,7 @@ export async function setup(ctx) {
     if(planSource)await restoreSavedPlan(planSource.messageId);
     status('Cast imported and validated. Saved attribution reused.');
   });
-  $('connection').onchange=()=>(connectionSwitch=run(async()=>{
+  $('connection').onchange=()=>(voicesLoading=run(async()=>{
     await flushSettings();
     const messageId=planSource?.messageId,targetChat=chatId;stop(false);config=capture();const version=++loadVersion;
     await persistConfig(targetChat,config,true);if(disposed || chatId!==targetChat || version!==loadVersion)return;saveState('Settings saved');
@@ -4515,7 +4561,7 @@ export async function setup(ctx) {
     plan=edited;rememberPlanCast(edited);await persistConfig(chatId,config);
     await persistPlan();renderCast();renderPreview();status('Edited plan validated and saved.');
   });
-  unsubs.push(ctx.state.subscribe('chat.active',()=>run(switchChat)));
+  unsubs.push(ctx.state.subscribe('chat.active',()=>loadChat()));
   unsubs.push(ctx.state.subscribe('persona.activeId',()=>run(refreshLeadNames)));
   function cancelAutoReplies(messageId){
     if(messageId)autoReplyQueue.delete(messageId);else autoReplyQueue.clear();
@@ -4969,7 +5015,7 @@ export async function setup(ctx) {
     sessionAudio.clear();paragraphAudioCache.clear();foleyCache.clear();volatilePolicies.clear();paragraphCues.clear();
   };
   mixer.addEventListener('choir:replace',cleanup,{once:true});unsubs.push(()=>mixer.removeEventListener('choir:replace',cleanup));
-  await run(switchChat);
+  await loadChat();
   if(disposed)return cleanup;
   applyMixerLayout();
   if(!setupAutoStarted){setupAutoStarted=true;void setupWizard.start();}

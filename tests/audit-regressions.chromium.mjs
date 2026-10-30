@@ -79,7 +79,7 @@ try{
   await replay(a);await a.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Replaying '));
   if(action==='shorter'){await retention(b,'1');await until(async()=>!await summary(b));await retention(b,'forever');}
   else if(action==='session'){await retention(b,'session');await until(async()=>!await summary(b));}
-  else{await openDetails(b,'messages');if(action==='clear')await withDrawerControl(b,'deleteChatAudio',()=>b.locator('[data-et="deleteChatAudio"]').click());else await b.locator('[data-et="messages"]').getByRole('button',{name:'Delete audio',exact:true}).click();await until(async()=>!await summary(b));}
+  else{await openDetails(b,'messages');if(action==='clear')await withDrawerControl(b,'deleteChatAudio',async()=>{await b.locator('[data-et="deleteChatAudio"]').click();await b.locator('[data-et="deleteChatAudio"]').click();});else await b.locator('[data-et="messages"]').getByRole('button',{name:'Delete audio',exact:true}).click();await until(async()=>!await summary(b));}
   await until(async()=>/^Replay finished\.|.*deleted or expired/.test(await status(a)));
   assert.equal(await summary(a),null,`${action}: stale Replay must not recreate the disk record`);
   console.log(`PASS: ${action} in a second tab cannot be undone by a completing stale Replay.`);await context.close();

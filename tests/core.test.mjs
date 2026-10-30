@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {speechPanel} from './fixtures/speech-panel.mjs';
 import {phoneWidget} from './fixtures/phone-widget.mjs';
-import {sfxCueOffset} from '../src/core.js';
+import {sfxCueOffset,spaceSoundEffects,SFX_MIN_SPACING} from '../src/core.js';
 import {randomUuid,sha256Hex,ignoredTagNames,characterCardRoles,validateCardRoles,cardAnalysisRoles,reconcileCardCast} from '../src/core.js';
 import {normalizePlaybackRate,normalizeVoiceGap,speakerPlaybackRate,effectivePlaybackRate,browserPlaybackRate,PLAYBACK_RATE_LIMITS,VOICE_GAP_LIMITS,BROWSER_PLAYBACK_RATE_LIMITS} from '../src/core.js';
 
@@ -646,10 +646,10 @@ test('LLM sound cues and ambience beds are validated against the segments, keep 
     {segment:1,trigger:'anda',query:'wind'},
     {segment:0,query:'tavern crowd'}
   ]})+'\n```',segments);
-  // Short replies allow two effects and three bed entries; invalid segments, empty searches and non-boolean stops never count.
+  // Short replies allow two effects and three bed entries; invalid segments, empty searches, unmatched effect words and non-boolean stops never count.
   assert.deepEqual(cues,[
     {segment:0,query:'door slam',trigger:'La puerta se cerró'},
-    {segment:1,query:'footsteps',trigger:''}
+    {segment:0,query:'rain',trigger:'Afuera llovía'}
   ]);
   assert.deepEqual(ambience,[
     {segment:0,query:'rain',trigger:'Afuera llovía'},
@@ -661,7 +661,7 @@ test('LLM sound cues and ambience beds are validated against the segments, keep 
   assert.throws(()=>parseSoundCues('{"effects":[]}',segments),/no cues list/);
   const config={voices:[{id:'n'},{id:'m'}],fixed:[{speaker:'Narrator',voice:'n',style:''},{speaker:'Mira',voice:'m',style:''}],npcs:[]};
   const transcript=segments.map(segment=>segment.text).join(' ');
-  const plan=validatePlan({segments:applySoundCues(segments.map(segment=>({...segment,voice:segment.speaker==='Mira'?'m':'n'})),{cues:[...cues,{segment:0,trigger:'Afuera llovía',query:'rain'}],ambience})},transcript,config);
+  const plan=validatePlan({segments:applySoundCues(segments.map(segment=>({...segment,voice:segment.speaker==='Mira'?'m':'n'})),{cues,ambience})},transcript,config);
   assert.deepEqual(plan.segments[0].sfx,[{query:'door slam',trigger:'La puerta se cerró'},{query:'rain',trigger:'Afuera llovía'}]);
   assert.deepEqual(plan.segments.map(segment=>segment.ambience),[[{query:'rain',trigger:'Afuera llovía'}],[{stop:true,trigger:'¿Quién'},{query:'wind',trigger:'anda'}]]);
   const restored=restoreAttribution(structuredClone(attributionPlan(plan,config)),transcript,config);
@@ -907,4 +907,26 @@ test('non-story check rows parse by index, keep missing rows as story and drop w
   const [system,user]=skipCheckPrompt(['x'.repeat(200),'Kai: hi'],60);
   assert.match(system.content,/^You clean AI roleplay replies/);assert.match(system.content,/Example 2 answer: \n0 S\n1 K/);
   assert.equal(user.content,`Reply to label (2 lines):\n0: ${'x'.repeat(60)}\n1: Kai: hi\n\nReturn exactly 2 labels.`);
+});
+
+test('sound effects stacked at one break or too close together keep only the first, across segments too',()=>{
+  const sfx=(at,query)=>({part:{kind:'sfx',sfx:{query}},at}),bed={part:{kind:'ambience',ambience:{query:'rain'}},at:0};
+  const first=spaceSoundEffects([bed,sfx(0,'door'),sfx(0,'steps'),sfx(0,'knock'),sfx(0,'glass'),sfx(0,'chair'),sfx(40,'thud'),sfx(45,'tap'),sfx(150,'bell')]);
+  assert.deepEqual(first.kept.map(point=>point.part.sfx?.query ?? 'bed'),['bed','door','thud','bell']);
+  const next=spaceSoundEffects([sfx(5,'early'),sfx(50,'late')],{start:150,last:first.last});
+  assert.deepEqual(next.kept.map(point=>point.part.sfx.query),['late']);assert.equal(SFX_MIN_SPACING,12);
+});
+
+test('review fixes: prose is not a heading, names respell only as names, quotes and effects stay in place',async()=>{
+  const core=await import('../src/core.js');
+  for(const line of ['Part of me wanted to stay.','Act like you mean it, she told him.','Book of the dead lay open.'])assert.equal(core.transcriptFromMessage(line),line);
+  for(const heading of ['Chapter 3: The Road','Chapter Two','Scene IV','## Part 2 — Return'])assert.equal(core.transcriptFromMessage(heading),'');
+  assert.equal(core.respellNames('Will said he will go. The sun rose as Rose woke. WILL!',[{speaker:'Will',sayAs:'Wil'},{speaker:'Rose',sayAs:'Rohz'}]),'Wil said he will go. The sun rose as Rohz woke. Wil!');
+  const units=text=>core.speechSourceUnits(text).map(unit=>`${unit.kind[0]}:${unit.text}`);
+  assert.deepEqual(units('He was 6\'2" tall. "Hi," she said.'),['n:He was 6\'2" tall.','d:"Hi,"','n:she said.']);
+  assert.deepEqual(units('"First part of a speech.\n\n"Second part," he finished.'),['d:"First part of a speech.','d:"Second part,"','n:he finished.']);
+  const cues=core.parseSoundCues(JSON.stringify({cues:[{segment:0,trigger:'The door slammed',query:'door slam'},{segment:0,trigger:'words not in the text',query:'thud'}],ambience:[{segment:0,trigger:'missing words',query:'rain'}]}),[{text:'The door slammed behind her.'}]);
+  assert.deepEqual(cues.cues.map(cue=>cue.query),['door slam']);assert.deepEqual(cues.ambience.map(cue=>[cue.query,cue.trigger]),[['rain','']]);
+  const passage=(text,passageIndex)=>({speaker:'Narrator',voice:'n',text,route:'r',passageIndex});const long='A sentence with a little room to breathe. '.repeat(24).trim();
+  assert.ok(core.speechBatches([passage(long,0)],1800,'r')[0].text.length<=300);assert.equal(core.speechBatches([passage(long,2)],1800,'r').length,1);
 });

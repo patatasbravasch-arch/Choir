@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {attributionPlan,restoreAttribution,validatePlan,validateCastConfig,passageKey,mixerVolume,loudnessGain,castExport,castImport,fastClassifyPlan} from '../src/core.js';
+import {attributionPlan,restoreAttribution,validatePlan,validateCastConfig,passageKey,mixerVolume,loudnessGain,LIMITED_SPEECH_PEAK,softClipCurve,castExport,castImport,fastClassifyPlan} from '../src/core.js';
 const config={defaultRoute:'native:a',useStyle:true,voices:[{id:'n',route:'native:a'},{id:'m',route:'native:a'},{id:'new',route:'native:b'}],fixed:[{speaker:'Narrator',voice:'n',style:'Calm'},{speaker:'Mira',voice:'m',style:'Bright',aliases:['Captain']}],npcs:[]};
 
 test('attribution survives voice, route and base style changes without repeating delivery styles',()=>{
@@ -130,4 +130,19 @@ test('cast exchange preserves connection mode and per-provider single voices whi
  assert.throws(()=>castImport({...exported,connectionMode:'unknown'}),/connection mode/);
  assert.throws(()=>castImport({...exported,singleVoices:{'https://evil.test':{Narrator:'n'}}}),/voice choices/);
  assert.throws(()=>castImport({...exported,singleVoices:{'native:a':{Narrator:{secret:'private-key'}}}}),/voice choice/);
+});
+
+test('with the speech limiter, a quiet voice with brief peaks reaches the target instead of stopping at the peak cap',()=>{
+  // The narrator clip measured in Lumiverse: RMS about 0.052 with a 0.58 peak.
+  const samples=new Float32Array(24000);for(let i=0;i<samples.length;i++)samples[i]=Math.sin(i/7)*0.0735;samples[1000]=0.58;
+  const capped=loudnessGain([samples]),limited=loudnessGain([samples],undefined,24000,LIMITED_SPEECH_PEAK);
+  assert.ok(Math.abs(capped*0.58-0.95)<0.001);
+  assert.ok(limited>capped);assert.ok(limited*0.58<=LIMITED_SPEECH_PEAK);
+});
+
+test('the speech soft clipper leaves normal speech unchanged and rounds peaks below full scale',()=>{
+  const curve=softClipCurve(2,4097),at=x=>curve[Math.round((x/2+1)/2*4096)];
+  for(const x of [0,0.25,-0.5,0.8])assert.ok(Math.abs(at(x)-x)<0.002);
+  for(const x of [1,1.4,2,-2])assert.ok(Math.abs(at(x))<1 && Math.abs(at(x))>0.8);
+  assert.ok(at(1.4)>at(1));
 });

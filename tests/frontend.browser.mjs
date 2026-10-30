@@ -175,7 +175,7 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
     $('retention').value='forever';$('save').click();await until(()=>$('status').textContent.includes('retention saved'));
     $('latest').click();await until(()=>$('preview').querySelectorAll('.et-card').length===3 && !$('latest').disabled);
     $('play').click();await until(()=>$('status').textContent.includes('Audio saved'));
-    $('deleteChatAudio').click();await until(()=>$('status').textContent.includes('All Choir audio deleted'));
+    $('deleteChatAudio').click();await until(()=>$('status').textContent.includes('Tap Clear chat audio again'));assert.equal($('deleteChatAudio').textContent,'Tap again to delete all');$('deleteChatAudio').click();await until(()=>$('status').textContent.includes('All Choir audio deleted'));
     [...$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay').click();
     await until(()=>$('status').textContent.includes('No saved audio'));
     const beforeRegeneration=nativeRequests.length;

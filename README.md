@@ -26,6 +26,11 @@ This is the **lunch-test** branch of the original Choir repository, using the or
 - Fish community casting searches for every speaker at once (24.5 s → 12.3 s for three speakers).
 - Planner errors are clearer and cheaper: bad keys, rate limits and unknown models stop after one request, models that accept only their default temperature are retried without one, and a model that spends its output on reasoning says so.
 - Switching between one TTS connection and per-character connections no longer carries Gemini voice names onto Fish, and Play pressed during the switch waits for it instead of doing nothing.
+- Loudness matching brings every Fish voice to the same level: speech passes a soft clipper, so quiet voices with sharp peaks are raised fully instead of staying 2–3 dB low, and high character volumes no longer clip.
+- Sound effects no longer pile up: effects stacked at the same spot, with no more than a couple of words between them, keep only the first; effects separated by speech all play.
+- Text is read more faithfully: lines such as "Part of me wanted to stay." are no longer dropped as chapter headings, Say name as no longer respells ordinary words, heights like 6'2" no longer flip dialogue and narration, and effects without their trigger words are skipped.
+- Clear chat audio asks for a second tap before deleting every recording.
+- Play pressed while a chat is still loading waits for it instead of doing nothing.
 - A lead whose card name ends in a full stop no longer appears twice in the cast.
 - Long chats scroll more smoothly: message Sections menus track the page only while open.
 - The version is numbered above the 1.1.8 release on `main`, so Lumiverse offers it as an update.
