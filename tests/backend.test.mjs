@@ -1281,6 +1281,27 @@ test('casting written with the reply plans without a planner call, and only miss
   const partial=await harness(async input=>{calls++;assert.match(input.messages.at(-1).content,/You missed these ids: D3/);return {content:'D3|Mira|'};});
   partial.send('plan',{transcript,config:castConfig,injected:{rows:'D1|Mira|warm'}});
   assert.equal((await partial.result()).message.error,undefined);assert.equal(calls,1);
+  // A covered reply needs no Planner LLM connection (Jev-only setups have none).
+  const unconnected=await harness(async()=>{calls++;return {content:''};},undefined,undefined,undefined,undefined,undefined,{model:''});
+  unconnected.send('plan',{transcript,config:castConfig,injected:{rows:'D1|Mira|warm\nD3|Mira|soft'}});
+  assert.equal((await unconnected.result()).message.error,undefined);assert.equal(calls,1);
+  const missing=await harness(async()=>{calls++;return {content:''};},undefined,undefined,undefined,undefined,undefined,{model:''});
+  missing.send('plan',{transcript,config:castConfig,injected:{rows:'D1|Mira|warm'}});
+  assert.match((await missing.result()).message.error,/Select a Planner LLM connection/);assert.equal(calls,1);
+  // The output budget only matters when the planner is asked.
+  const budget=await harness(async()=>{calls++;return {content:''};});
+  budget.send('plan',{transcript,config:castConfig,maxTokens:5,injected:{rows:'D1|Mira|warm\nD3|Mira|soft'}});
+  assert.equal((await budget.result()).message.error,undefined);assert.equal(calls,1);
+});
+
+test('the language written with a reply that has no dialogue still picks the Fish community search language',async()=>{
+  const urls=[],config={...communityCast,fixed:[{speaker:'Narrator',voice:'',style:'',route:'native:fish'}],npcs:[]};
+  const purposes=[];const h=await harness(async input=>{purposes.push(input.messages[0].content.slice(0,40));return {content:'{"choice":"s0"}'};},fishSearch(urls,[[fishItem('nar-1','Narrateur',['male','calm'])]]));
+  h.send('plan',{transcript:'La pluie tombait sur les toits.',config,injected:{rows:'LANG|fr'}});
+  const result=(await h.result()).message;
+  // Only the voice choice reaches the LLM; no planner call.
+  assert.equal(result.error,undefined);assert.equal(purposes.length,1);assert.match(purposes[0],/Choose one consistent speaking voice/);
+  assert.equal(urls[0]?.searchParams.get('language'),'fr');
 });
 
 test('sounds written with the reply need no sound-choice call unless music is wanted',async()=>{
@@ -1290,6 +1311,11 @@ test('sounds written with the reply need no sound-choice call unless music is wa
   const result=(await h.result()).message.result;assert.equal(calls,0);assert.deepEqual(JSON.parse(JSON.stringify(result.cues.map(cue=>cue.query))),['door slam']);
   const music=await harness(async()=>{calls++;return {content:'{"cues":[],"ambience":[],"music":[]}'};});
   music.send('sfx',{segments,music:true,injectedCues:{cues:[],ambience:[]}});await music.result();assert.equal(calls,1);
+  // With music on, the written sounds are kept and the planner is asked for music only.
+  let asked;const both=await harness(async input=>{calls++;asked=input.messages.at(-1).content;return {content:'{"cues":[{"segment":0,"trigger":"behind her","query":"wind"}],"ambience":[],"music":[]}'};});
+  both.send('sfx',{segments,music:true,injectedCues:{cues:[{segment:0,trigger:'The door slammed',query:'door slam'}],ambience:[]}});
+  const kept=(await both.result()).message.result;assert.equal(calls,2);assert.match(asked,/Choose only music/);
+  assert.deepEqual(JSON.parse(JSON.stringify(kept.cues.map(cue=>cue.query))),['door slam']);
 });
 
 test('the casting instruction is added automatically or by {{choirPrompt}}, never both, survives a restart and old blocks leave the history',async()=>{

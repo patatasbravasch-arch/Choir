@@ -1,4 +1,4 @@
-import { injectionPrompt, backendRequestKind, cardAnalysisRoles, reconcileCastDuplicates, castIdentityResolver, validateCastConfig, validatePlan, npcCastActor, parsePlanJson, resolvePlanReferences, castReply, speechSourceUnits, normalizeName, unisonSpeakers, fastClassifyPlan, resolvePlannerMode, soundCuePrompt, parseSoundCues, rankMusic, MUSIC_GENRES, skipCheckPrompt, parseSkipRows, skippedLines, DELIVERY_CONTEXT_RULES } from './core.js';
+import { injectionPrompt, parseCastRows, backendRequestKind, cardAnalysisRoles, reconcileCastDuplicates, castIdentityResolver, validateCastConfig, validatePlan, npcCastActor, parsePlanJson, resolvePlanReferences, castReply, speechSourceUnits, normalizeName, unisonSpeakers, fastClassifyPlan, resolvePlannerMode, soundCuePrompt, parseSoundCues, rankMusic, MUSIC_GENRES, skipCheckPrompt, parseSkipRows, skippedLines, DELIVERY_CONTEXT_RULES } from './core.js';
 
 async function jevPost(url, headers, payload, signal) {
   signal?.throwIfAborted();
@@ -918,20 +918,27 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
           progress({stage:`Jev failed: ${jevError.message}. Using explicitly enabled LLM fallback.`});
         }
       }
-      progress({stage:'Resolving saved LLM connection'});
-      const connection=input.connectionId
-        ? await spindle.connections.get(input.connectionId,userId)
-        : (await spindle.connections.list(userId)).find(profile=>profile.is_default);
-      if(controller.signal.aborted)return;
-      if(!connection?.model)throw new Error('Select a Planner LLM connection with a configured text-generation model.');
+      // Resolved only when the planner is actually asked: a reply whose written casting covers
+      // every quote needs no Planner LLM connection at all (Jev setups included).
+      let connection;
+      const plannerConnection=async()=>{
+        if(connection)return connection;
+        progress({stage:'Resolving saved LLM connection'});
+        const found=input.connectionId
+          ? await spindle.connections.get(input.connectionId,userId)
+          : (await spindle.connections.list(userId)).find(profile=>profile.is_default);
+        if(!found?.model)throw new Error('Select a Planner LLM connection with a configured text-generation model.');
+        if(!Number.isInteger(maxTokens) || maxTokens<1024 || maxTokens>32768)throw new Error('Planner output budget must be 1024–32768 tokens.');
+        return connection=found;
+      };
       const maxTokens=input.maxTokens ?? 8192;
-      if(!Number.isInteger(maxTokens) || maxTokens<1024 || maxTokens>32768)throw new Error('Planner output budget must be 1024–32768 tokens.');
       // A thrown provider error counts as a blocked answer, like an empty one; the last error explains a failed plan.
       let requests=0,failure;
       // Casting written with the reply answers first; only quotes it missed reach the planner.
       let injectedRows=typeof input.injected?.rows==='string' && input.injected.rows.trim()?input.injected.rows:'';
       const raw=await castReply(input.transcript,input.config,typeof input.context==='string'?input.context:'',async messages=>{
         if(injectedRows){const rows=injectedRows;injectedRows='';progress({stage:'Using the casting written with the reply'});return rows;}
+        const connection=await plannerConnection();if(controller.signal.aborted)throw new DOMException('Aborted','AbortError');
         progress({stage:`Waiting for planner response${++requests>1?` (request ${requests})`:''}`,provider:connection.provider,model:connection.model});
         // Raw calls use the saved connection credentials without inheriting a chat preset's
         // short output limit, stop strings, response format or reasoning budget.
@@ -950,6 +957,8 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
         return result?.content;
       });
       if(controller.signal.aborted)return;
+      // A reply with no dialogue never asks for rows, so the note's language is read here.
+      if(raw && !raw.language && input.injected?.rows){const language=parseCastRows(String(input.injected.rows)).language;if(language)raw.language=language;}
       if(!raw)throw new Error(failure?`Planner failed: ${failure.message}`:'The planner returned no speakers for this reply. The provider may be refusing its content; try another Planner LLM connection.');
       const communityVoices=new Map();
       const config=await castCommunityVoices(raw,input.config,communityVoices,async wanted=>{
@@ -981,14 +990,16 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
     if (message.action === 'sfx') {
       const segments=Array.isArray(input.segments)?input.segments.filter(segment=>typeof segment?.text==='string' && segment.text.trim()):[];
       if(!segments.length){send({result:{cues:[],ambience:[],music:[]}});return;}
-      // Sounds written with the reply need no call; music still asks the planner.
-      if(input.injectedCues && input.music!==true){send({result:parseSoundCues(JSON.stringify({cues:input.injectedCues.cues || [],ambience:input.injectedCues.ambience || [],music:[]}),segments)});return;}
+      // Sounds written with the reply need no call; with music on, the planner is asked for music only.
+      const written=input.injectedCues?parseSoundCues(JSON.stringify({cues:input.injectedCues.cues || [],ambience:input.injectedCues.ambience || [],music:[]}),segments):null;
+      if(written && input.music!==true){send({result:written});return;}
       progress({stage:'Resolving saved LLM connection'});
       const connection=input.connectionId?await spindle.connections.get(input.connectionId,userId):(await spindle.connections.list(userId)).find(profile=>profile.is_default);
       if(controller.signal.aborted)return;
       if(!connection?.model)throw new Error('Select a Planner LLM connection with a text-generation model to choose sound effects.');
       const currentMusic=input.currentMusic && typeof input.currentMusic==='object'?{title:String(input.currentMusic.title || ''),feels:Array.isArray(input.currentMusic.feels)?input.currentMusic.feels.map(String):[]}:null;
       const messages=soundCuePrompt(segments,{music:input.music===true,currentMusic});let failure,finishReason;
+      if(written)messages.push({role:'user',content:'Sound effects and ambience are already chosen. Choose only music: return {"cues":[],"ambience":[],"music":[...]}.'});
       for(let attempt=0;attempt<2;attempt++){
         if(controller.signal.aborted)return;
         progress({stage:`Waiting for sound effect choices (attempt ${attempt+1}/2)`,provider:connection.provider,model:connection.model});
@@ -996,7 +1007,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
           ...textGenerationOptions(connection,{max_tokens:2048*(attempt+1),...jsonResponseParameters(connection)}),signal:controller.signal});
         if(controller.signal.aborted)return;
         finishReason=result.finish_reason;
-        try{send({result:parseSoundCues(result.content,segments)});return;}
+        try{const chosen=parseSoundCues(result.content,segments);send({result:written?{...chosen,cues:written.cues,ambience:written.ambience}:chosen});return;}
         catch(error){
           failure=error;
           if(attempt===0){

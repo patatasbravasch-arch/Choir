@@ -43,9 +43,9 @@ Earlier releases are described in the [changelog](CHANGELOG.md).
 
 ### Plan inside the reply
 
-Under **Settings → Planner**, with the Standard LLM or Jev planner selected, **Plan inside the reply** lets the model that writes each reply also write Choir's casting: who says each quoted line, how, any new characters, sound effects, and which lines are not story (trackers, status lines). A reply whose note covers every quote needs no planner, Jev, sound-choice or non-story call. It goes in a hidden note at the end of the reply that never shows in the chat. Lines the note misses go to the planner, and a reply without it is planned as usual.
+Under **Settings → Planner**, with the Standard LLM or Jev planner selected, **Plan inside the reply** lets the model that writes each reply also write Choir's casting: who says each quoted line, how, any new characters, sound effects, and which lines are not story (trackers, status lines). A reply whose note covers every quote needs no planner, Jev, sound-choice or non-story call, and no Planner LLM connection; with background music on, one short call still chooses the music, keeping the note's sounds. The note also names the story's language, so Fish community voices are searched in that language. It goes in a hidden note at the end of the reply that never shows in the chat. Lines the note misses go to the planner, and a reply without it is planned as usual.
 
-- **Automatic** adds a short instruction (about 250 tokens) to each new reply, regeneration and swipe.
+- **Automatic** adds a short instruction (about 300 to 400 tokens, more with a long cast) to each new reply, regeneration and swipe. The model's note adds roughly 10 to 20 output tokens a line.
 - **Preset macro** adds nothing by itself: put `{{choirPrompt}}` where you want the instruction in your preset.
 
 It saves calls and planning time. It costs input tokens on your roleplay model instead of your planner, so with an expensive roleplay model and a cheap planner it can cost more money while still being faster. The setting needs the **interceptor** permission; grant it once under Extensions → Choir, then restart Choir.

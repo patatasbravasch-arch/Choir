@@ -1895,7 +1895,7 @@ const INJECT_TAIL=/<!--\s*choir\b(?![\s\S]*-->)[\s\S]*$/i;
 export function readInjectedPlan(content) {
   const body=[...String(content || '').matchAll(INJECT_BLOCK)].at(-1)?.[1];
   if(body===undefined)return null;
-  const quotes=new Map(),npcs=[],sfx=[],ambience=[],skip=[];
+  const quotes=new Map(),npcs=[],sfx=[],ambience=[],skip=[];let language='';
   for(const line of body.split(/\r?\n/)){
     const parts=line.trim().replace(/^[-* ]+/,'').split('|').map(part=>part.trim());
     const tag=(parts[0] || '').toUpperCase();
@@ -1908,8 +1908,9 @@ export function readInjectedPlan(content) {
     else if(tag==='NPC' && parts[1] && parts[2])npcs.push(parts.slice(1,4));
     else if((tag==='SFX' || tag==='AMB') && parts[1] && parts[2])(tag==='SFX'?sfx:ambience).push({query:parts[1],trigger:parts[2].replace(/^["“'‘]+|["”'’]+$/g,'')});
     else if(tag==='SKIP' && parts[1])skip.push(parts[1].replace(/^["“'‘]+|["”'’]+$/g,''));
+    else if(tag==='LANG' && /^[a-z]{2}$/i.test(parts[1] || ''))language=parts[1].toLowerCase();
   }
-  return quotes.size || sfx.length || ambience.length || skip.length?{quotes,npcs,sfx,ambience,skip}:null;
+  return quotes.size || sfx.length || ambience.length || skip.length|| language?{quotes,npcs,sfx,ambience,skip,language}:null;
 }
 
 export function stripInjectedPlan(content) {
@@ -1948,6 +1949,8 @@ export function injectedCastRows(transcript, plan) {
   }else if(ordered.length===dialogue.length)ordered.forEach((quote,index)=>assigned.set(index,quote));
   const rows=[...assigned].sort((a,b)=>a[0]-b[0]).map(([index,quote])=>`D${dialogue[index].id}|${quote.speaker}|${quote.style}`);
   for(const npc of plan.npcs)rows.push(['NPC',...npc].join('|'));
+  // The story's language picks Fish community voices when no planner call reports it.
+  if(plan.language)rows.push(`LANG|${plan.language}`);
   return {rows:rows.join('\n'),covered:assigned.size===dialogue.length};
 }
 
@@ -1980,11 +1983,13 @@ export function injectionPrompt({cast=[], sfx=false, ambience=false}={}) {
     'Q2|Speaker|delivery|first words',
     'NPC|Name|gender|age and tone',
     'SKIP|first words',
+    'LANG|language code',
     ...(sounds.length?sounds:[]),
     '-->',
     'One Q row per quoted passage of dialogue in your reply, in order (Q1 is the first "…" quote); first words are the first 3 words inside its quotation marks, copied exactly. Speaker is the exact name of who says it aloud; use NOT_SPOKEN for quoted words nobody says aloud (terms, signs, written text, remembered speech). Cast: '+(cast.length?cast.join(', '):'none listed')+'.',
     'For each line of your reply that is not story to be read aloud (status or tracker lines, stat lists, headers, menus, notes to the reader), add SKIP|its first 4 words, copied exactly. Write no SKIP rows when every line is story.',
     'For each speaker not in the cast, add one separate NPC row: NPC|Name|female, male or neutral|young, middle-aged or old and 1 to 3 tone words. Their Q rows use just the name.',
+    'LANG is the ISO 639-1 code of the language your reply is written in (en, fr, ja…).',
     'delivery is 2 to 6 words of tone for that line, restrained unless the scene clearly calls for more, e.g. "warm, slightly amused" or "quiet, tense".'
   ].join('\n');
 }

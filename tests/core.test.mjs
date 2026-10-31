@@ -950,7 +950,11 @@ test('a casting block written with the reply is read, hidden from speech, mapped
   assert.deepEqual(core.injectedSoundCues([{text}],plan),{cues:[{segment:0,trigger:'The door opened',query:'door open'}],ambience:[{segment:0,trigger:'Hannah crossed',query:'crowd murmur'}]});
   assert.equal(core.readInjectedPlan('No block here.'),null);assert.equal(core.stripInjectedPlan('Text\n<!--choir\nQ1|Han'),'Text');
   assert.equal(core.injectedCastRows('"One." "Two."',core.readInjectedPlan('<!--choir\nQ1|A|x\n-->')).covered,false);
-  const prompt=core.injectionPrompt({cast:['Hannah','Weston'],sfx:false});assert.match(prompt,/Cast: Hannah, Weston/);assert.ok(!/SFX\|/.test(prompt));
+  const prompt=core.injectionPrompt({cast:['Hannah','Weston'],sfx:false});assert.match(prompt,/Cast: Hannah, Weston/);assert.ok(!/SFX\|/.test(prompt));assert.match(prompt,/LANG\|/);
+  // The story's language travels with the casting, for Fish community voices.
+  const french=core.readInjectedPlan('<!--choir\nQ1|Léa|douce\nLANG|FR\n-->');assert.equal(french.language,'fr');
+  assert.deepEqual(core.injectedCastRows('"Bonjour."',french),{rows:'D0|Léa|douce\nLANG|fr',covered:true});
+  assert.equal(core.readInjectedPlan('<!--choir\nQ1|A|x\nLANG|French\n-->').language,'');
 });
 
 test('a new speaker folded into its quote row is read as that speaker, and blank-character spacing reads as spaces',async()=>{

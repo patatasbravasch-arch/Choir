@@ -349,7 +349,7 @@ export async function setup(ctx) {
     <div class="et-grid">
       <label>Planner engine<select data-et="plannerMode"><option value="llm">Standard LLM Connection</option><option value="jev">Jev System 1 (TypeSafe AI)</option><option value="heuristic">Heuristic (local only)</option></select></label>
       <label data-et="llmPlannerBox">Planner LLM connection<select data-et="planner"><option value="">Default LLM connection</option></select></label>
-      <label data-et="injectPlanBox" title="The model that writes each reply also writes Choir's casting, sound effects and non-story lines in a hidden note at its end. A reply with the note needs no planner, sound-choice or non-story call; adds about 250 tokens to each reply request. Choir plans normally when the note is missing. Needs the interceptor permission (Extensions → Choir).">Plan inside the reply<select data-et="injectPlan"><option value="off">Off (separate planner call)</option><option value="auto">Automatic (added to each reply)</option><option value="macro">Preset macro: place {{choirPrompt}}</option></select></label>
+      <label data-et="injectPlanBox" title="The model that writes each reply also writes Choir's casting, sound effects and non-story lines in a hidden note at its end. A reply with the note needs no planner, sound-choice or non-story call; adds about 300 to 400 input tokens to each reply request, plus the note the model writes (roughly 10 to 20 tokens a line). Choir plans normally when the note is missing. Needs the interceptor permission (Extensions → Choir).">Plan inside the reply<select data-et="injectPlan"><option value="off">Off (separate planner call)</option><option value="auto">Automatic (added to each reply)</option><option value="macro">Preset macro: place {{choirPrompt}}</option></select></label>
       <label data-et="jevPlannerBox" hidden>Decision connection<select data-et="decisionConnection"><option value="">Default Decision connection</option></select></label>
       <input data-et="jevKey" type="hidden">
       <input data-et="jevEndpoint" type="hidden">
@@ -3167,12 +3167,18 @@ export async function setup(ctx) {
     skipChecks.set(key,skip);
     return withoutLines(transcript,skip);
   }
+  // Casting, sounds and non-story lines the roleplay model wrote with a reply (Plan inside the reply).
+  const writtenPlan=content=>injectDelivery(config)!=='off' && resolvePlannerMode(config)!=='heuristic'?readInjectedPlan(content):null;
   async function recordingMatchesTranscript(recording,content) {
-    let transcript=await storyTranscript(filteredTranscript(content));
-    if(/\{\{\s*user\s*\}\}/i.test(transcript))transcript=replacePersonaMacro(transcript,await personaName());
+    const filtered=filteredTranscript(content),block=readInjectedPlan(content);
+    // A recording made from the reply's own note keeps matching after Plan inside the reply is
+    // turned off or the planner changes; one made without it matches the current reading.
+    const readings=[await storyTranscript(filtered,undefined,writtenPlan(content))];
+    if(block)readings.push(withoutLines(filtered,injectedSkipLines(transcriptLines(filtered),block)));
     const saved=recording.transcript ?? recording.segments?.map(segment=>segment.text).join(' ');
     const canonical=text=>String(text || '').replace(/\s+/g,' ').trim();
-    return canonical(saved)===canonical(transcript);
+    const name=readings.some(text=>/\{\{\s*user\s*\}\}/i.test(text))?await personaName():null;
+    return readings.some(text=>canonical(saved)===canonical(name==null?text:replacePersonaMacro(text,name)));
   }
   async function prepare(messageId,autoPlay=false,contentOverride,forceReplan=false) {
     if(!chatId)throw new Error('Open a chat first.');
@@ -3196,8 +3202,7 @@ export async function setup(ctx) {
       if(ctrl.signal.aborted || token!==revision || targetChat!==chatId || disposed)return;
       const stripBase=segments=>segments.map(segment=>withoutBase(segment,snapshot));
       const plannerMode=resolvePlannerMode(config);
-      // Casting, sounds and non-story lines the roleplay model wrote with this reply (Plan inside the reply).
-      const written=injectDelivery(config)!=='off' && plannerMode!=='heuristic'?readInjectedPlan(content):null;
+      const written=writtenPlan(content);
       if(plannerMode!=='heuristic'){
         await rpc('ping',{},ctrl.signal,8000);if(token!==revision || ctrl.signal.aborted)return;
         transcript=await storyTranscript(transcript,ctrl.signal,written);

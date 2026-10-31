@@ -4444,6 +4444,42 @@ test('a reply carrying a complete casting block skips Jev and the non-story chec
  }finally{await h.close();}
 });
 
+test('non-story lines named by the casting block are read from the reply, so the saved plan still matches it after a reload',async()=>{
+ const h=await harness();try{
+  h.$('injectPlan').value='auto';h.$('injectPlan').dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));
+  h.$('plannerMode').value='llm';h.$('plannerMode').dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));
+  h.message.content='Author note: next scene tomorrow.\nThe hall fell silent. "Hello," Mira said.\n<!--choir\nQ1|Mira|warm|Hello\nSKIP|Author note: next scene\n-->';
+  await h.plan();
+  const plans=()=>h.requests.filter(request=>request.action==='plan').length,planned=plans();
+  assert.ok(!h.requests.filter(request=>request.action==='plan').at(-1).input.transcript.includes('Author note'));
+  // No shared skip:<hash> entry is needed (another reply with the same story text may have other SKIP rows).
+  for(const key of [...h.store.keys()])if(key.startsWith('skip:'))h.store.delete(key);
+  await h.reload();
+  h.$('showMixer').click();if(h.$('auto-plan').getAttribute('aria-pressed')!=='true')h.$('auto-plan').click();
+  h.events.get('GENERATION_ENDED')({chatId:'chat-a',messageId:h.message.id,content:h.message.content});
+  await until(()=>h.$('status').textContent==='Saved attribution reused.');
+  assert.equal(plans(),planned);assert.equal(h.requests.filter(request=>request.action==='skipCheck').length,0);
+ }finally{await h.close();}
+});
+
+for(const [change,apply] of [['Plan inside the reply is turned off',h=>{h.$('injectPlan').value='off';h.$('injectPlan').dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));}],
+  ['the planner is switched to heuristic',h=>{h.$('plannerMode').value='heuristic';h.$('plannerMode').dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));}]]){
+  test(`a recording made from the casting block still replays after a reload when ${change}`,async()=>{
+   const h=await harness();try{
+    h.$('injectPlan').value='auto';h.$('injectPlan').dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));
+    h.$('plannerMode').value='llm';h.$('plannerMode').dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));
+    h.message.content='Author note: next scene tomorrow.\nThe hall fell silent. "Hello," Mira said.\n<!--choir\nQ1|Mira|warm|Hello\nSKIP|Author note: next scene\n-->';
+    await h.plan();await h.play();
+    const generated=h.synthesis.length;assert.ok(generated>0);
+    apply(h);await h.reload();
+    [...h.$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay').click();
+    await until(()=>/^Replaying|Replay finished|older speech text/.test(h.$('status').textContent));
+    assert.doesNotMatch(h.$('status').textContent,/older speech text/);
+    assert.equal(h.synthesis.length,generated);
+   }finally{await h.close();}
+  });
+}
+
 test('Paranoid mode lists every call in one list, with totals per kind, and keeps none while it is off',async()=>{
  const h=await harness();try{
   const call={at:Date.now(),kind:'LLM',purpose:'Planner',model:'deepseek-flash',ms:1500,input:2000,output:150};
