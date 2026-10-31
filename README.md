@@ -41,6 +41,10 @@ This is the **lunch-test** branch of the original Choir repository, using the or
 
 Earlier releases are described in the [changelog](CHANGELOG.md).
 
+### Fix a speaker from the plan
+
+In the speech plan, each spoken block's speaker is a dropdown of the cast. Pick the right person and the block is checked against the cast and saved with the plan; it makes no planner call, and only that block's audio is made again. **Edit attribution JSON** is still there for larger edits.
+
 ### Plan inside the reply
 
 Under **Settings → Planner**, with the Standard LLM or Jev planner selected, **Plan inside the reply** lets the model that writes each reply also write Choir's casting: who says each quoted line, how, any new characters, sound effects, and which lines are not story (trackers, status lines). A reply whose note covers every quote needs no planner, Jev, sound-choice or non-story call, and no Planner LLM connection; with background music on, one short call still chooses the music, keeping the note's sounds. The note also names the story's language, so Fish community voices are searched in that language. It goes in a hidden note at the end of the reply that never shows in the chat. Lines the note misses go to the planner, and a reply without it is planned as usual.

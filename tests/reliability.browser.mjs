@@ -4494,3 +4494,23 @@ test('Paranoid mode lists every call in one list, with totals per kind, and keep
   h.$('clearTtsLog').click();assert.equal(h.$('ttsInspectorView').options[2].textContent,'All calls (0)');
  }finally{await h.close();}
 });
+
+test('a wrong speaker is fixed from the plan block itself, saved with the plan, and only that block is spoken again',async()=>{
+ const h=await harness();try{
+  h.message.content='The hall fell silent. "Hello," Mira said. "Wait," the guard said.';
+  await h.plan();await h.play();
+  const generated=h.synthesis.length,requests=h.requests.length;
+  const choice=h.$('preview').querySelector('select[aria-label="Speaker of block 2"]');
+  assert.ok(choice,'each spoken block offers a named speaker choice');
+  assert.equal(choice.value,'Mira');assert.ok([...choice.options].some(option=>option.value==='Guard'));
+  choice.value='Guard';choice.dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));
+  await until(()=>h.$('status').textContent.startsWith('Block 2 is now read by Guard'));
+  assert.equal(h.requests.length,requests,'the fix makes no planner call');
+  const saved=[...h.store].find(([key])=>key.startsWith('plan:'))[1];
+  assert.equal(saved.attribution.segments[1].speaker,'Guard');
+  assert.equal(h.$('preview').querySelector('select[aria-label="Speaker of block 2"]').value,'Guard');
+  await h.play();
+  assert.equal(h.synthesis.length,generated+1,'only the changed block is spoken again');
+  assert.equal(h.synthesis.at(-1).text,'"Hello,"');
+ }finally{await h.close();}
+});

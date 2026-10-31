@@ -105,6 +105,7 @@ export async function setup(ctx) {
     .ensemble-tts .et-plan-block{padding:7px 0;margin:0;border:0;border-bottom:1px solid #8883;border-radius:0;background:none}
     .ensemble-tts .et-plan-heading{display:flex;gap:8px;justify-content:space-between;align-items:baseline;font-size:0.85em}
     .ensemble-tts .et-plan-heading small{font-size:0.85em;opacity:0.75;text-align:right}
+    .ensemble-tts .et-plan-speaker{font:inherit;font-weight:600;width:auto;max-width:14em;padding:1px 4px;margin:0 2px}
     .ensemble-tts .et-plan-delivery{display:block;font-size:.82em;margin:4px 0;overflow-wrap:anywhere}
     .ensemble-tts .et-tts-request{padding:10px 0;border-bottom:1px solid #8883;overflow-wrap:anywhere}
     .ensemble-tts .et-tts-request textarea{font-family:monospace;font-size:12px;white-space:pre-wrap;margin-top:6px;resize:vertical}
@@ -2926,7 +2927,9 @@ export async function setup(ctx) {
       if(isMutedNarrator)card.style.opacity='0.55';
       const label=document.createElement('strong');
       const connectionLabel=nativeConnections.find(c=>`native:${c.id}`===segment.route)?.name;
-      label.textContent=`${index+1}. ${segment.speaker}${segment.unison?' · in unison':''} · ${segment.unison?segment.unison.map(member=>member.voice).join(' + '):segment.voice}${connectionLabel?` · ${connectionLabel}`:''}${isMutedNarrator?' · Muted':''}`;
+      const details=`${segment.unison?' · in unison':''} · ${segment.unison?segment.unison.map(member=>member.voice).join(' + '):segment.voice}${connectionLabel?` · ${connectionLabel}`:''}${isMutedNarrator?' · Muted':''}`;
+      if(segment.kind || segment.unison)label.textContent=`${index+1}. ${segment.speaker}${details}`;
+      else label.append(`${index+1}. `,speakerChoice(index,segment.speaker),details);
       const text=document.createElement('div');text.className='et-transcript';text.textContent=segment.text;
       const cacheStatus=document.createElement('small');cacheStatus.dataset.cacheIndex=index;cacheStatus.textContent='Checking cache…';
       const heading=document.createElement('div');heading.className='et-plan-heading';heading.append(label,cacheStatus);
@@ -2939,6 +2942,29 @@ export async function setup(ctx) {
     refreshDeliveryGuidance();
     renderTtsInspector();
     renderMixer();void refreshCacheStatus();refreshSectionControls();
+  }
+  // Fixing a wrong speaker needs no JSON: the block is re-validated against the cast and saved with
+  // the plan, and only its own audio is made again (cached clips are keyed by voice and text).
+  function speakerChoice(index,current){
+    const select=document.createElement('select');select.className='et-plan-speaker';
+    select.setAttribute('aria-label',`Speaker of block ${index+1}`);
+    const cast=casting(config),names=new Map();
+    for(const name of [current,...[...cast.fixed,...cast.npcs].filter(actor=>!actor.excluded).map(actor=>actor.speaker),...plan.segments.filter(segment=>!segment.kind).map(segment=>segment.speaker)])
+      if(name && !names.has(normalizeName(name)))names.set(normalizeName(name),name);
+    for(const name of names.values())option(select,name,name);
+    select.value=current;
+    select.onchange=()=>run(()=>changeSpeaker(index,select.value));
+    return select;
+  }
+  async function changeSpeaker(index,speaker){
+    if(!planSource || !plan)throw new Error('Plan a message first.');
+    const cast=casting(config),segments=plan.segments.map(segment=>withoutBase(segment,cast));
+    const voice=plan.segments.find(segment=>!segment.kind && normalizeName(segment.speaker)===normalizeName(speaker))?.voice;
+    const {voice:_previous,route:_route,...rest}=segments[index];
+    segments[index]={...rest,speaker,...(voice?{voice}:{})};
+    const edited=validatePlan({segments},planSource.transcript,cast);
+    plan={...edited,warning:plan.warning || ''};rememberPlanCast(edited);await persistConfig(chatId,config);
+    await persistPlan();renderCast();renderPreview();status(`Block ${index+1} is now read by ${speaker}; saved with this plan.`);
   }
   async function refreshCacheStatus(){
     if(!planSource)return;
