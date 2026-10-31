@@ -1895,7 +1895,7 @@ const INJECT_TAIL=/<!--\s*choir\b(?![\s\S]*-->)[\s\S]*$/i;
 export function readInjectedPlan(content) {
   const body=[...String(content || '').matchAll(INJECT_BLOCK)].at(-1)?.[1];
   if(body===undefined)return null;
-  const quotes=new Map(),npcs=[],sfx=[],ambience=[];
+  const quotes=new Map(),npcs=[],sfx=[],ambience=[],skip=[];
   for(const line of body.split(/\r?\n/)){
     const parts=line.trim().replace(/^[-* ]+/,'').split('|').map(part=>part.trim());
     const tag=(parts[0] || '').toUpperCase();
@@ -1907,8 +1907,9 @@ export function readInjectedPlan(content) {
     else if(/^Q\d+$/.test(tag) && parts[1])quotes.set(Number(tag.slice(1)),{speaker:parts[1],style:parts[2] || '',opening:parts[3] || ''});
     else if(tag==='NPC' && parts[1] && parts[2])npcs.push(parts.slice(1,4));
     else if((tag==='SFX' || tag==='AMB') && parts[1] && parts[2])(tag==='SFX'?sfx:ambience).push({query:parts[1],trigger:parts[2].replace(/^["“'‘]+|["”'’]+$/g,'')});
+    else if(tag==='SKIP' && parts[1])skip.push(parts[1].replace(/^["“'‘]+|["”'’]+$/g,''));
   }
-  return quotes.size || sfx.length || ambience.length?{quotes,npcs,sfx,ambience}:null;
+  return quotes.size || sfx.length || ambience.length || skip.length?{quotes,npcs,sfx,ambience,skip}:null;
 }
 
 export function stripInjectedPlan(content) {
@@ -1959,6 +1960,14 @@ export function injectedSoundCues(segments, plan) {
   return {cues:place(plan.sfx),ambience:place(plan.ambience)};
 }
 
+// SKIP rows name the first words of lines that are not story (trackers, stat
+// lists, headers); they replace the non-story check for this reply.
+export function injectedSkipLines(lines, plan) {
+  const words=text=>String(text || '').normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu,' ').trim().split(/\s+/).filter(Boolean);
+  const starts=(plan?.skip || []).map(words).filter(start=>start.length);
+  return lines.flatMap((line,index)=>{const own=words(line);return starts.some(start=>start.every((word,at)=>own[at]===word))?[index]:[];});
+}
+
 export function injectionPrompt({cast=[], sfx=false, ambience=false}={}) {
   const sounds=[
     sfx?'SFX|1 to 3 English search words naming the sound|2 to 6 exact consecutive words from your reply where it happens (at most 4, only concrete sounds that happen now: doors, steps, impacts, weather; never voices or music)':'',
@@ -1970,9 +1979,11 @@ export function injectionPrompt({cast=[], sfx=false, ambience=false}={}) {
     'Q1|Speaker|delivery|first words',
     'Q2|Speaker|delivery|first words',
     'NPC|Name|gender|age and tone',
+    'SKIP|first words',
     ...(sounds.length?sounds:[]),
     '-->',
     'One Q row per quoted passage of dialogue in your reply, in order (Q1 is the first "…" quote); first words are the first 3 words inside its quotation marks, copied exactly. Speaker is the exact name of who says it aloud; use NOT_SPOKEN for quoted words nobody says aloud (terms, signs, written text, remembered speech). Cast: '+(cast.length?cast.join(', '):'none listed')+'.',
+    'For each line of your reply that is not story to be read aloud (status or tracker lines, stat lists, headers, menus, notes to the reader), add SKIP|its first 4 words, copied exactly. Write no SKIP rows when every line is story.',
     'For each speaker not in the cast, add one separate NPC row: NPC|Name|female, male or neutral|young, middle-aged or old and 1 to 3 tone words. Their Q rows use just the name.',
     'delivery is 2 to 6 words of tone for that line, restrained unless the scene clearly calls for more, e.g. "warm, slightly amused" or "quiet, tense".'
   ].join('\n');

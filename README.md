@@ -43,7 +43,7 @@ Earlier releases are described in the [changelog](CHANGELOG.md).
 
 ### Plan inside the reply
 
-Under **Settings → Planner**, with the Standard LLM planner selected, **Plan inside the reply** lets the model that writes each reply also write Choir's casting: who says each quoted line, how, any new characters, and sound effects. It goes in a hidden note at the end of the reply that never shows in the chat. A reply with that note is planned without a planner or sound-choice call; lines it misses go to the planner, and a reply without it is planned as usual.
+Under **Settings → Planner**, with the Standard LLM or Jev planner selected, **Plan inside the reply** lets the model that writes each reply also write Choir's casting: who says each quoted line, how, any new characters, sound effects, and which lines are not story (trackers, status lines). A reply whose note covers every quote needs no planner, Jev, sound-choice or non-story call. It goes in a hidden note at the end of the reply that never shows in the chat. Lines the note misses go to the planner, and a reply without it is planned as usual.
 
 - **Automatic** adds a short instruction (about 250 tokens) to each new reply, regeneration and swipe.
 - **Preset macro** adds nothing by itself: put `{{choirPrompt}}` where you want the instruction in your preset.

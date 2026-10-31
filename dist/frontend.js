@@ -1896,7 +1896,7 @@ const INJECT_TAIL=/<!--\s*choir\b(?![\s\S]*-->)[\s\S]*$/i;
 function readInjectedPlan(content) {
   const body=[...String(content || '').matchAll(INJECT_BLOCK)].at(-1)?.[1];
   if(body===undefined)return null;
-  const quotes=new Map(),npcs=[],sfx=[],ambience=[];
+  const quotes=new Map(),npcs=[],sfx=[],ambience=[],skip=[];
   for(const line of body.split(/\r?\n/)){
     const parts=line.trim().replace(/^[-* ]+/,'').split('|').map(part=>part.trim());
     const tag=(parts[0] || '').toUpperCase();
@@ -1908,8 +1908,9 @@ function readInjectedPlan(content) {
     else if(/^Q\d+$/.test(tag) && parts[1])quotes.set(Number(tag.slice(1)),{speaker:parts[1],style:parts[2] || '',opening:parts[3] || ''});
     else if(tag==='NPC' && parts[1] && parts[2])npcs.push(parts.slice(1,4));
     else if((tag==='SFX' || tag==='AMB') && parts[1] && parts[2])(tag==='SFX'?sfx:ambience).push({query:parts[1],trigger:parts[2].replace(/^["“'‘]+|["”'’]+$/g,'')});
+    else if(tag==='SKIP' && parts[1])skip.push(parts[1].replace(/^["“'‘]+|["”'’]+$/g,''));
   }
-  return quotes.size || sfx.length || ambience.length?{quotes,npcs,sfx,ambience}:null;
+  return quotes.size || sfx.length || ambience.length || skip.length?{quotes,npcs,sfx,ambience,skip}:null;
 }
 
 function stripInjectedPlan(content) {
@@ -1960,6 +1961,14 @@ function injectedSoundCues(segments, plan) {
   return {cues:place(plan.sfx),ambience:place(plan.ambience)};
 }
 
+// SKIP rows name the first words of lines that are not story (trackers, stat
+// lists, headers); they replace the non-story check for this reply.
+function injectedSkipLines(lines, plan) {
+  const words=text=>String(text || '').normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu,' ').trim().split(/\s+/).filter(Boolean);
+  const starts=(plan?.skip || []).map(words).filter(start=>start.length);
+  return lines.flatMap((line,index)=>{const own=words(line);return starts.some(start=>start.every((word,at)=>own[at]===word))?[index]:[];});
+}
+
 function injectionPrompt({cast=[], sfx=false, ambience=false}={}) {
   const sounds=[
     sfx?'SFX|1 to 3 English search words naming the sound|2 to 6 exact consecutive words from your reply where it happens (at most 4, only concrete sounds that happen now: doors, steps, impacts, weather; never voices or music)':'',
@@ -1971,9 +1980,11 @@ function injectionPrompt({cast=[], sfx=false, ambience=false}={}) {
     'Q1|Speaker|delivery|first words',
     'Q2|Speaker|delivery|first words',
     'NPC|Name|gender|age and tone',
+    'SKIP|first words',
     ...(sounds.length?sounds:[]),
     '-->',
     'One Q row per quoted passage of dialogue in your reply, in order (Q1 is the first "…" quote); first words are the first 3 words inside its quotation marks, copied exactly. Speaker is the exact name of who says it aloud; use NOT_SPOKEN for quoted words nobody says aloud (terms, signs, written text, remembered speech). Cast: '+(cast.length?cast.join(', '):'none listed')+'.',
+    'For each line of your reply that is not story to be read aloud (status or tracker lines, stat lists, headers, menus, notes to the reader), add SKIP|its first 4 words, copied exactly. Write no SKIP rows when every line is story.',
     'For each speaker not in the cast, add one separate NPC row: NPC|Name|female, male or neutral|young, middle-aged or old and 1 to 3 tone words. Their Q rows use just the name.',
     'delivery is 2 to 6 words of tone for that line, restrained unless the scene clearly calls for more, e.g. "warm, slightly amused" or "quiet, tense".'
   ].join('\n');
@@ -3648,7 +3659,7 @@ export async function setup(ctx) {
     <div class="et-grid">
       <label>Planner engine<select data-et="plannerMode"><option value="llm">Standard LLM Connection</option><option value="jev">Jev System 1 (TypeSafe AI)</option><option value="heuristic">Heuristic (local only)</option></select></label>
       <label data-et="llmPlannerBox">Planner LLM connection<select data-et="planner"><option value="">Default LLM connection</option></select></label>
-      <label data-et="injectPlanBox" title="The model that writes each reply also writes Choir's casting and sound effects in a hidden note at its end. Saves the planner and sound-choice calls; adds about 250 tokens to each reply request. Choir plans normally when the note is missing. Needs the interceptor permission (Extensions → Choir).">Plan inside the reply<select data-et="injectPlan"><option value="off">Off (separate planner call)</option><option value="auto">Automatic (added to each reply)</option><option value="macro">Preset macro: place {{choirPrompt}}</option></select></label>
+      <label data-et="injectPlanBox" title="The model that writes each reply also writes Choir's casting, sound effects and non-story lines in a hidden note at its end. A reply with the note needs no planner, sound-choice or non-story call; adds about 250 tokens to each reply request. Choir plans normally when the note is missing. Needs the interceptor permission (Extensions → Choir).">Plan inside the reply<select data-et="injectPlan"><option value="off">Off (separate planner call)</option><option value="auto">Automatic (added to each reply)</option><option value="macro">Preset macro: place {{choirPrompt}}</option></select></label>
       <label data-et="jevPlannerBox" hidden>Decision connection<select data-et="decisionConnection"><option value="">Default Decision connection</option></select></label>
       <input data-et="jevKey" type="hidden">
       <input data-et="jevEndpoint" type="hidden">
@@ -5062,7 +5073,7 @@ export async function setup(ctx) {
     const cast=[...new Set([...value.fixed,...(value.npcs || [])].map(actor=>String(actor.speaker || '').trim())
       .filter(name=>name && !placeholders.has(normalizeName(name))).concat(activePersonaName?[activePersonaName]:[]))];
     const key=String(value.freesoundApiKey || '').trim();
-    const context={chatId:targetChat,delivery:resolvePlannerMode(value)==='llm'?injectDelivery(value):'off',cast,
+    const context={chatId:targetChat,delivery:resolvePlannerMode(value)!=='heuristic'?injectDelivery(value):'off',cast,
       sfx:Boolean(key) && value.enableSfx!==false,ambience:Boolean(key) && value.enableAmbience!==false};
     const signature=JSON.stringify(context),sent=sentInjectContexts.get(targetChat);
     if(sent===signature && !force || context.delivery==='off' && sent===undefined)return;
@@ -5921,8 +5932,8 @@ export async function setup(ctx) {
     const isHeuristic=mode==='heuristic';
     if($('llmPlannerBox'))$('llmPlannerBox').hidden=false;
     if($('jevPlannerBox'))$('jevPlannerBox').hidden=!isJev;
-    // Only the LLM planner reads casting written with the reply.
-    if($('injectPlanBox'))$('injectPlanBox').hidden=mode!=='llm';
+    // The LLM and Jev planners read casting written with the reply; the local heuristic does not.
+    if($('injectPlanBox'))$('injectPlanBox').hidden=isHeuristic;
     if($('useFastClassifier'))$('useFastClassifier').checked=isHeuristic;
     $('plannerHint').textContent=isHeuristic?'Runs on this device. Unclear dialogue stops planning.':isJev?'Jev picks speakers; your Planner LLM reads the card once.':'';
     $('plannerHint').hidden=!$('plannerHint').textContent;
@@ -6427,10 +6438,11 @@ export async function setup(ctx) {
   // The non-story check runs once per cleaned transcript. Its saved line numbers give every later
   // read of the reply the same text; without a signal only the saved result is used.
   const skipChecks=new Map();
-  async function storyTranscript(transcript,signal){
+  async function storyTranscript(transcript,signal,written=null){
     if(!transcript || config?.skipMeta===false || resolvePlannerMode(config)==='heuristic')return transcript;
     const key=`skip:${await sha256Hex(transcript)}`;
-    let skip=skipChecks.get(key) ?? await ctx.settings.get(key).catch(()=>null);
+    // A reply written with Choir's block lists its own non-story lines: no check needed.
+    let skip=written?injectedSkipLines(transcriptLines(transcript),written):skipChecks.get(key) ?? await ctx.settings.get(key).catch(()=>null);
     if(!Array.isArray(skip) && signal){
       status('Checking for non-story blocks…');
       try{
@@ -6475,9 +6487,11 @@ export async function setup(ctx) {
       if(ctrl.signal.aborted || token!==revision || targetChat!==chatId || disposed)return;
       const stripBase=segments=>segments.map(segment=>withoutBase(segment,snapshot));
       const plannerMode=resolvePlannerMode(config);
+      // Casting, sounds and non-story lines the roleplay model wrote with this reply (Plan inside the reply).
+      const written=injectDelivery(config)!=='off' && plannerMode!=='heuristic'?readInjectedPlan(content):null;
       if(plannerMode!=='heuristic'){
         await rpc('ping',{},ctrl.signal,8000);if(token!==revision || ctrl.signal.aborted)return;
-        transcript=await storyTranscript(transcript,ctrl.signal);
+        transcript=await storyTranscript(transcript,ctrl.signal,written);
         context=(await Promise.all(ctx.messages.getRecent(12).filter(v=>v.id!==messageId && !v.extra?.is_system)
           .map(async v=>`${v.name || (v.is_user ? 'Persona':'Character')}: ${(await storyTranscript(transcriptFromMessage(v.content,config?.ignoredTags))).slice(0,1000)}`))).join('\n').slice(-4000);
         if(token!==revision || ctrl.signal.aborted)return;
@@ -6489,8 +6503,8 @@ export async function setup(ctx) {
         transcript=replacePersonaMacro(transcript,name);context=replacePersonaMacro(context,name);
         snapshot=personaFallbackCast(snapshot,name);
       }
-      // Casting and sounds the roleplay model wrote with this reply (Plan inside the reply).
-      const written=injectDelivery(config)!=='off' && plannerMode==='llm'?readInjectedPlan(content):null;
+      // With every quote covered by the block, no planner (LLM or Jev) is asked.
+      const writtenRows=written?injectedCastRows(transcript,written):null;
       let fastPlan = null;
       if (plannerMode==='heuristic') {
         const failure={};
@@ -6509,7 +6523,7 @@ export async function setup(ctx) {
         snapshot.characterProfiles=await plannerProfiles(snapshot,ctrl.signal);
         if(ctrl.signal.aborted || token!==revision || targetChat!==chatId)return;
       }
-      if (!fastPlan && plannerMode==='jev') {
+      if (!fastPlan && plannerMode==='jev' && !writtenRows?.covered) {
         try {
           status('Classifying dialogue with Jev System 1 model…');
           const jevKey = (config.jevApiKey || $('jevKey')?.value || '').trim();
@@ -6546,8 +6560,8 @@ export async function setup(ctx) {
         try {
           result = await rpc('plan', {
             transcript,
-            config: snapshot,
-            ...(written ? { injected: injectedCastRows(transcript, written) } : {}),
+            config: writtenRows?.covered && plannerMode!=='llm' ? { ...snapshot, plannerMode: 'llm', useJev: false, useFastClassifier: false } : snapshot,
+            ...(writtenRows ? { injected: writtenRows } : {}),
             timeoutMs: 240000,
             context,
             connectionId: config.planner,

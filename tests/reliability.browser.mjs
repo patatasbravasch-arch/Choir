@@ -4419,11 +4419,26 @@ test('progress counter keeps the actual resumed clip and seek position after lea
  }finally{await h.close();}
 });
 
-test('Plan inside the reply sits on the Planner settings page and shows only with the LLM planner',async()=>{
+test('Plan inside the reply sits on the Planner settings page and shows with the LLM and Jev planners',async()=>{
  const h=await harness();try{
   const box=h.$('injectPlan').closest('label');
   assert.equal(box.closest('[data-choir-destination]')?.dataset.choirDestination,'planner');
   h.$('plannerMode').value='llm';h.$('plannerMode').dispatchEvent(new h.dom.window.Event('change'));assert.equal(box.hidden,false);
-  h.$('plannerMode').value='jev';h.$('plannerMode').dispatchEvent(new h.dom.window.Event('change'));assert.equal(box.hidden,true);
+  h.$('plannerMode').value='jev';h.$('plannerMode').dispatchEvent(new h.dom.window.Event('change'));assert.equal(box.hidden,false);
+  h.$('plannerMode').value='heuristic';h.$('plannerMode').dispatchEvent(new h.dom.window.Event('change'));assert.equal(box.hidden,true);
+ }finally{await h.close();}
+});
+
+test('a reply carrying a complete casting block skips Jev and the non-story check and sends its rows to planning',async()=>{
+ const h=await harness();try{
+  h.$('injectPlan').value='auto';h.$('injectPlan').dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));
+  h.$('plannerMode').value='jev';h.$('plannerMode').dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));
+  h.message.content='Status: day 3\nThe hall fell silent. "Hello," Mira said.\n<!--choir\nQ1|Mira|warm|Hello\nSKIP|Status: day 3\n-->';
+  await h.plan();
+  assert.equal(h.requests.filter(request=>request.action==='planJev').length,0);
+  assert.equal(h.requests.filter(request=>request.action==='skipCheck').length,0);
+  const plan=h.requests.filter(request=>request.action==='plan').at(-1);
+  assert.equal(plan.input.injected.covered,true);assert.equal(plan.input.config.plannerMode,'llm');
+  assert.ok(!plan.input.transcript.includes('Status: day 3'));
  }finally{await h.close();}
 });

@@ -973,3 +973,11 @@ test('casting rows align to quotes by their first words, so a model counting a s
   assert.equal(core.injectedCastRows('"Small motors," he said.\n\n"Rewinding coils."',far).covered,false);
   assert.match(core.injectionPrompt({cast:['Weston']}),/Q1\|Speaker\|delivery\|first words/);
 });
+
+test('SKIP rows in the casting block mark non-story lines by their first words',async()=>{
+  const core=await import('../src/core.js');
+  const plan=core.readInjectedPlan('<!--choir\nSKIP|Escalation: E1 Simmer\nSKIP|"Active Pressures"\n-->');
+  assert.deepEqual(plan.skip,['Escalation: E1 Simmer','Active Pressures']);
+  assert.deepEqual(core.injectedSkipLines(core.transcriptLines('Escalation: E1 Simmer\nThe room was quiet.\nActive Pressures:\n"Hi," he said.'),plan),[0,2]);
+  assert.match(core.injectionPrompt({cast:[]}),/SKIP\|its first 4 words/);
+});
