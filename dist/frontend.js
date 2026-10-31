@@ -3104,7 +3104,7 @@ function createDrawerNavigation(root) {
     const link=button('',settingsHome);link.className='et-settings-link';el('strong',title,link);el('small',description,link);el('span','›',link);destinations[key]=page(key,title,'settings',link);
   }
   for(const name of ['connectionMode','connection','styleParam','fishVoiceSource'])moveLabel(name,destinations.connections);move('testTts',destinations.connections);move('load',destinations.connections);
-  for(const name of ['plannerMode','planner','decisionConnection','allowLlmFallback','plannerTokens'])moveLabel(name,destinations.planner);for(const name of ['jevKey','jevEndpoint','plannerHint','testPlanner'])move(name,destinations.planner);
+  for(const name of ['plannerMode','planner','injectPlan','decisionConnection','allowLlmFallback','plannerTokens'])moveLabel(name,destinations.planner);for(const name of ['jevKey','jevEndpoint','plannerHint','testPlanner'])move(name,destinations.planner);
   moveLabel('paranoidMode',destinations.planner);
   const filters=field('ignoredTags').closest('details');filters.querySelector('summary')?.remove();destinations.filters.append(...filters.childNodes);filters.remove();
   const performance=field('concurrency').closest('section');for(const name of ['concurrency','chunk','prefetch','apiBase'])moveLabel(name,destinations.performance);destinations.performance.append(field('batchSpeech').closest('.et-row'));for(const hint of [...performance.querySelectorAll(':scope>p')])destinations.performance.append(hint);

@@ -4418,3 +4418,12 @@ test('progress counter keeps the actual resumed clip and seek position after lea
   assert.equal(h.synthesis.length,generated);
  }finally{await h.close();}
 });
+
+test('Plan inside the reply sits on the Planner settings page and shows only with the LLM planner',async()=>{
+ const h=await harness();try{
+  const box=h.$('injectPlan').closest('label');
+  assert.equal(box.closest('[data-choir-destination]')?.dataset.choirDestination,'planner');
+  h.$('plannerMode').value='llm';h.$('plannerMode').dispatchEvent(new h.dom.window.Event('change'));assert.equal(box.hidden,false);
+  h.$('plannerMode').value='jev';h.$('plannerMode').dispatchEvent(new h.dom.window.Event('change'));assert.equal(box.hidden,true);
+ }finally{await h.close();}
+});
