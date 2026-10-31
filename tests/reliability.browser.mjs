@@ -461,6 +461,7 @@ async function harness(mixerPreferences,mobile=false){
   const reload=async()=>{cleanup();cleanup=await setup(ctx);};
   return {ctx,dom,state,store,requests,synthesis,audios,audioBlobs,message,events,subscriptions,toolbarActions,connections,root,footer,toolbar,$,click,plan,play,reload,async remount(){cleanup=await setup(ctx);},
     setMobile(matches){channelLayout.matches=matches;for(const listener of layoutListeners)listener();},
+    emitBackend(message){backend?.(message);},
     releaseHeld(){for(const request of heldPlans.splice(0))backend?.({namespace:'choir',id:request.id,result:{segments:[{speaker:'Narrator',voice:'n',text:request.input.transcript,style:''}]}});},
     async close(){cleanup();await tick();URL.createObjectURL=createObjectURL;Object.assign(globalThis,original);dom.window.close();}};
 }
@@ -4440,5 +4441,20 @@ test('a reply carrying a complete casting block skips Jev and the non-story chec
   const plan=h.requests.filter(request=>request.action==='plan').at(-1);
   assert.equal(plan.input.injected.covered,true);assert.equal(plan.input.config.plannerMode,'llm');
   assert.ok(!plan.input.transcript.includes('Status: day 3'));
+ }finally{await h.close();}
+});
+
+test('Paranoid mode lists every call in one list, with totals per kind, and keeps none while it is off',async()=>{
+ const h=await harness();try{
+  const call={at:Date.now(),kind:'LLM',purpose:'Planner',model:'deepseek-flash',ms:1500,input:2000,output:150};
+  h.emitBackend({namespace:'choir',call});
+  h.$('paranoidMode').checked=true;h.$('paranoidMode').dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));
+  h.emitBackend({namespace:'choir',call});h.emitBackend({namespace:'choir',call:{at:Date.now(),kind:'Decision',purpose:'Jev speakers',questions:4,ms:300}});
+  h.$('ttsInspectorOpen').click();h.$('ttsInspectorView').value='calls';h.$('ttsInspectorView').dispatchEvent(new h.dom.window.Event('change'));
+  assert.equal(h.$('ttsInspectorView').options[2].textContent,'All calls (2)');
+  assert.match(h.$('ttsInspectorNote').textContent,/0 TTS · 1 LLM \(2\D?150 tokens reported\) · 1 Decision/);
+  const rows=[...h.$('ttsRequests').children].map(row=>row.textContent);
+  assert.match(rows[0],/Decision · Jev speakers · 4 questions/);assert.match(rows[1],/LLM · Planner · deepseek-flash · 1500 ms · 2000 in \/ 150 out/);
+  h.$('clearTtsLog').click();assert.equal(h.$('ttsInspectorView').options[2].textContent,'All calls (0)');
  }finally{await h.close();}
 });

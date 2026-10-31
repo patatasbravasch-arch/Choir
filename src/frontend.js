@@ -431,7 +431,7 @@ export async function setup(ctx) {
     </details></section>
     <section data-et="ttsInspector" hidden>
       <p class="et-hint">Exact request bodies from Choir to the Lumiverse TTS relay, after attribution, voice selection, pronunciation and tone injection. For grouped speech, parameters.turns contains each speaker's text and voice. The relay may format the provider request further.</p>
-      <div class="et-row"><label>Show<select data-et="ttsInspectorView"><option value="prepared">Prepared requests</option><option value="sent">Attempted calls (0)</option></select></label><button data-et="refreshTtsInspector">Refresh view</button><button data-et="clearTtsLog">Clear call log</button></div>
+      <div class="et-row"><label>Show<select data-et="ttsInspectorView"><option value="prepared">Prepared requests</option><option value="sent">Attempted calls (0)</option><option value="calls" selected>All calls (0)</option></select></label><button data-et="refreshTtsInspector">Refresh view</button><button data-et="clearTtsLog">Clear call log</button></div>
       <p data-et="ttsInspectorNote" class="et-hint"></p>
       <div data-et="ttsRequests"></div>
     </section>
@@ -736,6 +736,8 @@ export async function setup(ctx) {
   const messageStatuses=new Map(),messageSections=new Set(),seekControls=new Set();let messagePlaybackId=null,messageOperation=null;
   let disposed=false, loadVersion=0, revision=0, visibleStops=0, voicesLoading=Promise.resolve(), config, chatId=null, plan=null, planSource=null, planAttribution=null, planningSource=null, busy=false;
   const ttsRequestLog=[];let ttsRequestSequence=0;
+  // Planner calls the backend reports (LLM and Decision), kept only while Paranoid mode is on.
+  const plannerCallLog=[];
   unsubs.push(()=>{ttsRequestLog.length=0;});
   let activeCharacterCard=null,activePersonaName='',activeCardKey='';
   const autoReplyQueue=new Map(),seenAutoGenerations=new Set();let autoReplyTimer=null,autoReplyActive=null;
@@ -1883,6 +1885,7 @@ export async function setup(ctx) {
   }
   unsubs.push(ctx.onBackendMessage(message=>{
     if(message?.namespace !== 'choir')return;
+    if(message.call){if(config?.paranoidMode){plannerCallLog.push(message.call);if(plannerCallLog.length>50)plannerCallLog.shift();if($('ttsInspectorView').value==='calls')renderTtsInspector();else $('ttsInspectorView').options[2].textContent=`All calls (${plannerCallLog.length+ttsRequestLog.length})`;}return;}
     if(message.progress){pending.get(message.id)?.progress(message.progress);return;}
     pending.get(message.id)?.(message.error?new Error(message.error):null,message.result);
   }));
@@ -1910,22 +1913,38 @@ export async function setup(ctx) {
   // Keep this body builder shared by the preview and the actual fetch. Never
   // serialize the connection object: it can contain authentication fields.
   const ttsRequestBody=(connection,{voice,text,parameters})=>JSON.stringify({connectionId:connection.id,model:connection.model,voice,text,parameters});
-  function clearTtsRequestLog(){ttsRequestLog.length=0;$('ttsRequests').replaceChildren();renderTtsInspector();}
+  function clearTtsRequestLog(){if($('ttsInspectorView').value==='calls')plannerCallLog.length=0;ttsRequestLog.length=0;$('ttsRequests').replaceChildren();renderTtsInspector();}
   function syncTtsInspector(){
     const enabled=Boolean(config?.paranoidMode);
     for(const name of ['ttsInspectorOpen','ttsInspectorFromPlan'])$(name).hidden=!enabled;
-    if(!enabled)ttsRequestLog.length=0;
+    if(!enabled){ttsRequestLog.length=0;plannerCallLog.length=0;}
     renderTtsInspector();
+  }
+  // Every speech, LLM and Decision call in one list, newest first, with totals per kind.
+  function renderAllCalls(node){
+    const calls=[...ttsRequestLog.map(call=>({...call,kind:'TTS'})),...plannerCallLog].sort((a,b)=>(a.at || 0)-(b.at || 0));
+    $('clearTtsLog').disabled=!calls.length;
+    const count=kind=>calls.filter(call=>call.kind===kind).length,tokens=plannerCallLog.reduce((sum,call)=>sum+(Number(call.input) || 0)+(Number(call.output) || 0),0);
+    $('ttsInspectorNote').textContent=`All calls since Paranoid mode was turned on or the log cleared, newest first: ${count('TTS')} TTS · ${count('LLM')} LLM (${tokens.toLocaleString()} tokens reported) · ${count('Decision')} Decision. Cache hits and replies planned from the casting written with the reply add none.`;
+    if(!calls.length){node.textContent='No calls yet.';return;}
+    for(const call of calls.reverse()){
+      const row=document.createElement('div');row.className='et-hint';
+      if(call.kind==='TTS'){row.textContent=`${call.time} · TTS · ${call.speaker || 'Narrator'} · ${call.connection} · ${call.chars} chars${call.ms!=null?` · ${call.ms} ms`:''} · ${call.status}`;node.append(row);continue;}
+      const tokens=call.input!=null || call.output!=null?` · ${call.input ?? '?'} in / ${call.output ?? '?'} out`:'';
+      row.textContent=`${new Date(call.at).toLocaleTimeString()} · ${call.kind} · ${call.purpose}${call.model?` · ${call.model}`:''}${call.questions?` · ${call.questions} questions`:''} · ${call.ms} ms${tokens}${call.error?` · failed: ${call.error}`:''}`;
+      node.append(row);
+    }
   }
   function renderTtsInspector(){
     const node=$('ttsRequests');
-    $('ttsInspectorView').options[1].textContent=`Attempted calls (${ttsRequestLog.length})`;
+    $('ttsInspectorView').options[1].textContent=`Attempted calls (${ttsRequestLog.length})`;$('ttsInspectorView').options[2].textContent=`All calls (${plannerCallLog.length+ttsRequestLog.length})`;
     if(!config?.paranoidMode){node.replaceChildren();$('ttsInspectorNote').textContent='Enable Paranoid mode in Settings → Planner.';return;}
     if(node.closest('[data-choir-destination]').hidden)return;
     node.replaceChildren();
+    if($('ttsInspectorView').value==='calls'){renderAllCalls(node);return;}
     const sent=$('ttsInspectorView').value==='sent';
     $('clearTtsLog').disabled=!ttsRequestLog.length;
-    $('ttsInspectorNote').textContent=sent?'Last 20 attempted calls in this open chat, newest first. Cache hits and saved Replay make no new TTS call. This log clears on reload, chat change or disabling the mode.':'Prepared with your current settings; these are not proof of a call. Cached audio may be reused. Plan a message first to inspect its requests.';
+    $('ttsInspectorNote').textContent=sent?'Last 50 attempted calls in this open chat, newest first. Cache hits and saved Replay make no new TTS call. This log clears on reload, chat change or disabling the mode.':'Prepared with your current settings; these are not proof of a call. Cached audio may be reused. Plan a message first to inspect its requests.';
     const append=(title,body,metadata)=>{
       const card=document.createElement('section');card.className='et-tts-request';
       const heading=document.createElement('strong');heading.textContent=title;
@@ -1965,13 +1984,13 @@ export async function setup(ctx) {
       if(speechProviderFamily(connection.provider,connection.model)==='fish_audio' && [...GEMINI_VOICES,...OPENAI_VOICES].some(item=>item.id===voice))throw new Error(`Fish Audio requires a Fish voice ID; ${voice} belongs to Gemini or OpenAI. Edit this speaker and choose a Fish voice.`);
       const body=ttsRequestBody(connection,{voice,text,parameters});
       if(config?.paranoidMode && !disposed){
-        inspected={id:++ttsRequestSequence,speaker,origin,body,connection:`${connection.name || connection.id} · ${connection.provider}`,time:new Date().toLocaleTimeString(),status:'Sending'};
-        ttsRequestLog.push(inspected);if(ttsRequestLog.length>20)ttsRequestLog.shift();renderTtsInspector();
+        inspected={id:++ttsRequestSequence,speaker,origin,body,connection:`${connection.name || connection.id} · ${connection.provider}`,time:new Date().toLocaleTimeString(),at:Date.now(),chars:String(text || '').length,status:'Sending'};
+        ttsRequestLog.push(inspected);if(ttsRequestLog.length>50)ttsRequestLog.shift();renderTtsInspector();
       }
       const response=await api('/tts/synthesize',{method:'POST',headers:{'Content-Type':'application/json'},body,signal:request.signal});
-      const blob=await response.blob();if(inspected)inspected.status='Succeeded';return blob;
+      const blob=await response.blob();if(inspected){inspected.status='Succeeded';inspected.ms=Date.now()-inspected.at;renderTtsInspector();}return blob;
     }catch(error){
-      if(inspected)inspected.status=signal?.aborted || error.name==='AbortError' && !timedOut?'Cancelled':'Failed';
+      if(inspected){inspected.status=signal?.aborted || error.name==='AbortError' && !timedOut?'Cancelled':'Failed';inspected.ms=Date.now()-inspected.at;renderTtsInspector();}
       if(signal?.aborted || error.name==='AbortError' && !timedOut)throw error;
       if(timedOut)error=new Error('TTS request timed out after 185 seconds. Try a smaller Max characters per request or check the Lumiverse relay.');
       const provider=nativeProviders.find(item=>item.id===connection.provider);

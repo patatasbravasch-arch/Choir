@@ -1310,3 +1310,15 @@ test('the casting instruction is added automatically or by {{choirPrompt}}, neve
   assert.equal((await restartedInterceptor(history,{chatId:'chat-b',userId:'user-a',generationType:'normal'})).messages.length,3);
   assert.match(await restartedMacro.handler({env:{chat:{id:'chat-b'}}}),/<!--choir/);
 });
+
+test('every planner LLM and Decision call is reported for Paranoid mode with purpose, model and tokens',async()=>{
+  const h=await harness(async()=>({content:'D1|Mira|',usage:{prompt_tokens:120,completion_tokens:8},finish_reason:'stop'}));
+  h.send('plan',{transcript:'Mira smiled. "Hello."',config:castConfig});await h.result();
+  const calls=h.sent.map(item=>item.message.call).filter(Boolean);
+  assert.deepEqual(JSON.parse(JSON.stringify(calls.map(call=>[call.kind,call.purpose,call.model,call.input,call.output]))),[['LLM','Planner','gemini-flash-text',120,8]]);
+  assert.equal(h.sent.find(item=>item.message.call).user,'user-a');
+  const decisions=await harness(null,null,null,null,null,{evaluate:async()=>({model:'jev-latest',answers:{speaker:{choice:'Alice'}}})});
+  decisions.send('testPlanner',{plannerMode:'jev'});await decisions.result();
+  const decision=decisions.sent.map(item=>item.message.call).find(Boolean);
+  assert.deepEqual(JSON.parse(JSON.stringify([decision.kind,decision.purpose,decision.questions])),['Decision','Decision',1]);
+});

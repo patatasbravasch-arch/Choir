@@ -19,3 +19,13 @@ Each read-only JSON field can be selected and copied. Check:
 This is the exact request from **Choir to Lumiverse**. Lumiverse may format it further for Google, Fish or another provider. A correct requested voice ID does not prove that the provider's recording followed every instruction.
 
 The log holds at most 20 attempted calls in memory for the open chat. It clears on reload, chat change, disabling Paranoid mode or **Clear call log**. Only the on/off preference is saved. The inspector serializes selected request fields rather than the connection object, so it does not include API keys, authentication headers or stored connection credentials.
+
+## All calls
+
+The inspector opens on **Show → All calls**: one list of every call Choir made while Paranoid mode was on, newest first (up to 50 speech and 50 LLM/Decision calls). Each row shows the time and the kind:
+
+- **TTS**: speaker, connection, characters sent, duration and status (Sending, Succeeded, Cancelled, Failed).
+- **LLM**: what it was for (Planner, Sound effects, Non-story check, Card analysis, Fish voice choice, Planner test, Jev speakers, Jev delivery, Jev new names, Jev voice genders), the model, duration, input and output tokens when the provider reports them, and any error. A temperature retry is its own row.
+- **Decision**: what it was for and how many questions it asked.
+
+The summary above the list counts TTS, LLM and Decision calls and adds up the reported tokens. Cached audio and a reply planned from the casting written with the reply (Plan inside the reply) add no rows. **Attempted calls** still shows the full body of each speech request. The list lives only in the open page: it is not saved, and it clears on reload, with **Clear call log**, or when Paranoid mode is turned off.
