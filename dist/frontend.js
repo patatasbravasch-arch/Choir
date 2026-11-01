@@ -6323,11 +6323,13 @@ export async function setup(ctx) {
     const select=document.createElement('select');select.className='et-plan-speaker';
     select.setAttribute('aria-label',`Speaker of block ${index+1}`);
     const cast=casting(config),names=new Map();
-    for(const name of [current,...[...cast.fixed,...cast.npcs].filter(actor=>!actor.excluded).map(actor=>actor.speaker),...plan.segments.filter(segment=>!segment.kind).map(segment=>segment.speaker)])
+    // A unison block's speaker is a merged label ("Alice & Bob"), not someone who can read a block alone.
+    for(const name of [current,...[...cast.fixed,...cast.npcs].filter(actor=>!actor.excluded).map(actor=>actor.speaker),...plan.segments.filter(segment=>!segment.kind && !segment.unison).map(segment=>segment.speaker)])
       if(name && !names.has(normalizeName(name)))names.set(normalizeName(name),name);
     for(const name of names.values())option(select,name,name);
     select.value=current;
-    select.onchange=()=>run(()=>changeSpeaker(index,select.value));
+    // A rejected choice puts the block's speaker back, so the dropdown never shows what was not saved.
+    select.onchange=()=>run(async()=>{try{await changeSpeaker(index,select.value);}catch(error){select.value=current;throw error;}});
     return select;
   }
   async function changeSpeaker(index,speaker){

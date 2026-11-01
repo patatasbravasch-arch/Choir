@@ -4569,3 +4569,20 @@ test('a wrong speaker is fixed from the plan block itself, saved with the plan, 
   assert.equal(h.synthesis.at(-1).text,'"Hello,"');
  }finally{await h.close();}
 });
+
+test('the speaker choice never offers a merged unison label, and a rejected choice puts the block\'s speaker back',async()=>{
+ const h=await harness();try{
+  h.state.character={name:'Levi & Cole',description:'<{{char}}>\n<levi_cline>\n# _Levi\'s Data_\n- Name: Levi Cline\n# Speech\nGentle.\n</levi_cline>\n<cole_lane>\n# _Cole\'s Data_\n- Name: Cole Lane\n# Speech\nLow and raspy.\n</cole_lane>\n</{{char}}>'};
+  const saved=structuredClone(h.store.get('chat:chat-a'));Object.assign(saved.fixed[2],{speaker:'Levi & Cole',aliases:[],pronunciation:'',accent:''});saved.plannerMode='heuristic';h.store.set('chat:chat-a',saved);
+  h.message.content='"Hi," Levi said. Levi’s hand finds the counter. Cole’s hand finds his pocket. "User," they say in unison.';
+  await h.reload();const voices=h.$('fixed').querySelectorAll('[data-choir-voice]');voices[3].value='new';voices[3].dispatchEvent(new h.dom.window.Event('change'));
+  await h.plan();assert.match(h.$('preview').textContent,/Levi & Cole · in unison/);
+  const choice=[...h.$('preview').querySelectorAll('select.et-plan-speaker')].find(select=>select.value==='Levi');
+  assert.ok(choice,'the solo line offers a speaker choice');
+  assert.ok(![...choice.options].some(option=>/&/.test(option.value)),[...choice.options].map(option=>option.value).join());
+  option:{const ghost=h.dom.window.document.createElement('option');ghost.value=ghost.textContent='Nobody known';choice.append(ghost);}
+  choice.value='Nobody known';choice.dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));
+  await until(()=>/needs a voice|Nobody known/.test(h.$('status').textContent));
+  assert.equal(choice.value,'Levi');
+ }finally{await h.close();}
+});
