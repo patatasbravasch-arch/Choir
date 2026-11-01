@@ -1059,20 +1059,28 @@ export function speechSourceUnits(transcript) {
   // paragraph without closing (the novel convention), at the paragraph's end; never across one.
   const feet=at=>/\d['\u2019]\s?\d{1,2}$/.test(transcript.slice(Math.max(0,at-7),at));
   const afterDigit=at=>/\d/.test(transcript[at-1] || '');
+  // Each paragraph is scored once, backwards and without recursion: closed[i] and opened[i]
+  // are the fewest implausible marks from its i-th quote mark onward in either state.
+  const scored=new Map();
+  const paragraphScore=stop=>{
+    if(scored.has(stop))return scored.get(stop);
+    let start=0;
+    for(let i=stop-1;i>0 && !start;i--)if(transcript[i]==='\n'){let j=i-1;while(j>=0 && /[ \t]/.test(transcript[j]))j--;if(j>=0 && transcript[j]==='\n')start=i+1;}
+    const marks=[];for(let index=transcript.indexOf('"',start);index>=0 && index<stop;index=transcript.indexOf('"',index+1))marks.push(index);
+    const closed=new Array(marks.length+1),opened=new Array(marks.length+1),blank=index=>index>=stop || /\s/.test(transcript[index]);
+    closed[marks.length]=0;opened[marks.length]=1;
+    for(let i=marks.length-1;i>=0;i--){
+      const mark=marks[i];
+      if(afterDigit(mark)){closed[i]=closed[i+1];opened[i]=Math.min(opened[i+1],feet(mark)?Infinity:closed[i+1]);}
+      else{closed[i]=(blank(mark+1)?1:0)+opened[i+1];opened[i]=(/\s/.test(transcript[mark-1] || '')?1:0)+closed[i+1];}
+    }
+    const score={position:new Map(marks.map((mark,i)=>[mark,i])),closed,opened};scored.set(stop,score);return score;
+  };
   const closesQuote=at=>{
-    const end=transcript.slice(at+1).search(/\n[ \t]*\n/),stop=end<0?transcript.length:at+1+end,marks=[];
-    for(let index=transcript.indexOf('"',at+1);index>=0 && index<stop;index=transcript.indexOf('"',index+1))marks.push(index);
-    // Fewest implausible marks for the rest of the paragraph, from mark i in the given state.
-    const memo=new Map(),blank=index=>index>=stop || /\s/.test(transcript[index]);
-    const cost=(i,open)=>{
-      if(i===marks.length)return open?1:0;
-      const key=i*2+(open?1:0);if(memo.has(key))return memo.get(key);
-      const mark=marks[i];let best;
-      if(afterDigit(mark))best=Math.min(cost(i+1,open),open && !feet(mark)?cost(i+1,false):Infinity);
-      else best=open?(/\s/.test(transcript[mark-1] || '')?1:0)+cost(i+1,false):(blank(mark+1)?1:0)+cost(i+1,true);
-      memo.set(key,best);return best;
-    };
-    return cost(0,false)<=cost(0,true);
+    const blankLine=/\n[ \t]*\n/g;blankLine.lastIndex=at+1;
+    const stop=blankLine.exec(transcript)?.index ?? transcript.length;
+    const {position,closed,opened}=paragraphScore(stop),next=position.get(at)+1;
+    return closed[next]<=opened[next];
   };
   let open=false;
   const masked=transcript.replace(/\n[ \t]*\n|"/g,(mark,at)=>{
