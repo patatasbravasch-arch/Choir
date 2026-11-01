@@ -4586,3 +4586,18 @@ test('the speaker choice never offers a merged unison label, and a rejected choi
   assert.equal(choice.value,'Levi');
  }finally{await h.close();}
 });
+
+test('a speaker change whose save fails leaves both the dropdown and playback on the previous speaker',async()=>{
+ const h=await harness();try{
+  h.message.content='The hall fell silent. "Hello," Mira said. "Wait," the guard said.';
+  await h.plan();await h.play();
+  const generated=h.synthesis.length;
+  h.state.failPlanSave=true;
+  const choice=h.$('preview').querySelector('select[aria-label="Speaker of block 2"]');
+  choice.value='Guard';choice.dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));
+  await until(()=>/storage failed/i.test(h.$('status').textContent));
+  assert.equal(h.$('preview').querySelector('select[aria-label="Speaker of block 2"]').value,'Mira');
+  h.state.failPlanSave=false;await h.play();
+  assert.equal(h.synthesis.length,generated,'playback still uses the saved Mira clips');
+ }finally{await h.close();}
+});
