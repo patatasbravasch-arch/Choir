@@ -88,7 +88,7 @@ export function fishS1Cues(acting) {
     const phrase = raw.trim().replace(/^\(([^()]+)\)$/, '$1').toLowerCase();
     if (!phrase) continue;
     if (S1_CUES.has(phrase)) { cues.push(phrase); continue; }
-    const kept = phrase.split(/\b(?:not|never|no|without|rather than|instead of)\b|n't\b/)[0];
+    const kept = phrase.split(/\b(?:not|cannot|never|no|without|rather than|instead of)\b|n't\b/)[0];
     for (const word of S1_WORDS) if (new RegExp(`\\b${word}\\b`).test(kept)) cues.push(word);
     for (const [pattern, cue] of S1_SYNONYMS) if (pattern.test(kept)) cues.push(cue);
   }

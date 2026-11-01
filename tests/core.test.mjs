@@ -1031,3 +1031,18 @@ test('a sound trigger written twice in the note attaches to each occurrence in s
   const plan=readInjectedPlan('<!--choir\nSFX|door open|The door opened\nSFX|door creak|The door opened\n-->');
   assert.deepEqual(injectedSoundCues(segments,plan).cues.map(cue=>[cue.segment,cue.query]),[[0,'door open'],[2,'door creak']]);
 });
+
+test('an inch mark inside spoken dialogue stays a measurement, so later quotes keep their place',async()=>{
+  const {speechSourceUnits}=await import('../src/core.js');
+  const quotes=text=>speechSourceUnits(text).filter(unit=>unit.kind==='dialogue').map(unit=>unit.text);
+  assert.deepEqual(quotes('"The pipe is 12" wide," she said. "Hand me the wrench," he said.'),['"The pipe is 12" wide,"','"Hand me the wrench,"']);
+  assert.deepEqual(quotes('"He is 6\' 2" tall," she said. "Okay."'),['"He is 6\' 2" tall,"','"Okay."']);
+  assert.deepEqual(quotes('"I am 20" she said. "Really?"'),['"I am 20"','"Really?"']);
+  assert.deepEqual(quotes('"Wait 5", he said. "Now."'),['"Wait 5"','"Now."']);
+});
+
+test('the casting prompts explain ¦ only when a cast name contains |',async()=>{
+  const {injectionPrompt}=await import('../src/core.js');
+  assert.match(injectionPrompt({cast:['Alice | Captain']}),/¦ is part of a name; copy it exactly/);
+  assert.doesNotMatch(injectionPrompt({cast:['Mira']}),/part of a name/);
+});
