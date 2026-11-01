@@ -198,3 +198,12 @@ test('Fish S2 keeps a comma-separated direction as one cue and sends nothing for
   const fish=voiceDelivery({segment:{text:'"Hi."',style:'natural, matching the scene'},actor:{},family:'fish_audio',connection:{model:'s2.1-pro'}});
   assert.equal(fish.text,'"Hi."');
 });
+
+test('Fish S1 translates generated delivery phrases into its markers and never turns a negation into one',async()=>{
+ const {fishS1Cues}=await import('../src/delivery.js');
+ assert.deepEqual(fishS1Cues('Intensely angry'),['angry']);
+ assert.deepEqual(fishS1Cues('Quiet whisper, restrained'),['whispering','soft tone']);
+ assert.deepEqual(fishS1Cues('scared but not panicked'),['scared']);
+ assert.deepEqual(fishS1Cues('not angry'),[]);assert.deepEqual(fishS1Cues('Natural, conversational delivery'),[]);
+ assert.equal(request({family:'fish_audio',segment:{...segment,style:'Intensely angry'},actor:{...actor,style:''},connection:{provider:'fish_audio',model:'s1'},supported:{}}).text,`(angry) ${segment.text}`);
+});

@@ -1545,7 +1545,8 @@ export async function setup(ctx) {
       const route=draft.connectionMode==='one'?scope(draft):actor.route || scope(draft);
       const request=synthesisSettings({speaker:actor.speaker || 'NPC',voice:actor.voice,text:'Hello! Choir is ready to bring your story to life.',style:actor.style || '',route},draft);
       if(!request.connection)throw new Error('This TTS connection is no longer available. Refresh connections.');
-      const blob=await nativeSpeech(request.connection,{voice:actor.voice,text:request.segment.text,parameters:request.parameters},testSignal,actor.speaker || 'NPC');
+      // The provider-adapted text, as in playback: Fish S2 carries delivery and accent cues in it.
+      const blob=await nativeSpeech(request.connection,{voice:actor.voice,text:request.text,parameters:request.parameters},testSignal,actor.speaker || 'NPC');
       if(testSignal.aborted)throw abortError();
       await playBlob(blob,testSignal,actor.speaker || 'NPC',0,draft.normalizeLoudness);
     }),
@@ -1559,7 +1560,8 @@ export async function setup(ctx) {
       const lists=await Promise.all(routes.map(async route=>{
         let list;
         try{list=await ensureCatalogue(route);}
-        catch(error){if(detectProvider(route)!=='fish_audio' || !selected.some(voice=>voice.route===route && voice.id))throw error;list=[];}
+        // A Fish route without a listing still works with typed IDs or community voices.
+        catch(error){if(detectProvider(route)!=='fish_audio' || draft.fishVoiceSource==='own' && !selected.some(voice=>voice.route===route && voice.id))throw error;list=[];}
         return list.map(voice=>({...voice,route}));
       }));
       // Existing defaults support explicit provider IDs not returned by a
@@ -1575,7 +1577,11 @@ export async function setup(ctx) {
       validateNumericSettings(draft);
       // Disabled roles keep their saved choices, but need no catalogue from a
       // removed connection. Validate their identity on the available default route.
-      validateCastConfig({fixed:fixed.map(actor=>actor.excluded?{...actor,voice:'',route}:actor),npcs:[],voices:[...catalogue.values()],defaultRoute:route,npcPolicy:policy,useStyle:draft.useStyle});
+      // Fish routes cast automatically from community voices, as casting() allows in playback,
+      // so an empty Fish catalogue does not block Finish.
+      const community=draft.fishVoiceSource==='own'?[]:[...new Set([route,...fixed.map(actor=>actor.route || route),...(policy?.route?[policy.route]:[])])].filter(item=>detectProvider(item)==='fish_audio');
+      validateCastConfig({fixed:fixed.map(actor=>actor.excluded?{...actor,voice:'',route}:actor),npcs:[],voices:[...catalogue.values()],defaultRoute:route,npcPolicy:policy,useStyle:draft.useStyle,
+        ...(community.length?{communityRoutes:Object.fromEntries(community.map(item=>[item,draft.fishVoiceSource || 'community']))}:{})});
       if(disposed || signal.aborted)throw abortError();
       const [global,preset]=await Promise.all([ctx.settings.get(GLOBAL_SETTINGS_KEY),ctx.settings.get(CAPTURED_DEFAULTS_KEY)]);
       const choices=preferenceSnapshot(draft),baseline=preferenceSnapshot(initial);
@@ -1769,7 +1775,9 @@ export async function setup(ctx) {
     const context={chatId:targetChat,delivery:resolvePlannerMode(value)!=='heuristic'?injectDelivery(value):'off',cast,
       sfx:Boolean(key) && value.enableSfx!==false,ambience:Boolean(key) && value.enableAmbience!==false};
     const signature=JSON.stringify(context),sent=sentInjectContexts.get(targetChat);
-    if(sent===signature && !force || context.delivery==='off' && sent===undefined)return;
+    // Unforced, a chat never synced from this page skips Off (nothing to undo). On chat load the
+    // sync is forced, so an Off chosen elsewhere replaces the backend's saved Automatic.
+    if(sent===signature && !force || context.delivery==='off' && sent===undefined && !force)return;
     sentInjectContexts.set(targetChat,signature);
     void rpc('injectContext',context,null,8000).catch(()=>{});
   }

@@ -331,6 +331,8 @@ export async function planWithJev({ transcript, config, apiKey, endpoint, contex
   for(const u of dialogueUnits)for(const name of unisonSpeakers(transcript,u,config) || [dialogueSpeakerMap.get(u.id)]){
     const original=allCast.find(actor=>[actor.speaker,...(actor.aliases || [])].some(alias=>normalizeName(alias)===normalizeName(name)));
     const npc=!config.fixed.includes(original),actor=npc?npcCastActor(original || {speaker:name,voice:'',gender:'auto'},config):original;
+    // Quotes nobody says aloud are read by the narrator, who has no story gender: ordinary narration voice choice.
+    if(normalizeName(actor.speaker)==='narrator')continue;
     const route=actor.route || config.defaultRoute || '';
     const catalogue=catalogueFor(actor,npc);
     if(actor.voice || ['female','male','neutral'].includes(actor.gender) || config.communityRoutes?.[route]==='community' && canSearchCommunity(actor,npc) || !catalogue.some(voice=>voice.gender))continue;
@@ -745,7 +747,9 @@ if (typeof spindle !== 'undefined' && typeof spindle?.registerInterceptor === 'f
     const cleaned = messages.map(message => message.role === 'assistant' && typeof message.content === 'string' && message.content.includes('<!--') ? { ...message, content: stripInjectedBlocks(message.content) } : message);
     const info = await loadInjectContext(context?.userId, context?.chatId);
     if (!injectionWanted(info, 'auto', context?.generationType ?? '')) return { messages: cleaned };
-    return { messages: [...cleaned, { role: 'system', content: injectionPrompt(info) }], breakdown: [{ messageIndex: cleaned.length, name: 'Choir audio casting' }] };
+    // An assistant prefill (Start Reply With) must stay the final message for prefix completion.
+    const at = cleaned.length > 1 && cleaned.at(-1)?.role === 'assistant' ? cleaned.length - 1 : cleaned.length;
+    return { messages: [...cleaned.slice(0, at), { role: 'system', content: injectionPrompt(info) }, ...cleaned.slice(at)], breakdown: [{ messageIndex: at, name: 'Choir audio casting' }] };
   }, 90);
 }
 if (typeof spindle !== 'undefined' && typeof spindle?.registerMacro === 'function') {
@@ -789,8 +793,11 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
       if (typeof input.chatId !== 'string' || !input.chatId) throw new Error('Choose a chat for planning inside the reply.');
       const cast = Array.isArray(input.cast) ? input.cast.filter(name => typeof name === 'string' && name.trim()).map(name => name.trim().slice(0, 100)).slice(0, 40) : [];
       const info = { delivery: ['auto', 'macro'].includes(input.delivery) ? input.delivery : 'off', cast, sfx: input.sfx === true, ambience: input.ambience === true };
+      // Chat loads report Off too; a chat that never used the feature needs no file written.
+      const saved = await loadInjectContext(userId, input.chatId);
       injectContexts.set(input.chatId, info);if (userId) injectUsers.set(input.chatId, userId);
-      try { await spindle.userStorage?.setJson(injectFile(input.chatId), info, userId ? { userId } : {}); } catch {}
+      if (info.delivery !== 'off' || (saved?.delivery ?? 'off') !== 'off')
+        try { await spindle.userStorage?.setJson(injectFile(input.chatId), info, userId ? { userId } : {}); } catch {}
       send({ result: { interceptor: typeof spindle.registerInterceptor === 'function', macro: typeof spindle.registerMacro === 'function' } }); return;
     }
     if (message.action === 'ping') {
@@ -1099,6 +1106,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
     }
     throw new Error('Unknown Choir action.');
   })().catch(error => send({error: [jevFailure?.message, error?.message || 'Choir request failed.'].filter(Boolean).join('\nLLM fallback failed: ')}))
-    .finally(() => {clearTimeout(timer);running.delete(key);});
+    // Aborting on the way out stops sibling work still running, e.g. parallel planner parts after one failed.
+    .finally(() => {clearTimeout(timer);controller.abort();running.delete(key);});
 });
 }

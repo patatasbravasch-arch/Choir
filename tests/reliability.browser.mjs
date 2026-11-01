@@ -312,7 +312,7 @@ async function harness(mixerPreferences,mobile=false){
   };
   globalThis.document=dom.window.document;globalThis.indexedDB=factory;
   const root=document.querySelector('main'),footer=document.querySelector('footer'),toolbar=document.querySelector('[data-choir-toolbar]');
-  const state={active:'chat-a',blockAudio:false,failVoice:null,delay:0,held:false,aborted:0,previewFetches:[],bedFetches:[],previewAborted:0},store=new Map(),requests=[],synthesis=[],audios=[],audioBlobs=[],events=new Map(),subscriptions=new Map(),heldPlans=[],toolbarActions=new Map();
+  const state={active:'chat-a',blockAudio:false,failVoice:null,delay:0,held:false,aborted:0,previewFetches:[],bedFetches:[],previewAborted:0},store=new Map(),requests=[],injectContexts=[],synthesis=[],audios=[],audioBlobs=[],events=new Map(),subscriptions=new Map(),heldPlans=[],toolbarActions=new Map();
   const createObjectURL=URL.createObjectURL;URL.createObjectURL=blob=>{audioBlobs.push(blob);return createObjectURL(blob);};
   if(mixerPreferences)store.set('ui:mixer',mixerPreferences);
   const message={id:'message-a',index_in_chat:0,content:'At dawn. "Hello." "Wait." The gate closed.',name:'Mira',is_user:false};
@@ -389,6 +389,9 @@ async function harness(mixerPreferences,mobile=false){
     ui:{mount:point=>point==='chat_actions'?toolbar:undefined,registerDrawerTab:()=>({root,activate(){},destroy(){root.replaceChildren();}}),registerInputBarAction:options=>{const action={...options,onClick(handler){this.click=handler;},destroy(){if(toolbarActions.get(options.id)===action)toolbarActions.delete(options.id);}};toolbarActions.set(options.id,action);return action;},
       registerDomDecorator:options=>{decorationCleanup=options.render(footer,{messageId:message.id});return decorationCleanup;}},
     onBackendMessage:fn=>{backend=fn;return()=>backend=null;},sendToBackend:request=>{
+      // The chat's Plan inside the reply setting is reported on every load; it is kept apart so
+      // request counts stay about planning, synthesis and sounds.
+      if(request.action==='injectContext'){injectContexts.push(structuredClone(request));setTimeout(()=>backend?.({namespace:'choir',id:request.id,result:{interceptor:true,macro:true}}),0);return;}
       requests.push(structuredClone(request));if(request.action==='cancel'){previewControllers.get(request.id)?.abort();return;}
       if(request.action==='freesoundPreview'){
         const ctrl=new AbortController();previewControllers.set(request.id,ctrl);
@@ -459,7 +462,7 @@ async function harness(mixerPreferences,mobile=false){
   const plan=async()=>{$('latest').click();await tick();await until(()=>!$('latest').disabled && ($('status').textContent.startsWith('Ready:') || $('status').textContent.includes('Saved attribution')));};
   const play=async()=>{footer.querySelector('button').click();await tick();await until(()=>$('status').textContent.includes('Playback finished'));};
   const reload=async()=>{cleanup();cleanup=await setup(ctx);};
-  return {ctx,dom,state,store,requests,synthesis,audios,audioBlobs,message,events,subscriptions,toolbarActions,connections,root,footer,toolbar,$,click,plan,play,reload,async remount(){cleanup=await setup(ctx);},
+  return {ctx,dom,state,store,requests,injectContexts,synthesis,audios,audioBlobs,message,events,subscriptions,toolbarActions,connections,root,footer,toolbar,$,click,plan,play,reload,async remount(){cleanup=await setup(ctx);},
     setMobile(matches){channelLayout.matches=matches;for(const listener of layoutListeners)listener();},
     emitBackend(message){backend?.(message);},
     releaseHeld(){for(const request of heldPlans.splice(0))backend?.({namespace:'choir',id:request.id,result:{segments:[{speaker:'Narrator',voice:'n',text:request.input.transcript,style:''}]}});},
@@ -4492,6 +4495,58 @@ test('Paranoid mode lists every call in one list, with totals per kind, and keep
   const rows=[...h.$('ttsRequests').children].map(row=>row.textContent);
   assert.match(rows[0],/Decision · Jev speakers · 4 questions/);assert.match(rows[1],/LLM · Planner · deepseek-flash · 1500 ms · 2000 in \/ 150 out/);
   h.$('clearTtsLog').click();assert.equal(h.$('ttsInspectorView').options[2].textContent,'All calls (0)');
+ }finally{await h.close();}
+});
+
+test('reopening a chat after Plan inside the reply was turned off elsewhere tells the backend to stop adding it',async()=>{
+ const h=await harness();try{
+  h.$('plannerMode').value='llm';h.$('plannerMode').dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));
+  h.$('injectPlan').value='auto';h.$('injectPlan').dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));
+  const sent=()=>h.injectContexts.map(request=>request.input.delivery);
+  await until(()=>sent().includes('auto'));
+  // Another chat or tab turns it off; this page's memory of what it sent is gone after the reload.
+  for(const key of ['settings:global','chat:chat-a']){const value=h.store.get(key);if(value && Object.hasOwn(value,'injectPlan'))h.store.set(key,{...value,injectPlan:'off'});}
+  const before=sent().length;await h.reload();
+  await until(()=>sent().length>before);
+  assert.equal(sent().at(-1),'off');
+ }finally{await h.close();}
+});
+
+test('a setup voice test sends the same provider-adapted text as playback, keeping Fish accent cues',async()=>{
+ const h=await harness();try{
+  for(const connection of h.connections){connection.provider='fish_audio';connection.model='s2.1-pro';}
+  h.state.providers=[{id:'fish_audio',capabilities:{parameters:{},multiSpeaker:{maxSpeakers:5}}}];
+  const saved=h.store.get('chat:chat-a');saved.fixed[0]={...saved.fixed[0],accent:'light Irish accent'};h.store.set('chat:chat-a',saved);await h.reload();
+  const doc=h.root.ownerDocument;
+  (h.ctx.ui ||= {}).showModal=()=>{const root=doc.createElement('section');root.setAttribute('role','dialog');doc.body.append(root);return {root,onDismiss:()=>()=>{},dismiss(){root.remove();}};};
+  h.$('setupWizard').click();
+  const buttons=()=>[...(doc.querySelector('[data-choir-setup]')?.querySelectorAll('button') || [])];
+  const find=()=>buttons().find(button=>button.textContent==='Test narrator voice' && !button.disabled);
+  await until(()=>buttons().length);
+  for(let step=0;step<10 && !find();step++){const next=buttons().find(button=>/^(?:Next|Continue setup)\b/.test(button.textContent.trim()) && !button.disabled);if(!next)break;next.click();for(let i=0;i<5;i++)await tick();}
+  assert.ok(find(),'the setup offers a narrator voice test');
+  const before=h.synthesis.length;find().click();
+  await until(()=>h.synthesis.length>before);
+  assert.match(h.synthesis.at(-1).text,/\[Accent: light Irish accent\]/);
+ }finally{await h.close();}
+});
+
+test('setup finishes with automatic Fish community voices when the Fish connection lists no voices',async()=>{
+ const h=await harness();try{
+  for(const connection of h.connections){connection.provider='fish_audio';connection.model='s2.1-pro';}
+  h.state.providers=[{id:'fish_audio',capabilities:{parameters:{},multiSpeaker:{maxSpeakers:5}}}];
+  h.state.catalogues=Object.fromEntries(h.connections.map(connection=>[connection.id,{voices:[]}]));
+  const saved=h.store.get('chat:chat-a');saved.fixed=saved.fixed.map(actor=>({...actor,voice:''}));saved.plannerMode='llm';saved.planner='planner';saved.enableSfx=false;saved.enableAmbience=false;h.store.set('chat:chat-a',saved);await h.reload();
+  const doc=h.root.ownerDocument;
+  (h.ctx.ui ||= {}).showModal=()=>{const root=doc.createElement('section');root.setAttribute('role','dialog');doc.body.append(root);return {root,onDismiss:()=>()=>{},dismiss(){root.remove();}};};
+  h.$('setupWizard').click();
+  const shell=()=>doc.querySelector('[data-choir-setup]'),buttons=()=>[...(shell()?.querySelectorAll('button') || [])];
+  const finish=()=>buttons().find(button=>button.textContent==='Finish setup' && !button.disabled);
+  await until(()=>buttons().length);
+  for(let step=0;step<12 && !finish();step++){const next=buttons().find(button=>/^(?:Next|Continue setup)\b/.test(button.textContent.trim()) && !button.disabled);if(!next)break;next.click();for(let i=0;i<5;i++)await tick();}
+  assert.ok(finish(),'the setup reaches Finish');finish().click();
+  await until(()=>/Setup completed successfully|could not be saved|voice list/i.test(shell()?.textContent || ''));
+  assert.doesNotMatch(shell().textContent,/Load an available voice list first/);assert.match(shell().textContent,/Setup completed successfully/);
  }finally{await h.close();}
 });
 

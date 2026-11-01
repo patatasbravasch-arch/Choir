@@ -2,7 +2,8 @@
 // permission is involved. Keep compressed audio until the user requests WAV.
 export function createPlayedAudioCapture(context,output,{Recorder=globalThis.MediaRecorder}={}) {
   let recorder,destination,chunks=[],bytes=0,activeSince=null,duration=0,failure='',closed=false,settled=false,finishPromise,resolveFinish,timer,result,continuous=true;
-  const maxDuration=(128*1024*1024-44)/(context.sampleRate*4);
+  // Downloads are decoded to 48 kHz stereo WAV whatever the device rate (a 96 kHz device would halve the limit).
+  const maxDuration=(128*1024*1024-44)/(48000*4);
   const endInterval=()=>{if(activeSince!==null){duration+=Math.max(0,context.currentTime-activeSince);activeSince=null;}};
   const limitDuration=()=>{clearTimeout(timer);timer=setTimeout(()=>{failure='This message is too long for a WAV download (128 MB limit).';stop();},Math.max(0,maxDuration-duration)*1000);};
   const cleanup=()=>{

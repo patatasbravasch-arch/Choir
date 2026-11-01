@@ -76,6 +76,25 @@ function conciseDeliveryStyle(value) {
 }
 const S1_CUES = new Set(['happy','sad','angry','excited','calm','nervous','confident','surprised','satisfied','delighted','scared','worried','upset','frustrated','depressed','empathetic','embarrassed','disgusted','moved','proud','relaxed','grateful','curious','sarcastic','disdainful','unhappy','anxious','hysterical','indifferent','uncertain','doubtful','confused','disappointed','regretful','guilty','ashamed','jealous','envious','hopeful','optimistic','pessimistic','nostalgic','lonely','bored','contemptuous','sympathetic','compassionate','determined','resigned','in a hurry tone','shouting','screaming','whispering','soft tone','laughing','chuckling','sobbing','crying loudly','sighing','groaning','panting','gasping','yawning','snoring','audience laughing','background laughter','crowd laughing','break','long-break']);
 
+// Fish S1 keeps only its own marker names, so generated phrases ("Intensely angry",
+// "Quiet whisper, restrained") are translated: an exact marker, any marker word in the
+// phrase, then a few common synonyms. Words after a negation never become markers.
+const S1_SYNONYMS = [[/\bwhisper/, 'whispering'], [/\b(?:shout|yell)/, 'shouting'], [/\bscream/, 'screaming'], [/\b(?:quiet|soft|gentle|hushed|restrained)\b/, 'soft tone'],
+  [/\b(?:cheerful|upbeat|warm)\b/, 'happy'], [/\bamused\b/, 'chuckling'], [/\blaugh/, 'laughing'], [/\bsigh/, 'sighing'], [/\b(?:furious|irritated|annoyed)\b/, 'angry'], [/\b(?:afraid|frightened|terrified)\b/, 'scared'], [/\b(?:tense|uneasy)\b/, 'nervous'], [/\b(?:tearful|grieving)\b/, 'sad']];
+const S1_WORDS = [...S1_CUES].filter(cue => !cue.includes(' ') && !cue.includes('-'));
+export function fishS1Cues(acting) {
+  const cues = [];
+  for (const raw of String(acting || '').split(/[.,;]+/)) {
+    const phrase = raw.trim().replace(/^\(([^()]+)\)$/, '$1').toLowerCase();
+    if (!phrase) continue;
+    if (S1_CUES.has(phrase)) { cues.push(phrase); continue; }
+    const kept = phrase.split(/\b(?:not|never|no|without|rather than|instead of)\b|n't\b/)[0];
+    for (const word of S1_WORDS) if (new RegExp(`\\b${word}\\b`).test(kept)) cues.push(word);
+    for (const [pattern, cue] of S1_SYNONYMS) if (pattern.test(kept)) cues.push(cue);
+  }
+  return [...new Set(cues)].slice(0, 3);
+}
+
 export function voiceDelivery({segment, actor, narrator = false, family, connection = {}, supported = {}, styleParam, useStyle = true}) {
   const mode = characterDeliveryMode(actor, narrator);
   const modernGemini = family==='gemini' && /(?:^|\/)gemini-3\.8-flash(?:-lite)?-tts(?:$|[-:])/i.test(connection.model || '');
@@ -120,7 +139,7 @@ export function voiceDelivery({segment, actor, narrator = false, family, connect
     return event ? fishS2 ? `[${event==='short pause'?'break':event==='long pause'?'long-break':event}]` : '' : tag;
   });
   if (family === 'fish_audio' && (!parameter || !s1) && instructions) {
-    const prefix = s1 ? [...new Set(acting.split(/[.,;]+/).map(cue=>cue.trim().replace(/^\(([^()]+)\)$/,'$1').toLowerCase()).filter(cue=>S1_CUES.has(cue)))].slice(0,3).map(cue=>`(${cue})`).join('') : [...cues,...[actor?.pronunciation,actor?.accent && !supports('accent')?`Accent: ${actor.accent}`:''].filter(Boolean).map(deliveryText)].map(cue=>`[${cue}]`).join('');
+    const prefix = s1 ? fishS1Cues(acting).map(cue=>`(${cue})`).join('') : [...cues,...[actor?.pronunciation,actor?.accent && !supports('accent')?`Accent: ${actor.accent}`:''].filter(Boolean).map(deliveryText)].map(cue=>`[${cue}]`).join('');
     text = prefix ? `${prefix} ${text}` : text;
   }
   // Older Google relays accept the direction as a natural-language prompt.

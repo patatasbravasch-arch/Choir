@@ -1048,10 +1048,16 @@ export function speechSourceUnits(transcript) {
     add(text.slice(cursor),'narration');
   };
   let cursor=0;
-  // A " after a digit is an inch mark (6'2"), not a quote. A straight quote ends
-  // at its partner or, when a speech runs on to the next paragraph without
-  // closing (the novel convention), at the paragraph's end; never across one.
-  const masked=transcript.replace(/(?<=\d)"/g,'');
+  // A " after a digit is an inch mark (6'2", a 12" pipe) unless it closes an
+  // open quote ("I am 20"); a feet-and-inches mark stays one even inside a quote.
+  // A straight quote ends at its partner or, when a speech runs on to the next
+  // paragraph without closing (the novel convention), at the paragraph's end; never across one.
+  let open=false;
+  const masked=transcript.replace(/\n[ \t]*\n|"/g,(mark,at)=>{
+    if(mark!=='"'){open=false;return mark;}
+    if(/\d/.test(transcript[at-1] || '') && (!open || /\d'\d{1,2}$/.test(transcript.slice(Math.max(0,at-6),at))))return '';
+    open=!open;return mark;
+  });
   for(const match of masked.matchAll(/"[^"\n]*(?:\n(?![ \t]*\n)[^"\n]*)*(?:"|(?=\n[ \t]*\n))|“[^”]*”/g)) {
     narration(transcript.slice(cursor,match.index));add(transcript.slice(match.index,match.index+match[0].length),'dialogue');cursor=match.index+match[0].length;
   }
@@ -1315,11 +1321,11 @@ export function castingPrompt(units, config, context) {
     const profile=(config.characterProfiles || []).find(item=>item.speaker===actor.speaker);
     const role=profile?.role || (config.npcs.includes(actor)?'npc':'');
     const about=Array.from(String(profile?.description || '').replace(/\s+/g,' ')).slice(0,220).join('');
-    cast.push(`- ${actor.speaker}${aliases.length?` (aliases: ${aliases.join(', ')})`:''}${role?` [${role}]`:''}${about?`: ${about}`:''}`);
+    cast.push(`- ${castField(actor.speaker)}${aliases.length?` (aliases: ${aliases.map(castField).join(', ')})`:''}${role?` [${role}]`:''}${about?`: ${about}`:''}`);
   }
   const used=new Set(actors.map(actor=>actor.voice));
   const voices=routeVoices(config,npcRoute(config),true).slice(0,60).filter(voice=>!used.has(voice.id)).map(voice=>`${voice.id} (${voice.gender ?? ''}, ${voice.description ?? ''})`).join('; ');
-  const unvoiced=actors.filter(actor=>!(config.npcs.includes(actor)?npcCastActor(actor,config):actor).voice).map(actor=>actor.speaker);
+  const unvoiced=actors.filter(actor=>!(config.npcs.includes(actor)?npcCastActor(actor,config):actor).voice).map(actor=>castField(actor.speaker));
   const system=CASTING_SYSTEM+`\n${DELIVERY_CONTEXT_RULES}`+(unvoiced.length?`\nThese cast members have no voice yet; add an NPC line for each of them too: ${unvoiced.join(', ')}.`:'')
     +(config.communityRoutes && Object.keys(config.communityRoutes).length?`\nIf no voice id fits (none listed), write the NPC voice as young, middle-aged or old and 1 to 4 tone words from: ${FISH_VOICE_TAGS}. Then add one line: LANG|ISO 639-1 code of the story's language.`:'');
   const lines=units.map(unit=>unit.kind==='dialogue'?`D${unit.id}: ${unit.text}`:`   ${unit.text}`);
@@ -1327,13 +1333,17 @@ export function castingPrompt(units, config, context) {
     {role:'user',content:`Cast:\n${cast.join('\n')}\n\nAvailable voices for new NPCs: ${voices}\n\nEarlier chat (context only):\n${context}\n\nReply to cast (indented lines are narration):\n${lines.join('\n')}`}];
 }
 
+// Names may contain | (e.g. "Alice | Captain"), the row separator; prompts and rows write it as ¦
+// and parsed names turn it back, so such a name stays one field and keeps its assigned voice.
+export const castField=name=>String(name ?? '').replace(/\|/g,'\u00a6');
+const fromCastField=value=>String(value ?? '').replace(/\u00a6/g,'|');
 // Rows: `D<id>|speaker|style`, `NPC|name|gender|voice` and `LANG|code`; anything else is ignored.
 export function parseCastRows(text) {
   const speakers=new Map(),styles=new Map(),npcs=new Map();let language='';
   for(const line of String(text || '').split(/\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]/)) {
     const parts=line.trim().replace(/^[-* ]+|[-* ]+$/g,'').split('|').map(part=>part.trim().replace(/^[*`]+|[*`]+$/g,''));
-    if(parts.length>=2 && /^D?\d+$/.test(parts[0])){const id=Number(parts[0].replace(/^D/,''));speakers.set(id,parts[1]);styles.set(id,parts[2] ?? '');}
-    else if(parts.length>=3 && parts[0].toUpperCase()==='NPC')npcs.set(normalizeName(parts[1]),{name:parts[1],gender:parts[2].toLowerCase(),voice:parts[3] ?? ''});
+    if(parts.length>=2 && /^D?\d+$/.test(parts[0])){const id=Number(parts[0].replace(/^D/,''));speakers.set(id,fromCastField(parts[1]));styles.set(id,parts[2] ?? '');}
+    else if(parts.length>=3 && parts[0].toUpperCase()==='NPC'){const name=fromCastField(parts[1]);npcs.set(normalizeName(name),{name,gender:parts[2].toLowerCase(),voice:parts[3] ?? ''});}
     else if(parts.length>=2 && parts[0].toUpperCase()==='LANG')language=parts[1];
   }
   return {speakers,styles,npcs,language};
@@ -1353,7 +1363,8 @@ export async function castReply(transcript, config, context, llm) {
     const found=emptyCast();
     for(let attempt=0;attempt<2;attempt++) {
       const text=await llm(messages);
-      if(!String(text || '').trim())return null;
+      // A blocked repair keeps the rows already accepted (the reply's own note included).
+      if(!String(text || '').trim())return attempt?{...found,blocked:true}:null;
       const rows=parseCastRows(text);
       for(const [id,speaker] of rows.speakers)if(ids.includes(id) && !found.speakers.has(id)){found.speakers.set(id,speaker);found.styles.set(id,rows.styles.get(id));}
       for(const [key,npc] of rows.npcs)if(!found.npcs.has(key))found.npcs.set(key,npc);
@@ -1365,8 +1376,10 @@ export async function castReply(transcript, config, context, llm) {
     return found;
   };
   let cast=dialogue.length?await ask(castingPrompt(units,config,tail(context || '',3000)),dialogue):emptyCast();
-  if(!cast) {
+  if(!cast || cast.blocked) {
     // Providers that block a whole reply usually accept it in parts, sent in parallel without the earlier chat.
+    // Only quotes still missing are asked again; accepted rows are never replaced.
+    const accepted=cast || emptyCast();
     const chunks=[];let current=[],size=0;
     for(const unit of units) {
       if(current.length && size+unit.text.length>1200){chunks.push(current);current=[];size=0;}
@@ -1374,12 +1387,12 @@ export async function castReply(transcript, config, context, llm) {
     }
     chunks.push(current);
     const parts=await Promise.all(chunks.map((chunk,index)=>{
-      const ids=chunk.filter(unit=>unit.kind==='dialogue').map(unit=>unit.id),before=index?tail(chunks[index-1].map(unit=>unit.text).join(' '),600):'';
+      const ids=chunk.filter(unit=>unit.kind==='dialogue' && !accepted.speakers.has(unit.id)).map(unit=>unit.id),before=index?tail(chunks[index-1].map(unit=>unit.text).join(' '),600):'';
       return ids.length?ask(castingPrompt(chunk,config,before?`Earlier in this reply: ${before}`:''),ids):null;
     }));
-    cast=emptyCast();
+    cast=accepted;delete cast.blocked;
     for(const part of parts.filter(Boolean)) {
-      for(const [id,speaker] of part.speakers){cast.speakers.set(id,speaker);cast.styles.set(id,part.styles.get(id));}
+      for(const [id,speaker] of part.speakers)if(!cast.speakers.has(id)){cast.speakers.set(id,speaker);cast.styles.set(id,part.styles.get(id));}
       for(const [key,npc] of part.npcs)if(!cast.npcs.has(key))cast.npcs.set(key,npc);
       cast.language||=part.language;
     }
@@ -1937,18 +1950,20 @@ export function injectedCastRows(transcript, plan) {
     }
     placed.forEach(([at,quote],index)=>{
       assigned.set(at,quote);
-      // Later pieces of the same counted quote keep its speaker when only a
-      // short speech tag separates them; anything longer goes to the planner.
+      // Later pieces of the same counted quote keep its speaker only when the
+      // speech was cut mid-sentence ("Wes," she said. "Meet someone.") by a
+      // short tag; a finished line may belong to someone else, so it goes to the planner.
       const next=placed[index+1]?.[0] ?? dialogue.length;
       for(let piece=at+1;piece<next;piece++){
         const between=transcript.slice(dialogue[piece-1].end,dialogue[piece].start);
-        if(between.length>120 || /\n[ \t]*\n/.test(between))break;
+        const interrupted=/[,\u2014\u2013-][\s]*["\u201d]$/.test(dialogue[piece-1].text.trimEnd());
+        if(!interrupted || between.length>120 || /\n[ \t]*\n/.test(between))break;
         assigned.set(piece,quote);
       }
     });
   }else if(ordered.length===dialogue.length)ordered.forEach((quote,index)=>assigned.set(index,quote));
-  const rows=[...assigned].sort((a,b)=>a[0]-b[0]).map(([index,quote])=>`D${dialogue[index].id}|${quote.speaker}|${quote.style}`);
-  for(const npc of plan.npcs)rows.push(['NPC',...npc].join('|'));
+  const rows=[...assigned].sort((a,b)=>a[0]-b[0]).map(([index,quote])=>`D${dialogue[index].id}|${castField(quote.speaker)}|${quote.style}`);
+  for(const [name,...rest] of plan.npcs)rows.push(['NPC',castField(name),...rest].join('|'));
   // The story's language picks Fish community voices when no planner call reports it.
   if(plan.language)rows.push(`LANG|${plan.language}`);
   return {rows:rows.join('\n'),covered:assigned.size===dialogue.length};
@@ -1956,10 +1971,18 @@ export function injectedCastRows(transcript, plan) {
 
 // Sound rows name exact words; the sound pipeline wants the segment holding them.
 export function injectedSoundCues(segments, plan) {
-  const place=entries=>entries.flatMap(entry=>{
-    const segment=segments.findIndex(item=>cueOffset(String(item.text || ''),entry.trigger)>=0);
-    return segment<0?[]:[{segment,trigger:entry.trigger,query:entry.query}];
-  });
+  // A trigger written twice ("The door opened." early and late) means its later occurrence:
+  // each repeat continues after the segment the previous one used.
+  const place=entries=>{
+    const used=new Map();
+    return entries.flatMap(entry=>{
+      const key=String(entry.trigger || '').toLowerCase().replace(/\s+/g,' ').trim(),from=(used.get(key) ?? -1)+1;
+      const segment=segments.findIndex((item,index)=>index>=from && cueOffset(String(item.text || ''),entry.trigger)>=0);
+      if(segment<0)return [];
+      used.set(key,segment);
+      return [{segment,trigger:entry.trigger,query:entry.query}];
+    });
+  };
   return {cues:place(plan.sfx),ambience:place(plan.ambience)};
 }
 
@@ -1986,7 +2009,7 @@ export function injectionPrompt({cast=[], sfx=false, ambience=false}={}) {
     'LANG|language code',
     ...(sounds.length?sounds:[]),
     '-->',
-    'One Q row per quoted passage of dialogue in your reply, in order (Q1 is the first "…" quote); first words are the first 3 words inside its quotation marks, copied exactly. Speaker is the exact name of who says it aloud; use NOT_SPOKEN for quoted words nobody says aloud (terms, signs, written text, remembered speech). Cast: '+(cast.length?cast.join(', '):'none listed')+'.',
+    'One Q row per quoted passage of dialogue in your reply, in order (Q1 is the first "…" quote); first words are the first 3 words inside its quotation marks, copied exactly. Speaker is the exact name of who says it aloud; use NOT_SPOKEN for quoted words nobody says aloud (terms, signs, written text, remembered speech). Cast: '+(cast.length?cast.map(castField).join(', '):'none listed')+'.',
     'For each line of your reply that is not story to be read aloud (status or tracker lines, stat lists, headers, menus, notes to the reader), add SKIP|its first 4 words, copied exactly. Write no SKIP rows when every line is story.',
     'For each speaker not in the cast, add one separate NPC row: NPC|Name|female, male or neutral|young, middle-aged or old and 1 to 3 tone words. Their Q rows use just the name.',
     'LANG is the ISO 639-1 code of the language your reply is written in (en, fr, ja…).',
