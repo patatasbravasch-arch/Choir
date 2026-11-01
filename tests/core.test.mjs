@@ -1064,3 +1064,11 @@ test('a number-ending quote closes before an opening quote after punctuation or 
   assert.deepEqual(quotes('"我20"她说"真的？"'),['"我20"','"真的？"']);
   assert.deepEqual(quotes('"The pipe is 12" wide," she said. "Hand me the wrench," he said.'),['"The pipe is 12" wide,"','"Hand me the wrench,"']);
 });
+
+test('quote-heavy replies are read without deep recursion or slowdown',async()=>{
+  const {speechSourceUnits}=await import('../src/core.js');
+  const started=Date.now();
+  assert.equal(speechSourceUnits('"1" '.repeat(6000)).length,6000);
+  assert.equal(speechSourceUnits('"I am 20" she said. "Fine."\n\n'.repeat(3000)).filter(unit=>unit.kind==='dialogue').length,6000);
+  assert.ok(Date.now()-started<3000,'scored once per paragraph');
+});
