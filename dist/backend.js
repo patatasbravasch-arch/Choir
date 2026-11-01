@@ -1050,17 +1050,16 @@ function speechSourceUnits(transcript) {
   };
   let cursor=0;
   // A " after a digit is an inch mark (6'2", a 12" pipe) unless it closes an open
-  // quote: "I am 20" closes when nothing could close it later in the paragraph, or when
-  // punctuation, a capitalised word or a speech tag follows ("Room 2" Bob replied). Inside
-  // a quote, "12" wide," stays a measurement; feet-and-inches (6'2", 6' 2") always do.
+  // quote. Read as an inch mark, the next " in the paragraph would have to close the
+  // quote, and a closing quote follows a character ("12" wide," / "a 12" PVC pipe,"),
+  // never a space; an opening one usually follows a space ("Room 2" above the door.
+  // "Come in," / "J'ai 20" répondit-elle. "Oui."). So the digit-quote closes unless the
+  // next " directly follows a character. Feet-and-inches (6'2", 6' 2") are always marks.
   // A straight quote ends at its partner or, when a speech runs on to the next
   // paragraph without closing (the novel convention), at the paragraph's end; never across one.
-  const SPEECH_TAG=/^(?:i|he|she|they|we|you|it|said|says|asked|asks|replied|replies|whispered|shouted|added|answered|muttered|called|cried|told)\b/i;
   const closesQuote=at=>{
-    const rest=transcript.slice(at+1).split(/\n[ \t]*\n/)[0];
-    if(!rest.includes('"'))return true;
-    const next=rest.replace(/^[ \t]+/,'');
-    return !next || /^[\n.,;:!?)\]\u2026\u2014\u2013-]/.test(next) || /^\p{Lu}/u.test(next) || SPEECH_TAG.test(next);
+    const rest=transcript.slice(at+1).split(/\n[ \t]*\n/)[0],next=rest.indexOf('"');
+    return next<=0 || /\s/.test(rest[next-1]);
   };
   let open=false;
   const masked=transcript.replace(/\n[ \t]*\n|"/g,(mark,at)=>{

@@ -1046,3 +1046,13 @@ test('the casting prompts explain ¦ only when a cast name contains |',async()=>
   assert.match(injectionPrompt({cast:['Alice | Captain']}),/¦ is part of a name; copy it exactly/);
   assert.doesNotMatch(injectionPrompt({cast:['Mira']}),/part of a name/);
 });
+
+test('a number-ending quote closes before lowercase prose or a foreign speech tag, and inch marks before capitals stay inside',async()=>{
+  const {speechSourceUnits}=await import('../src/core.js');
+  const quotes=text=>speechSourceUnits(text).filter(unit=>unit.kind==='dialogue').map(unit=>unit.text);
+  assert.deepEqual(quotes('The sign read "Room 2" above the door. "Come in," Alice said.'),['"Room 2"','"Come in,"']);
+  assert.deepEqual(quotes('"I am 20" the guard said. "Really?"'),['"I am 20"','"Really?"']);
+  assert.deepEqual(quotes('"J\'ai 20" répondit-elle. "Oui."'),['"J\'ai 20"','"Oui."']);
+  assert.deepEqual(quotes('"Use a 12" PVC pipe," he said. "Fine."'),['"Use a 12" PVC pipe,"','"Fine."']);
+  assert.deepEqual(quotes('"It is 12" long and 4" wide," he said.'),['"It is 12" long and 4" wide,"']);
+});
