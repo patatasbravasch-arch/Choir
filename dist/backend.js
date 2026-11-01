@@ -1049,14 +1049,23 @@ function speechSourceUnits(transcript) {
     add(text.slice(cursor),'narration');
   };
   let cursor=0;
-  // A " after a digit is an inch mark (6'2", a 12" pipe) unless it closes an
-  // open quote ("I am 20"); a feet-and-inches mark stays one even inside a quote.
+  // A " after a digit is an inch mark (6'2", a 12" pipe) unless it closes an open
+  // quote: "I am 20" closes when nothing could close it later in the paragraph, or when
+  // punctuation, a capitalised word or a speech tag follows ("Room 2" Bob replied). Inside
+  // a quote, "12" wide," stays a measurement; feet-and-inches (6'2", 6' 2") always do.
   // A straight quote ends at its partner or, when a speech runs on to the next
   // paragraph without closing (the novel convention), at the paragraph's end; never across one.
+  const SPEECH_TAG=/^(?:i|he|she|they|we|you|it|said|says|asked|asks|replied|replies|whispered|shouted|added|answered|muttered|called|cried|told)\b/i;
+  const closesQuote=at=>{
+    const rest=transcript.slice(at+1).split(/\n[ \t]*\n/)[0];
+    if(!rest.includes('"'))return true;
+    const next=rest.replace(/^[ \t]+/,'');
+    return !next || /^[\n.,;:!?)\]\u2026\u2014\u2013-]/.test(next) || /^\p{Lu}/u.test(next) || SPEECH_TAG.test(next);
+  };
   let open=false;
   const masked=transcript.replace(/\n[ \t]*\n|"/g,(mark,at)=>{
     if(mark!=='"'){open=false;return mark;}
-    if(/\d/.test(transcript[at-1] || '') && (!open || /\d'\d{1,2}$/.test(transcript.slice(Math.max(0,at-6),at))))return '';
+    if(/\d/.test(transcript[at-1] || '') && (!open || /\d['\u2019]\s?\d{1,2}$/.test(transcript.slice(Math.max(0,at-7),at)) || !closesQuote(at)))return '';
     open=!open;return mark;
   });
   for(const match of masked.matchAll(/"[^"\n]*(?:\n(?![ \t]*\n)[^"\n]*)*(?:"|(?=\n[ \t]*\n))|“[^”]*”/g)) {
@@ -1331,7 +1340,7 @@ function castingPrompt(units, config, context) {
     +(config.communityRoutes && Object.keys(config.communityRoutes).length?`\nIf no voice id fits (none listed), write the NPC voice as young, middle-aged or old and 1 to 4 tone words from: ${FISH_VOICE_TAGS}. Then add one line: LANG|ISO 639-1 code of the story's language.`:'');
   const lines=units.map(unit=>unit.kind==='dialogue'?`D${unit.id}: ${unit.text}`:`   ${unit.text}`);
   return [{role:'system',content:system},
-    {role:'user',content:`Cast:\n${cast.join('\n')}\n\nAvailable voices for new NPCs: ${voices}\n\nEarlier chat (context only):\n${context}\n\nReply to cast (indented lines are narration):\n${lines.join('\n')}`}];
+    {role:'user',content:`Cast:\n${cast.join('\n')}${cast.some(line=>line.includes('\u00a6'))?'\n(\u00a6 is part of a name; copy it exactly, never as |.)':''}\n\nAvailable voices for new NPCs: ${voices}\n\nEarlier chat (context only):\n${context}\n\nReply to cast (indented lines are narration):\n${lines.join('\n')}`}];
 }
 
 // Names may contain | (e.g. "Alice | Captain"), the row separator; prompts and rows write it as ¦
@@ -2010,7 +2019,7 @@ function injectionPrompt({cast=[], sfx=false, ambience=false}={}) {
     'LANG|language code',
     ...(sounds.length?sounds:[]),
     '-->',
-    'One Q row per quoted passage of dialogue in your reply, in order (Q1 is the first "…" quote); first words are the first 3 words inside its quotation marks, copied exactly. Speaker is the exact name of who says it aloud; use NOT_SPOKEN for quoted words nobody says aloud (terms, signs, written text, remembered speech). Cast: '+(cast.length?cast.map(castField).join(', '):'none listed')+'.',
+    'One Q row per quoted passage of dialogue in your reply, in order (Q1 is the first "…" quote); first words are the first 3 words inside its quotation marks, copied exactly. Speaker is the exact name of who says it aloud; use NOT_SPOKEN for quoted words nobody says aloud (terms, signs, written text, remembered speech). Cast: '+(cast.length?cast.map(castField).join(', '):'none listed')+'.'+(cast.some(name=>String(name).includes('|'))?' (\u00a6 is part of a name; copy it exactly, never as |.)':''),
     'For each line of your reply that is not story to be read aloud (status or tracker lines, stat lists, headers, menus, notes to the reader), add SKIP|its first 4 words, copied exactly. Write no SKIP rows when every line is story.',
     'For each speaker not in the cast, add one separate NPC row: NPC|Name|female, male or neutral|young, middle-aged or old and 1 to 3 tone words. Their Q rows use just the name.',
     'LANG is the ISO 639-1 code of the language your reply is written in (en, fr, ja…).',

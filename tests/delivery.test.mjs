@@ -207,3 +207,8 @@ test('Fish S1 translates generated delivery phrases into its markers and never t
  assert.deepEqual(fishS1Cues('not angry'),[]);assert.deepEqual(fishS1Cues('Natural, conversational delivery'),[]);
  assert.equal(request({family:'fish_audio',segment:{...segment,style:'Intensely angry'},actor:{...actor,style:''},connection:{provider:'fish_audio',model:'s1'},supported:{}}).text,`(angry) ${segment.text}`);
 });
+
+test('Fish S1 treats cannot as a negation',async()=>{
+ const {fishS1Cues}=await import('../src/delivery.js');
+ assert.deepEqual(fishS1Cues('Cannot be angry'),[]);assert.deepEqual(fishS1Cues('calm, cannot sound scared'),['calm']);
+});
