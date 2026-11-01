@@ -985,3 +985,49 @@ test('SKIP rows in the casting block mark non-story lines by their first words',
   assert.deepEqual(core.injectedSkipLines(core.transcriptLines('Escalation: E1 Simmer\nThe room was quiet.\nActive Pressures:\n"Hi," he said.'),plan),[0,2]);
   assert.match(core.injectionPrompt({cast:[]}),/SKIP\|its first 4 words/);
 });
+
+test('a straight quote after a number still closes dialogue, while inch marks stay narration',async()=>{
+  const {speechSourceUnits}=await import('../src/core.js');
+  const quotes=text=>speechSourceUnits(text).filter(unit=>unit.kind==='dialogue').map(unit=>unit.text);
+  assert.deepEqual(quotes('Alice said, "I am 20"'),['"I am 20"']);
+  assert.deepEqual(quotes('Alice said, "Room 2" Bob replied, "Room 3"'),['"Room 2"','"Room 3"']);
+  assert.deepEqual(quotes('He was 6\'2" tall. "Hi," she said.'),['"Hi,"']);
+  assert.deepEqual(quotes('"He is 6\'2" tall," she said.'),['"He is 6\'2" tall,"']);
+  assert.deepEqual(quotes('A 12" pipe rolled. "Look," he said.'),['"Look,"']);
+});
+
+test('a missing quote takes the previous speaker only when that speech was cut mid-sentence',async()=>{
+  const core=await import('../src/core.js');
+  const switched='Alice said, "First three words." Bob replied, "Different three words."';
+  assert.deepEqual(core.injectedCastRows(switched,core.readInjectedPlan('<!--choir\nQ1|Alice|warm|First three words\n-->')),{rows:'D1|Alice|warm',covered:false});
+  const split='Hannah crossed the room. "Wes," she said. "Meet someone."';
+  assert.equal(core.injectedCastRows(split,core.readInjectedPlan('<!--choir\nQ1|Hannah|warm|Wes\n-->')).covered,true);
+});
+
+test('a blocked repair keeps accepted casting and the fallback only fills the missing quotes',async()=>{
+  const {castReply,speechSourceUnits}=await import('../src/core.js');
+  const text='Alice said, "One." Bob said, "Two."',[first,second]=speechSourceUnits(text).filter(unit=>unit.kind==='dialogue').map(unit=>unit.id);
+  const config={fixed:[{speaker:'Narrator',voice:'n',style:''},{speaker:'Alice',voice:'a',style:''},{speaker:'Bob',voice:'b',style:''}],npcs:[],voices:['n','a','b'].map(id=>({id}))};
+  const answers=[`D${first}|Alice|warm`,'',`D${first}|Bob|\nD${second}|Bob|`];
+  const raw=await castReply(text,config,'',async()=>answers.shift() ?? '');
+  assert.deepEqual(raw.segments.filter(segment=>segment.speaker!=='Narrator').map(segment=>segment.speaker),['Alice','Bob']);
+});
+
+test('a cast name containing | stays one field in prompts and rows, keeping its assigned voice',async()=>{
+  const {castReply,validatePlan,resolvePlanReferences,parseCastRows,injectionPrompt}=await import('../src/core.js');
+  const config={fixed:[{speaker:'Narrator',voice:'n',style:''},{speaker:'Alice | Captain',voice:'a',style:''}],npcs:[],voices:['n','a','x'].map(id=>({id}))};
+  const text='"Hello."';let prompt='';
+  const raw=await castReply(text,config,'',async messages=>{prompt=messages[1].content;return 'D0|Alice ¦ Captain|warm';});
+  assert.match(prompt,/- Alice ¦ Captain/);
+  const plan=validatePlan(resolvePlanReferences(raw,text,config),text,config);
+  assert.deepEqual(plan.segments.map(segment=>[segment.speaker,segment.voice,segment.style]),[['Alice | Captain','a','warm']]);assert.equal(plan.npcs.length,0);
+  assert.equal(parseCastRows('NPC|Bo ¦ Guard|male|old').npcs.get('bo | guard').name,'Bo | Guard');
+  assert.match(injectionPrompt({cast:['Alice | Captain']}),/Cast: Alice ¦ Captain\./);
+});
+
+test('a sound trigger written twice in the note attaches to each occurrence in story order',async()=>{
+  const {injectedSoundCues,readInjectedPlan}=await import('../src/core.js');
+  const segments=[{text:'The door opened.'},{text:'Mira waited.'},{text:'The door opened.'}];
+  const plan=readInjectedPlan('<!--choir\nSFX|door open|The door opened\nSFX|door creak|The door opened\n-->');
+  assert.deepEqual(injectedSoundCues(segments,plan).cues.map(cue=>[cue.segment,cue.query]),[[0,'door open'],[2,'door creak']]);
+});

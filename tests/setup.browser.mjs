@@ -357,7 +357,7 @@ test('generated Choir preserves automatic lead IDs and the LLM planner without s
     for(const name of ['Narrator','Persona','Main character'])h.select(`${name} voice`,'');
     h.click('Next');h.click('Finish setup');await until(()=>h.store.get(ONBOARDING_KEY)?.completed);
     assert.deepEqual(h.store.get('settings:captured-defaults').leadVoices.map(actor=>actor.voice),['','','']);assert.equal(h.store.get('settings:global').plannerMode,'llm');
-    assert.equal(h.synthesis.length,0);assert.ok(h.rpc.every(request=>request.action==='ping'));assert.equal(h.store.get(ONBOARDING_KEY).completed,true);
+    assert.equal(h.synthesis.length,0);assert.ok(h.rpc.every(request=>['ping','injectContext'].includes(request.action)),'only pings and the chat-load setting report, no planner or speech call');assert.equal(h.store.get(ONBOARDING_KEY).completed,true);
   }finally{h.cleanup();}
 });
 
@@ -406,7 +406,7 @@ test('generated setup persists drawer choices and new-chat genders while preserv
     h.click('Finish setup');await until(()=>h.store.get(ONBOARDING_KEY)?.completed);
     const global=h.store.get('settings:global');for(const [key,value] of Object.entries({enableMixer:true,normalizeLoudness:false,batchSpeech:true,retention:'7',prefetch:2,concurrency:3,chunk:900,sectionButtons:true,showAutoPlanAction:true,enableMusic:true,loopMusic:true,autoPlan:false,auto:false}))assert.equal(global[key],value,key);
     assert.deepEqual(h.store.get('settings:captured-defaults').leadVoices.map(actor=>actor.gender),['female','neutral','male']);assert.deepEqual(h.store.get('chat:old'),before);assert.deepEqual(h.store.get('ui:mixer'),mixer);
-    assert.equal(h.synthesis.length,0);assert.ok(h.rpc.every(request=>request.action==='ping'));await until(()=>h.root().textContent.includes('Setup completed successfully'));h.click('Close');await h.switchChat('new');await until(()=>document.querySelectorAll('[data-choir-voice]').length===3);
+    assert.equal(h.synthesis.length,0);assert.ok(h.rpc.every(request=>['ping','injectContext'].includes(request.action)),'only pings and the chat-load setting report, no planner or speech call');await until(()=>h.root().textContent.includes('Setup completed successfully'));h.click('Close');await h.switchChat('new');await until(()=>document.querySelectorAll('[data-choir-voice]').length===3);
     assert.equal(document.querySelector('[data-choir-voice]').value,'other');assert.deepEqual([...document.querySelectorAll('[data-choir-gender]')].map(node=>node.value),['female','neutral','male']);
   }finally{h.cleanup();}
 });

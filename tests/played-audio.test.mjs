@@ -68,3 +68,12 @@ test('download names use character initials, chat identity and the real one-base
  assert.equal(playedAudioFilename('A/B','chat:123',2),'Choir - AB - chat_123 - 003.wav');
  assert.throws(()=>playedAudioFilename('Mira','chat-123',undefined),/message number/);
 });
+
+test('the recording length limit follows the 48 kHz WAV export, not a faster playback device',()=>{
+ const h=fixture();h.context.sampleRate=96000;
+ const delays=[],original=globalThis.setTimeout;globalThis.setTimeout=(fn,ms)=>{delays.push(ms);return 0;};
+ try{const capture=createPlayedAudioCapture(h.context,h.output,{Recorder:h.Recorder});capture.start();capture.pause();capture.start();capture.discard();}
+ finally{globalThis.setTimeout=original;}
+ // 128 MB of 48 kHz 16-bit stereo is about 699 seconds; the device rate would have given about 350.
+ assert.ok(delays.some(ms=>Math.abs(ms/1000-(128*1024*1024-44)/(48000*4))<1),`limits: ${delays.map(ms=>Math.round(ms/1000)).join(', ')}`);
+});

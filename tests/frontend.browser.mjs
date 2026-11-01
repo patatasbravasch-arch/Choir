@@ -1171,7 +1171,8 @@ test('Cue companion keeps narration when no Freesound key is configured and poin
       paragraphIndex: 0
     });
 
-    assert.equal(playRes.played,1);assert.equal(audiosPlayed.length,1);assert.equal(freesoundRequests,0);assert.equal(backendRequests.length,0);
+    // The chat's Plan inside the reply setting is reported on load; it is no planner or sound request.
+    assert.equal(playRes.played,1);assert.equal(audiosPlayed.length,1);assert.equal(freesoundRequests,0);assert.equal(backendRequests.filter(request=>request.action!=='injectContext').length,0);
     assert.equal(nativeRequests.length,1);assert.equal(nativeRequests[0].text,textWithCue);assert.equal(playRes.warnings,undefined);
     assert.equal($('sfxStatus').hidden,false);assert.match($('sfxStatus').textContent,/Freesound API key/);
 

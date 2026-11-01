@@ -821,9 +821,11 @@ test('Jev offers the persona and a scenario card by who they are, with profiles 
 
 test('LLM and Jev card-title aliases resolve to the assigned lead voice instead of NPC policy',async()=>{
   const title='Kellin Beckett || Toxic Fans',cast={...config,useStyle:false,fixed:[{speaker:'Narrator',voice:'Charon',style:''},{speaker:'Laiyah',voice:'Kore',style:''},{speaker:'Kellin Beckett',voice:'Charon',style:'',aliases:[title]}],npcPolicy:{mode:'single',voice:'Kore',route:''},characterProfiles:[{speaker:'Kellin Beckett',name:title,role:'character',description:'Kellin is the singer.'}]};
+  // A | inside a name is written as ¦ so it never splits a row; the model copies it back.
+  const written=title.replace(/\|/g,'¦');
   const llm=await harness(async input=>{
-    assert.ok(input.messages[1].content.includes(`- Kellin Beckett (aliases: ${title}) [character]: Kellin is the singer.`));
-    return {content:`D0|${title}|calm`};
+    assert.ok(input.messages[1].content.includes(`- Kellin Beckett (aliases: ${written}) [character]: Kellin is the singer.`));
+    return {content:`D0|${written}|calm`};
   });
   llm.send('plan',{transcript:'"Hello."',config:cast});const reply=(await llm.result()).message;assert.equal(reply.error,undefined);const standard=reply.result;assert.equal(standard.segments[0].speaker,'Kellin Beckett');assert.equal(standard.segments[0].voice,'Charon');assert.equal(standard.npcs.length,0);
   let choices;const decisions={evaluate:async input=>{choices=input.questions.speaker_0.criteria;return {answers:{speaker_0:{choice:title}}};}};
@@ -1335,6 +1337,25 @@ test('the casting instruction is added automatically or by {{choirPrompt}}, neve
   let restartedInterceptor,restartedMacro;await harness(null,null,null,null,null,null,{},{...extra,registerInterceptor:handler=>{restartedInterceptor=handler;},registerMacro:definition=>{restartedMacro=definition;}});
   assert.equal((await restartedInterceptor(history,{chatId:'chat-b',userId:'user-a',generationType:'normal'})).messages.length,3);
   assert.match(await restartedMacro.handler({env:{chat:{id:'chat-b'}}}),/<!--choir/);
+  // An assistant prefill (Start Reply With) stays the final message, as prefix completion requires.
+  const prefilled=await interceptor([...history,{role:'assistant',content:'Mira'}],{chatId:'chat-a',userId:'user-a',generationType:'normal'});
+  assert.equal(prefilled.messages.map(message=>message.role).join(),'user,assistant,user,system,assistant');
+  assert.equal(prefilled.messages.at(-1).content,'Mira');assert.match(prefilled.messages[3].content,/<!--choir/);assert.equal(prefilled.breakdown[0].messageIndex,3);
+});
+
+test('a failed parallel planner part stops its siblings, so a request that ended leaves nothing running',async()=>{
+  // The whole reply is blocked (empty answer), then the parts run in parallel: one fails fatally, one hangs.
+  const long='Mira paced the hall. '.repeat(70),transcript=`${long}"First." ${long}"Second."`,signals=[];let calls=0;
+  const h=await harness(async input=>{
+    calls++;signals.push(input.signal);
+    if(calls===1)return {content:''};
+    if(calls===2)throw Object.assign(new Error('HTTP 429 Too Many Requests'),{status:429});
+    return new Promise(()=>{});
+  });
+  h.send('plan',{transcript,config:castConfig});
+  assert.match((await h.result()).message.error,/429/);
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(calls,3);assert.ok(signals.length===3 && signals.every(signal=>signal?.aborted),'every outstanding generation is aborted');
 });
 
 test('every planner LLM and Decision call is reported for Paranoid mode with purpose, model and tokens',async()=>{
@@ -1347,4 +1368,30 @@ test('every planner LLM and Decision call is reported for Paranoid mode with pur
   decisions.send('testPlanner',{plannerMode:'jev'});await decisions.result();
   const decision=decisions.sent.map(item=>item.message.call).find(Boolean);
   assert.deepEqual(JSON.parse(JSON.stringify([decision.kind,decision.purpose,decision.questions])),['Decision','Decision',1]);
+});
+
+test('Jev reads a quote nobody says aloud with the narrator voice, without asking for the narrator\'s gender',async()=>{
+ const asked=[];
+ const h=await harness(null,null,null,null,null,{evaluate:async input=>{
+  asked.push(...Object.keys(input.questions));
+  if(Object.hasOwn(input.questions,'speaker_0'))return {answers:{speaker_0:{choice:'Nobody (not spoken aloud)'}}};
+  return {answers:Object.fromEntries(Object.keys(input.questions).map(key=>[key,{choice:'unknown'}]))};
+ }});
+ const config={voices:[{id:'deep',gender:'male'},{id:'bright',gender:'female'}],defaultRoute:'',useStyle:false,npcs:[],
+  fixed:[{speaker:'Narrator',voice:'',style:'',gender:'auto'},{speaker:'Mira',voice:'bright',style:''}]};
+ h.send('planJev',{transcript:'The sign read "CLOSED".',config});
+ const result=(await h.result()).message;
+ assert.equal(result.error,undefined);assert.ok(!asked.some(key=>key.startsWith('voice_gender_')),asked.join());
+ assert.ok(result.result.segments.every(segment=>segment.speaker==='Narrator' && segment.voice));
+});
+
+test('a chat that never used Plan inside the reply writes no file when its Off setting is reported, and Off replaces a saved Automatic',async()=>{
+  const files=new Map(),userStorage={getJson:async(path,{fallback})=>files.has(path)?structuredClone(files.get(path)):fallback,setJson:async(path,value)=>{files.set(path,structuredClone(value));}};
+  const h=await harness(null,null,null,null,null,null,{},{userStorage});
+  h.send('injectContext',{chatId:'chat-new',delivery:'off',cast:[]});await h.result();
+  assert.equal(files.has('inject/chat-new.json'),false);
+  files.set('inject/chat-a.json',{delivery:'auto',cast:['Mira'],sfx:false,ambience:false});
+  const later=await harness(null,null,null,null,null,null,{},{userStorage});
+  later.send('injectContext',{chatId:'chat-a',delivery:'off',cast:['Mira']});await later.result();
+  assert.equal(files.get('inject/chat-a.json').delivery,'off');
 });
