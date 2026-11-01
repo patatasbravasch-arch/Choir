@@ -1056,3 +1056,11 @@ test('a number-ending quote closes before lowercase prose or a foreign speech ta
   assert.deepEqual(quotes('"Use a 12" PVC pipe," he said. "Fine."'),['"Use a 12" PVC pipe,"','"Fine."']);
   assert.deepEqual(quotes('"It is 12" long and 4" wide," he said.'),['"It is 12" long and 4" wide,"']);
 });
+
+test('a number-ending quote closes before an opening quote after punctuation or in text without spaces',async()=>{
+  const {speechSourceUnits}=await import('../src/core.js');
+  const quotes=text=>speechSourceUnits(text).filter(unit=>unit.kind==='dialogue').map(unit=>unit.text);
+  assert.deepEqual(quotes('The sign read "Room 2". ("Come in," Alice said.)'),['"Room 2"','"Come in,"']);
+  assert.deepEqual(quotes('"我20"她说"真的？"'),['"我20"','"真的？"']);
+  assert.deepEqual(quotes('"The pipe is 12" wide," she said. "Hand me the wrench," he said.'),['"The pipe is 12" wide,"','"Hand me the wrench,"']);
+});

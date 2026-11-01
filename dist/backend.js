@@ -1049,22 +1049,36 @@ function speechSourceUnits(transcript) {
     add(text.slice(cursor),'narration');
   };
   let cursor=0;
-  // A " after a digit is an inch mark (6'2", a 12" pipe) unless it closes an open
-  // quote. Read as an inch mark, the next " in the paragraph would have to close the
-  // quote, and a closing quote follows a character ("12" wide," / "a 12" PVC pipe,"),
-  // never a space; an opening one usually follows a space ("Room 2" above the door.
-  // "Come in," / "J'ai 20" répondit-elle. "Oui."). So the digit-quote closes unless the
-  // next " directly follows a character. Feet-and-inches (6'2", 6' 2") are always marks.
+  // A " after a digit is an inch mark (6'2", a 12" pipe) or closes an open quote
+  // ("I am 20"); it never opens one. Inside an open quote, the reading chosen is the one
+  // that leaves the rest of the paragraph most plausible: an opening quote followed by a
+  // space or the end, a closing quote after a space, or a quote left open at the paragraph's
+  // end each count against it; ties close. This keeps "The pipe is 12" wide," and
+  // "a 12" PVC pipe," whole, and still closes "Room 2" before ("Come in," or 她说"…" with
+  // no spaces at all. Feet-and-inches (6'2", 6' 2") are always marks.
   // A straight quote ends at its partner or, when a speech runs on to the next
   // paragraph without closing (the novel convention), at the paragraph's end; never across one.
+  const feet=at=>/\d['\u2019]\s?\d{1,2}$/.test(transcript.slice(Math.max(0,at-7),at));
+  const afterDigit=at=>/\d/.test(transcript[at-1] || '');
   const closesQuote=at=>{
-    const rest=transcript.slice(at+1).split(/\n[ \t]*\n/)[0],next=rest.indexOf('"');
-    return next<=0 || /\s/.test(rest[next-1]);
+    const end=transcript.slice(at+1).search(/\n[ \t]*\n/),stop=end<0?transcript.length:at+1+end,marks=[];
+    for(let index=transcript.indexOf('"',at+1);index>=0 && index<stop;index=transcript.indexOf('"',index+1))marks.push(index);
+    // Fewest implausible marks for the rest of the paragraph, from mark i in the given state.
+    const memo=new Map(),blank=index=>index>=stop || /\s/.test(transcript[index]);
+    const cost=(i,open)=>{
+      if(i===marks.length)return open?1:0;
+      const key=i*2+(open?1:0);if(memo.has(key))return memo.get(key);
+      const mark=marks[i];let best;
+      if(afterDigit(mark))best=Math.min(cost(i+1,open),open && !feet(mark)?cost(i+1,false):Infinity);
+      else best=open?(/\s/.test(transcript[mark-1] || '')?1:0)+cost(i+1,false):(blank(mark+1)?1:0)+cost(i+1,true);
+      memo.set(key,best);return best;
+    };
+    return cost(0,false)<=cost(0,true);
   };
   let open=false;
   const masked=transcript.replace(/\n[ \t]*\n|"/g,(mark,at)=>{
     if(mark!=='"'){open=false;return mark;}
-    if(/\d/.test(transcript[at-1] || '') && (!open || /\d['\u2019]\s?\d{1,2}$/.test(transcript.slice(Math.max(0,at-7),at)) || !closesQuote(at)))return '';
+    if(afterDigit(at) && (!open || feet(at) || !closesQuote(at)))return '';
     open=!open;return mark;
   });
   for(const match of masked.matchAll(/"[^"\n]*(?:\n(?![ \t]*\n)[^"\n]*)*(?:"|(?=\n[ \t]*\n))|“[^”]*”/g)) {
