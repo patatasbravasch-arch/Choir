@@ -1439,8 +1439,9 @@ test('automatic Choir playback and Cue share SFX while muted narration stays sil
   h.events.get('GENERATION_ENDED')({chatId:'chat-a',messageId:h.message.id,content:h.message.content});await until(()=>h.$('status').textContent.includes('Playback finished') && !h.$('latest').disabled);
   assert.equal(await playedFoley(h),4);assert.equal(h.requests.filter(request=>request.action==='freesound').length,1);assert.ok(h.synthesis.every(request=>request.text.includes('Hello')));
   const bridge=globalThis.__CHOIR_API__,before=h.requests.filter(request=>request.action==='freesound').length,played=await playedFoley(h);
-  assert.equal(bridge.getConfig().enableSfx,true);assert.equal(bridge.planParagraph('The page snapped under her thumb.').segments.filter(segment=>segment.kind==='sfx').length,4);
-  const result=await bridge.playParagraph({text:'The page snapped under her thumb.',chatId:'chat-a'});assert.equal(result.played,4);assert.equal(await playedFoley(h),played+4);assert.equal(h.requests.filter(request=>request.action==='freesound').length,before);
+  // The sentence appears four times in the reply; Cue reads it once, with its own effect.
+  assert.equal(bridge.getConfig().enableSfx,true);assert.equal(bridge.planParagraph('The page snapped under her thumb.').segments.filter(segment=>segment.kind==='sfx').length,1);
+  const result=await bridge.playParagraph({text:'The page snapped under her thumb.',chatId:'chat-a'});assert.equal(result.played,1);assert.equal(await playedFoley(h),played+1);assert.equal(h.requests.filter(request=>request.action==='freesound').length,before);
   bridge.setNarratorMuted(false);const speechBefore=h.synthesis.length;
   await bridge.playParagraph({text:'The page snapped under her thumb.',chatId:'chat-a'});assert.ok(h.synthesis.length>speechBefore);assert.equal(h.requests.filter(request=>request.action==='freesound').length,before);
   h.$('enableSfx').checked=false;h.$('enableSfx').dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));

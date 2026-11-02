@@ -1067,14 +1067,14 @@ test('Fish briefs ignore negated and other-person traits and use scenario or gre
   [{description:'Mira es una mujer tranquila y segura.'},'female, calm','NPC|Mira|female|young; calm']
  ];
  for(const [profile,expected,hints=''] of cases){
-  let brief;const urls=[],h=await harness(async()=>({content:`D0|Mira|\n${hints}`}),fishSearch(urls,[[fishItem('voice','Speaking voice',['clear'])]]),null,null,null,{evaluate:async input=>{brief=input.state;return {answers:{q0:{choice:'s0'}}};}});
+  let brief;const urls=[],h=await harness(async()=>({content:`D0|Mira|\n${hints}`}),fishSearch(urls,[[fishItem('voice','Speaking voice',['clear']),fishItem('spare','Spare voice',['clear'])]]),null,null,null,{evaluate:async input=>{brief=input.state;return {answers:{q0:{choice:'s0'}}};}});
   h.send('plan',{transcript:'"Hello."',config:{...communityCast,characterProfiles:[{speaker:'Mira',name:'Mira',...profile}]}});
   const result=(await h.result()).message;assert.equal(result.error,undefined,JSON.stringify(profile));assert.equal(brief.voice,expected,JSON.stringify(profile));assert.equal(result.result.segments[0].voice,'voice');
  }
 });
 
 test('Fish skips malformed metadata rows, sanitizes optional fields and reports malformed pages clearly',async()=>{
- let choice;const h=await harness(async()=>({content:'D0|Mira|'}),async()=>({status:200,body:JSON.stringify({items:[null,7,'broken',[],{}, {_id:3,title:'Broken'}, {_id:' ',title:'Blank'}, {_id:'valid',title:{bad:true},tags:[null,{},'soft'],description:{bad:true},languages:[4,'en']} ]})}),null,null,null,{evaluate:async input=>{choice=input;return {answers:{q0:{choice:'s0'}}};}});
+ let choice;const h=await harness(async()=>({content:'D0|Mira|'}),async()=>({status:200,body:JSON.stringify({items:[null,7,'broken',[],{}, {_id:3,title:'Broken'}, {_id:' ',title:'Blank'}, {_id:'valid',title:{bad:true},tags:[null,{},'soft'],description:{bad:true},languages:[4,'en']}, {_id:'other',title:'Other',tags:['calm'],description:'',languages:['en']} ]})}),null,null,null,{evaluate:async input=>{choice=input;return {answers:{q0:{choice:'s0'}}};}});
  h.send('plan',{transcript:'"Hello."',config:communityCast});const result=(await h.result()).message;
  assert.equal(result.error,undefined);assert.equal(result.result.segments[0].voice,'valid');assert.equal(choice.questions.q0.criteria.s0,'valid — soft;  (en)');
  for(const body of ['not json','null','{"items":{}}']){
@@ -1087,7 +1087,7 @@ test('a negated announcer request or another person being an announcer cannot en
  for(const description of ['Mira is calm, not an announcer.','Mira is quiet. Her friend Mara is an announcer.']){
   let candidates;const h=await harness(async()=>({content:'D0|Mira|'}),async()=>({status:200,body:JSON.stringify({items:[fishItem('bad','Smash Bros announcer',['female']),fishItem('good','Ordinary speech',['female'])]})}),null,null,null,{evaluate:async input=>{candidates=input.questions.q0.criteria;return {answers:{q0:{choice:'s0'}}};}});
   h.send('plan',{transcript:'"Hello."',config:{...communityCast,characterProfiles:[{speaker:'Mira',description}]}});
-  const result=(await h.result()).message;assert.equal(result.error,undefined);assert.equal(result.result.segments[0].voice,'good');assert.equal(Object.keys(candidates).length,1);
+  const result=(await h.result()).message;assert.equal(result.error,undefined);assert.equal(result.result.segments[0].voice,'good');assert.equal(candidates,undefined,'the announcer is left out, and one voice leaves nothing to ask');
  }
 });
 
@@ -1133,7 +1133,7 @@ test('a failed or slow Fish choice ranks speech by simple traits instead of the 
 
 test('Jev describes a speaker with the Decision model before the community search',async()=>{
   const urls=[],asked=[];
-  const h=await harness(null,fishSearch(urls,[[fishItem('old-1','Elder',['female','old'])]]),null,null,null,{evaluate:async input=>{
+  const h=await harness(null,fishSearch(urls,[[fishItem('old-1','Elder',['female','old']),fishItem('young-1','Young',['female','young'])]]),null,null,null,{evaluate:async input=>{
     const questions=Object.keys(input.questions);asked.push(questions);
     return {answers:questions.includes('gender')?{gender:{choice:'female'},age:{choice:'old'},language:{choice:'pt'}}:questions.includes('q0')?{q0:{choice:'s0'}}:{speaker_0:{choice:'Mira'}}};
   }});
@@ -1171,7 +1171,7 @@ test('community search drops tag-stuffed voices that also carry the opposite gen
 test('Fish uses character profiles and Planner fallback to choose distinct suitable voices instead of an announcer compilation',async()=>{
  const choices=[],urls=[];
  const cast={...communityCast,fixed:[communityCast.fixed[0],{speaker:'Rowan',voice:'',style:'',route:'native:fish'},{speaker:'Kian',voice:'',style:'',route:'native:fish'}],npcs:[],characterProfiles:[{speaker:'Kian',name:'Kian Frost',description:'An older Irish man with a warm measured voice.'},{speaker:'Rowan',name:'Rowan',description:'A young man with a bright energetic speaking voice.'}]};
- const pages=Array.from({length:2},()=>[fishItem('announcer','Smash Bros announcer compilation',['male','old','young']),fishItem('irish','Irish storyteller',['male','old','calm']),fishItem('young','Young adventurer',['male','young','bright'])]);
+ const pages=Array.from({length:2},()=>[fishItem('announcer','Smash Bros announcer compilation',['male','old','young']),fishItem('irish','Irish storyteller',['male','old','calm']),fishItem('young','Young adventurer',['male','young','bright']),fishItem('spare','Plain reader',['male','neutral'])]);
  const h=await harness(async request=>{
   if(!request.messages[0].content.startsWith('Choose one consistent speaking voice'))return {content:'D0|Kian|calm\nD1|Rowan|cheerful\nNPC|Kian|male|old; calm\nNPC|Rowan|male|young; bright\nLANG|en'};
   const state=JSON.parse(request.messages[1].content);choices.push(state);
@@ -1200,7 +1200,7 @@ test('Narrator and a sassy male Julian use simple briefs and closest voices in b
  for(const engine of ['plan','planJev']){
   const asked=[],urls=[],choices=[];
   const cast={...communityCast,fixed:[{speaker:'Narrator',voice:'',style:''},{speaker:'Persona',voice:'own-1',style:''},{speaker:'Julian',voice:'',style:''}],npcs:[],characterProfiles:[{speaker:'Julian',role:'character',description:'Appearance details. '.repeat(1000),personality:'Julian is a sassy male.'}]};
-  const catalogue=[fishItem('announcer','Smash Bros announcer'),fishItem('plain','Clear storytelling',['neutral','clear']),fishItem('julian','Playful confident man',['male','playful','confident'])];
+  const catalogue=[fishItem('announcer','Smash Bros announcer'),fishItem('plain','Clear storytelling',['neutral','clear']),fishItem('julian','Playful confident man',['male','playful','confident']),fishItem('spare','Plain reader',['neutral'])];
   const h=await harness(async request=>{
    if(!request.messages[0].content.startsWith('Choose one consistent speaking voice'))return {content:'D1|Julian|\nNPC|Julian|male|old; serious, deep\nLANG|en'};
    const state=JSON.parse(request.messages[1].content);choices.push(state);
@@ -1301,8 +1301,8 @@ test('the language written with a reply that has no dialogue still picks the Fis
   const purposes=[];const h=await harness(async input=>{purposes.push(input.messages[0].content.slice(0,40));return {content:'{"choice":"s0"}'};},fishSearch(urls,[[fishItem('nar-1','Narrateur',['male','calm'])]]));
   h.send('plan',{transcript:'La pluie tombait sur les toits.',config,injected:{rows:'LANG|fr'}});
   const result=(await h.result()).message;
-  // Only the voice choice reaches the LLM; no planner call.
-  assert.equal(result.error,undefined);assert.equal(purposes.length,1);assert.match(purposes[0],/Choose one consistent speaking voice/);
+  // One candidate is used as is: no planner call and no voice-choice call.
+  assert.equal(result.error,undefined);assert.equal(purposes.length,0);assert.equal(result.result.segments[0].voice,'nar-1');
   assert.equal(urls[0]?.searchParams.get('language'),'fr');
 });
 
@@ -1394,4 +1394,52 @@ test('a chat that never used Plan inside the reply writes no file when its Off s
   const later=await harness(null,null,null,null,null,null,{},{userStorage});
   later.send('injectContext',{chatId:'chat-a',delivery:'off',cast:['Mira']});await later.result();
   assert.equal(files.get('inject/chat-a.json').delivery,'off');
+});
+
+test('a single usable community voice is used without asking a Decision or LLM to choose it',async()=>{
+  for(const decisions of [{evaluate:async()=>{throw Error('must not be asked');}},undefined]){
+    let raw=0,asked=0;const urls=[];
+    const h=await harness(async()=>{raw++;return {content:'{"choice":"s0"}'};},fishSearch(urls,[[fishItem('only-one','Only voice',['female'])]]),null,null,null,decisions && {evaluate:async input=>{asked++;return decisions.evaluate(input);}});
+    h.send('plan',{transcript:'"Hello."',config:communityCast,injected:{rows:'D0|Mira|warm'}});
+    const result=(await h.result()).message;
+    assert.equal(result.error,undefined);assert.equal(result.result.segments[0].voice,'only-one');
+    assert.equal(raw,0);assert.equal(asked,0);assert.equal(urls.length,1);
+  }
+});
+
+test('Jev asks for delivery only after its speakers are settled, so a fallback to the LLM wastes no Decision round',async()=>{
+  const cast={voices:['n','m','g'].map(id=>({id})),fixed:[{speaker:'Narrator',voice:'n',style:''},{speaker:'Mira',voice:'m',style:''}],npcs:[],useStyle:true,plannerMode:'jev',allowLlmFallback:true};
+  const asked=[];
+  const h=await harness(async()=>({content:'D1|Guard|firm, restrained\nNPC|Guard|male|g'}),null,null,null,null,{evaluate:async input=>{
+    asked.push(Object.keys(input.questions)[0]);
+    return {answers:Object.fromEntries(Object.keys(input.questions).map(key=>[key,{choice:key.startsWith('speaker_')?'Someone not listed':'neutral'}]))};
+  }});
+  h.send('plan',{transcript:'a guard said, "Stop."',config:cast});
+  const result=(await h.result()).message;
+  assert.equal(result.error,undefined);assert.equal(result.result.segments.find(segment=>segment.speaker==='Guard').voice,'g');
+  assert.deepEqual(asked,['speaker_0'],'no delivery question before the fallback');
+  // Without a fallback, Jev still asks for delivery once its speakers are known.
+  const kept=[];const jev=await harness(null,null,null,null,null,{evaluate:async input=>{kept.push(Object.keys(input.questions)[0]);return {answers:Object.fromEntries(Object.keys(input.questions).map(key=>[key,{choice:key.startsWith('speaker_')?'Mira':'neutral'}]))};}});
+  jev.send('planJev',{transcript:'Mira said, "Stop."',config:{...cast,allowLlmFallback:false}});
+  assert.equal((await jev.result()).message.error,undefined);assert.deepEqual(kept,['speaker_0','emotion_0']);
+});
+
+test('a unison line casts only its members, never a voice for the merged label',async()=>{
+  const cast={...communityCast,voices:['n','m','e'].map(id=>({id,route:'native:fish'})),fixed:[{speaker:'Narrator',voice:'n',style:''},{speaker:'Mira',voice:'m',style:''},{speaker:'Eve',voice:'e',style:''}],npcs:[]};
+  let searches=0;const h=await harness(async()=>({content:'D0|Mira & Eve|warm'}),async()=>{searches++;return {status:500,body:'offline'};});
+  h.send('plan',{transcript:'"Hello," Mira and Eve said in unison.',config:cast,injected:{rows:'D0|Mira & Eve|warm'}});
+  const result=(await h.result()).message;
+  assert.equal(result.error,undefined,'an offline search cannot block a plan whose members have voices');assert.equal(searches,0);
+  assert.deepEqual(JSON.parse(JSON.stringify(result.result.segments[0].unison.map(member=>[member.speaker,member.voice]))),[['Mira','m'],['Eve','e']]);
+});
+
+test('the non-story check does not retry a bad key, quota, rate limit or unknown model, but still retries a refusal',async()=>{
+  for(const failure of ['generate failed (401): Incorrect API key','generate failed (429): Rate limit reached','generate failed (404): Unknown model']){
+    let calls=0;const h=await harness(async()=>{calls++;throw Error(failure);});
+    h.send('skipCheck',{lines:['The gate closed.']});
+    assert.equal((await h.result()).message.error,failure);assert.equal(calls,1,failure);
+  }
+  let calls=0;const refused=await harness(async()=>{if(++calls===1)throw Error('PROHIBITED_CONTENT');return {content:'0 K'};});
+  refused.send('skipCheck',{lines:['The gate closed.']});
+  assert.equal((await refused.result()).message.error,undefined);assert.equal(calls,2);
 });

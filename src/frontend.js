@@ -343,7 +343,7 @@ export async function setup(ctx) {
     <div class="et-grid">
       <label hidden>Voice connections<select data-et="connectionMode"><option value="several">Several TTS · per character</option><option value="one">One TTS · whole cast</option></select></label>
       <label>Lumiverse connection<select data-et="connection"></select></label>
-      <label>Style handling<select data-et="styleParam"><option value="">Ignore style</option><option value="instructions">instructions (OpenAI)</option><option value="instruct">instruct</option><option value="prompt">prompt</option></select></label>
+      <label>Style handling<select data-et="styleParam"><option value="">Automatic</option><option value="none">Ignore style</option><option value="instructions">instructions (OpenAI)</option><option value="instruct">instruct</option><option value="prompt">prompt</option></select></label>
       <label data-et="fishVoiceSourceWrap" hidden>Voices the planner picks from<select data-et="fishVoiceSource"><option value="community">Fish community library</option><option value="own">My Fish voices</option><option value="both">Both</option></select></label>
     </div>
     <h4 class="et-subhead">Planner</h4>
@@ -746,6 +746,8 @@ export async function setup(ctx) {
   const voiceCatalogues=new Map();let voiceCatalogueRevision=0;
   let controller=null, currentAudio=null, finishAudio=null, objectUrl=null;
   const paragraphPrefetchControllers=new Set();
+  // Set while a chat's settings load: the editors are empty or stale until then, so nothing may be saved.
+  let chatLoading=false;
   const defaults = () => ({planner:'',connection:'',decisionConnection:'',styleParam:'',apiBase:'/api/v1',chunk:1800,batchSpeech:false,concurrency:1,plannerTokens:8192,
     prefetch:1,normalizeLoudness:true,skipMeta:true,allowLlmFallback:false,injectPlan:'off',sectionButtons:false,paranoidMode:false,connectionMode:'several',enableMixer:false,singleVoices:{},
     extraVoices:'',ignoredTags:'',useStyle:true,auto:false,autoPlan:false,showAutoPlanAction:false,muteNarrator:false,enableSfx:true,enableAmbience:true,enableMusic:false,loopMusic:false,freesoundApiKey:'',npcPolicy:{mode:'llm',route:'',voice:'',voices:[]},fishVoiceSource:'community',plannerMode:'llm',useFastClassifier:false,useJev:false,jevApiKey:'',jevEndpoint:'https://api.typesafe.ai/v1',planBatchChars:3600,planBatchUnits:24,retention:'forever',readAlong:'off',followNarration:false,casts:{},fixed:[
@@ -1818,8 +1820,13 @@ export async function setup(ctx) {
     const operation=settingsWriteQueue?settingsWriteQueue.catch(()=>{}).then(write):write();settingsWriteQueue=operation;
     try{await operation;if(inherit && chatId===targetChat && edit===settingsEdit && !pendingSettings)saveState('Saved automatically');}catch(error){if(chatId===targetChat && edit===settingsEdit)saveState('Save failed · Retry save',true);throw error;}finally{if(settingsWriteQueue===operation)settingsWriteQueue=null;}
   }
+  // The last snapshot scheduled for saving; a failed save clears it so Retry and new edits save again.
+  let scheduledSettings=null,pendingFailure=false;
+  // Edits whose save failed when leaving a chat, restored with Retry save on return.
+  const unsavedSettings=new Map();
   function scheduleSettingsSave(){
     if(disposed || !chatId || !config)return false;
+    if(chatLoading){saveState('Loading this chat… changes are not saved yet',true);return false;}
     const candidate=capture();let castConflict=false;
     try{
       const names=new Set();
@@ -1831,6 +1838,10 @@ export async function setup(ctx) {
       validateNumericSettings(candidate);
       for(const name of ['chunk','plannerTokens','prefetch'])if(!$(name).value.trim())throw new Error('Enter a value for '+$(name).parentElement.firstChild.textContent.trim()+'.');
     }catch(error){++settingsEdit;pendingSettings=null;clearTimeout(autosaveTimer);autosaveTimer=null;saveState(castConflict?'Not saved · duplicate character name':'Not saved · check Settings',true);status(error.message,true);return false;}
+    // Same values as the save already scheduled for this chat: nothing new to read or write.
+    const signature=JSON.stringify([chatId,candidate]);
+    if(signature===scheduledSettings && !pendingFailure)return true;
+    scheduledSettings=signature;
     if(candidate.ignoredTags!==config.ignoredTags){stop(false);clearPlan();paragraphCues.clear();renderMessages();}
     if(JSON.stringify(namePronunciations(pronunciationActors(candidate)))!==JSON.stringify(namePronunciations(pronunciationActors(config))))stop(false);
     $('readingPreview').hidden=true;
@@ -1853,9 +1864,10 @@ export async function setup(ctx) {
     const pending=pendingSettings;if(!pending)return settingsWriteQueue;
     pendingSettings=null;
     try{
-      await persistConfig(pending.chatId,pending.value,true);
+      await persistConfig(pending.chatId,pending.value,true);pendingFailure=false;
       if(!disposed && chatId===pending.chatId && pending.edit===settingsEdit)saveState('Saved automatically');
     }catch(error){
+      scheduledSettings=null;pendingFailure=true;
       if(!pendingSettings && chatId===pending.chatId)pendingSettings=pending;
       if(!disposed && chatId===pending.chatId && pending.edit===settingsEdit)saveState('Save failed · Retry save',true);
       throw error;
@@ -1894,7 +1906,7 @@ export async function setup(ctx) {
   }
   unsubs.push(ctx.onBackendMessage(message=>{
     if(message?.namespace !== 'choir')return;
-    if(message.call){if(config?.paranoidMode){plannerCallLog.push(message.call);if(plannerCallLog.length>50)plannerCallLog.shift();if($('ttsInspectorView').value==='calls')renderTtsInspector();else $('ttsInspectorView').options[2].textContent=`All calls (${plannerCallLog.length+ttsRequestLog.length})`;}return;}
+    if(message.call){if(preparationCalls)preparationCalls.push(message.call);if(config?.paranoidMode){plannerCallLog.push(message.call);if(plannerCallLog.length>50)plannerCallLog.shift();if($('ttsInspectorView').value==='calls')renderTtsInspector();else $('ttsInspectorView').options[2].textContent=`All calls (${plannerCallLog.length+ttsRequestLog.length})`;}return;}
     if(message.progress){pending.get(message.id)?.progress(message.progress);return;}
     pending.get(message.id)?.(message.error?new Error(message.error):null,message.result);
   }));
@@ -2011,6 +2023,7 @@ export async function setup(ctx) {
   let previewAudio = null;
   function openVoiceLibraryModal({ onSelect, defaultQuery = '', targetSpeaker = '' }) {
     if (previewAudio) { try { previewAudio.pause(); } catch {} previewAudio = null; }
+    const ownerChat = chatId, ownerVersion = loadVersion;
     const overlay = document.createElement('div');
     overlay.className = 'et-modal-overlay';
     overlay.dataset.et = 'voiceLibraryModal';
@@ -2077,7 +2090,9 @@ export async function setup(ctx) {
       if (previewAudio) { try { previewAudio.pause(); } catch {} previewAudio = null; }
       overlay.remove();
       document.removeEventListener('keydown', handleKeyDown);
+      openVoicePickers.delete(closeModal);
     };
+    openVoicePickers.add(closeModal);
 
     const handleKeyDown = (e) => {
       if (e.key === 'Escape') closeModal();
@@ -2186,6 +2201,7 @@ export async function setup(ctx) {
           selectBtn.textContent = 'Use Voice';
           selectBtn.onclick = () => {
             closeModal();
+            if (disposed || chatId !== ownerChat || loadVersion !== ownerVersion) { status('The chat changed; open the voice library again in this chat.'); return; }
             onSelect(item);
           };
 
@@ -2213,6 +2229,9 @@ export async function setup(ctx) {
     return closeModal;
   }
 
+  // Voice library dialogs still open; closed with their chat or the frontend.
+  const openVoicePickers=new Set();
+  unsubs.push(()=>{for(const close of [...openVoicePickers])close();});
   let castEditorId=0;
   function makeRow(actor,container,reserved=false,open=false) {
     const required=reserved || container===$('fixed') && actor===config.fixed[1];
@@ -2558,6 +2577,7 @@ export async function setup(ctx) {
     refreshDefaultControls();
   }
   function capture() {
+    if(chatLoading)throw new Error('This chat is still loading. Wait a moment, or press Reload if loading failed.');
     // New bulk entries belong to the selected default connection. Card actions
     // record their own route before capture, including non-default Fish voices.
     scopeLegacyExtraVoices();
@@ -2688,7 +2708,7 @@ export async function setup(ctx) {
       } else {
         const parameters=nativeProviders.find(v=>v.id===conn?.provider)?.capabilities?.parameters || {};
         const hasAny=['instructions','instruct','prompt'].some(p=>parameters[p]);
-        $('styleParam').options[0].textContent=hasAny ? 'Ignore style' : 'Not supported by this provider';
+        $('styleParam').options[0].textContent=hasAny ? 'Automatic' : 'Not supported by this provider';
       }
     }
   }
@@ -2799,8 +2819,8 @@ export async function setup(ctx) {
     if(version!==loadVersion || disposed)return;
     const connection=nativeConnections.find(v=>v.id===config.connection);
     const parameters=nativeProviders.find(v=>v.id===connection?.provider)?.capabilities?.parameters || {};
-    for(const node of $('styleParam').options)node.disabled=Boolean(node.value && !parameters[node.value]);
-    if(config.styleParam && !parameters[config.styleParam]){config.styleParam='';$('styleParam').value='';}
+    for(const node of $('styleParam').options)node.disabled=Boolean(node.value && node.value!=='none' && !parameters[node.value]);
+    if(config.styleParam && config.styleParam!=='none' && !parameters[config.styleParam]){config.styleParam='';$('styleParam').value='';}
     cataloguesReady=true;renderCast();refreshSectionControls();
   }
   // Opening a chat and switching connections reload voice catalogues; Play waits
@@ -2819,9 +2839,11 @@ export async function setup(ctx) {
     cataloguesReady=false;
     closeDefaultEditor?.();
     cancelAutoReplies();stop(false);clearPlan();clearTtsRequestLog();transcriptCache.clear();
-    try{await flushSettings();}catch(error){status(`Previous chat settings could not be saved: ${error.message}`,true);}
+    try{await flushSettings();}catch(error){status(`Previous chat settings could not be saved: ${error.message}. Return to that chat to retry.`,true);}
+    if(pendingSettings)unsavedSettings.set(pendingSettings.chatId,pendingSettings);
     if(disposed || version!==loadVersion)return;
-    chatId=id;
+    for(const close of [...openVoicePickers])close();
+    chatId=id;chatLoading=true;scheduledSettings=null;
     activeCharacterCard=null;activePersonaName='';activeCardKey='';
     pendingSettings=null;
     castRows=[];npcRows=[];$('fixed').replaceChildren();$('npcs').replaceChildren();
@@ -2839,6 +2861,9 @@ export async function setup(ctx) {
     config.useFastClassifier=config.plannerMode==='heuristic';config.useJev=config.plannerMode==='jev';
     preferenceBaseline=preferenceSnapshot(config);
     chatBaselines.set(id,chatSettingsSnapshot(config));
+    // The saved settings stay the baseline; the unsaved edit is what the editors show again.
+    const unsaved=unsavedSettings.get(id);
+    if(unsaved)config=normalizeSavedSettings(structuredClone(unsaved.value));
     if(!saved && !legacyCast)config.fixed[0].voice='';
     if(saved && !saved.connectionMode)config.connectionMode='several';
     if(saved?.jevApiKey){await persistConfig(id,config);if(disposed || version!==loadVersion)return;}
@@ -2852,7 +2877,8 @@ export async function setup(ctx) {
       const persona=config.fixed.some(actor=>['persona','user','you',normalizeName(profile?.name)].filter(Boolean).includes(normalizeName(actor.speaker)));
       config.fixed=[baseline[0],...(persona?[]:[baseline[1]]),...config.fixed];
     }
-    setFields();await loadProviders();
+    setFields();
+    try{await loadProviders();}finally{if(version===loadVersion)chatLoading=false;}
     if(version!==loadVersion || disposed)return;
     await refreshLeadNames(Boolean(saved));
     if(version!==loadVersion || disposed)return;
@@ -2861,7 +2887,8 @@ export async function setup(ctx) {
     if(version!==loadVersion || disposed)return;
     if(previous)await restoreSavedPlan(previous);
     if(version!==loadVersion || disposed)return;
-    saveState(saved?'Saved settings restored':capturedDefaults?'Default setup loaded':preferences?'Connection preferences restored':'Changes save automatically');
+    if(unsaved){unsavedSettings.delete(id);pendingSettings={...unsaved,edit:++settingsEdit};saveState('Save failed · Retry save',true);}
+    else saveState(saved?'Saved settings restored':capturedDefaults?'Default setup loaded':preferences?'Connection preferences restored':'Changes save automatically');
     $('defaultStatus').textContent='';
     refreshDefaultControls();
     positionMixer();
@@ -3102,7 +3129,7 @@ export async function setup(ctx) {
     return true;
   }
   async function refreshLeadNames(save=true){
-    if(!chatId || !config || busy)return;
+    if(!chatId || !config || busy || chatLoading)return;
     const version=loadVersion,characterId=ctx.getActiveChat().characterId;
     const [persona,character]=await Promise.all([activePersona(),characterId?ctx.characters.get(characterId).catch(()=>null):null]);
     if(disposed || version!==loadVersion || busy)return;
@@ -3208,6 +3235,19 @@ export async function setup(ctx) {
     return withoutLines(transcript,skip);
   }
   // Casting, sounds and non-story lines the roleplay model wrote with a reply (Plan inside the reply).
+  // Calls the backend reports while a message is prepared, for the Ready status.
+  let preparationCalls=null;
+  const describeCalls=calls=>{
+    if(!calls?.length)return 'No LLM or Decision call.';
+    const counts=new Map();for(const call of calls){const key=`${call.purpose} (${call.kind})`;counts.set(key,(counts.get(key) || 0)+1);}
+    return `Calls: ${[...counts].map(([name,count])=>count>1?`${name} ×${count}`:name).join(', ')}.`;
+  };
+  // A note that covers every quote with cast members who already have voices leaves card analysis nothing to add.
+  const noteCoversKnownCast=content=>{
+    const written=writtenPlan(content);if(!written?.quotes?.size || !injectedCastRows(filteredTranscript(content),written).covered)return false;
+    const cast=casting(config),known=new Map([...cast.fixed,...cast.npcs].flatMap(actor=>[actor.speaker,...(actor.aliases || [])].map(name=>[normalizeName(name),actor])));
+    return [...written.quotes.values()].every(quote=>quote.speaker==='NOT_SPOKEN' || known.get(normalizeName(quote.speaker))?.voice);
+  };
   const writtenPlan=content=>injectDelivery(config)!=='off' && resolvePlannerMode(config)!=='heuristic'?readInjectedPlan(content):null;
   async function recordingMatchesTranscript(recording,content) {
     const filtered=filteredTranscript(content),block=readInjectedPlan(content);
@@ -3233,7 +3273,13 @@ export async function setup(ctx) {
     planningSource={messageId,chatId:targetChat,content,token};messagePlaybackId=messageId;
     setBusy(true);status('Checking Choir backend…');
     try {
-      const cardAnalyzed=Boolean(await discoverCardCast(ctrl.signal));snapshot=structuredClone(casting(config));
+      preparationCalls=[];
+      // Card analysis helps unresolved multi-character cards; it must not block a plan the current cast already covers.
+      if(!noteCoversKnownCast(content)){
+        try{await discoverCardCast(ctrl.signal);}
+        catch(error){if(ctrl.signal.aborted || token!==revision || disposed)throw error;status(`Card analysis failed (${error.message}); planning with the current cast.`);}
+      }
+      snapshot=structuredClone(casting(config));
       if(!forceReplan && await restoreSavedPlan(messageId)){
         status('Saved attribution reused.');
         if(autoPlay){controller=null;setBusy(false);await play();}
@@ -3349,7 +3395,7 @@ export async function setup(ctx) {
       await persistConfig(targetChat,config);
       if(token!==revision || disposed)return;
       await persistPlan();
-      status(`Ready: ${plan.segments.length} turns, ${new Set(plan.segments.flatMap(speechMembers).map(s=>s.speaker)).size} speakers.${plannerMode==='heuristic' || plannerMode==='jev' && !jevFailure?` ${plannerMode==='heuristic'?'Local heuristic':'Jev'} attribution; ${cardAnalyzed?`LLM used for card analysis${planSource.soundCues?' and sound effects':''}`:planSource.soundCues?'one LLM request for sound effects':'no LLM request'}.`:''}${jevFailure?` Jev failed: ${jevFailure}. LLM fallback used.`:''}`);
+      status(`Ready: ${plan.segments.length} turns, ${new Set(plan.segments.flatMap(speechMembers).map(s=>s.speaker)).size} speakers.${plannerMode==='heuristic' || plannerMode==='jev' && !jevFailure?` ${plannerMode==='heuristic'?'Local heuristic':'Jev'} attribution.`:''}${jevFailure?` Jev failed: ${jevFailure}. LLM fallback used.`:''} ${describeCalls(preparationCalls)}`);
     } finally {ctrl.abort();if(planningSource?.token===token)planningSource=null;if(token===revision){controller=null;advancePlayback=null;generationPolicyChanged=null;updateNextControls();setBusy(false);}}
     if(autoPlay && token===revision)await play();
   }
@@ -3968,7 +4014,15 @@ export async function setup(ctx) {
               blob=await synthesizeUnisonBlob(seg,snapshot,job.signal,async member=>{
                 const memberKey=cacheKey(member,snapshot);
                 let audio=passages[memberKey];
-                if(!audio){audio=await synthesizeSpeechBlob(member,snapshot,job.signal);passages[memberKey]=audio;void persist();}
+                // A solo clip of the same request may already be synthesizing: share it.
+                if(!audio && inflight.has(memberKey))audio=await inflight.get(memberKey).catch(error=>{if(error?.name==='AbortError' && !ctrl.signal.aborted)return undefined;throw error;});
+                if(!audio){
+                  let resolveMember,rejectMember;const shared=new Promise((resolve,reject)=>{resolveMember=resolve;rejectMember=reject;});shared.catch(()=>{});inflight.set(memberKey,shared);
+                  try{audio=await synthesizeSpeechBlob(member,snapshot,job.signal);resolveMember(audio);}
+                  catch(error){rejectMember(error);throw error;}
+                  finally{if(inflight.get(memberKey)===shared)inflight.delete(memberKey);}
+                  passages[memberKey]=audio;void persist();
+                }
                 return audio;
               });
             } else {
@@ -4223,7 +4277,13 @@ export async function setup(ctx) {
         advancePlayback=(direction=1)=>{if(!skipAudio || ctrl.signal.aborted || token!==revision)return;mix?.markDiscontinuous();const passage=segment.passageIndex ?? index;if(direction<0){let start=index;while(start>0 && (recording.segments[start-1].passageIndex ?? start-1)===passage)start--;nextIndex=Math.max(0,start-1);const previous=recording.segments[nextIndex].passageIndex ?? nextIndex;while(nextIndex>0 && (recording.segments[nextIndex-1].passageIndex ?? nextIndex-1)===previous)nextIndex--;}else while(nextIndex<recording.segments.length && (recording.segments[nextIndex].passageIndex ?? nextIndex)===passage)nextIndex++;pauseNext=heldPaused();skipAudio();};
         activePlayback={chatId:targetChat,messageId,content:recording.content,passage:segment.passageIndex ?? index,chunk:segment.chunkIndex ?? 0};
         for(const kind in beds){const marker=bedIndex(recording.segments,index,kind),bedBlob=bedEnabled(kind) && recording.blobs[marker];const entry=recording.segments[marker]?.[kind];followBed(entry?.stop?entry:bedBlob && entry,async()=>bedBlob,kind);}
-        const paused=pauseNext;pauseNext=false;await playBlob(blob,ctrl.signal,recording.segments[index].speaker,0,config.normalizeLoudness,paused,{messageId,items:recording.segments,index,gapMs:gapBefore(recording.segments,index)});
+        const paused=pauseNext;pauseNext=false;
+        try{await playBlob(blob,ctrl.signal,recording.segments[index].speaker,0,config.normalizeLoudness,paused,{messageId,items:recording.segments,index,gapMs:gapBefore(recording.segments,index)});}
+        catch(error){
+          if(segment.kind!=='sfx' || ctrl.signal.aborted || token!==revision)throw error;
+          recording.blobs[index]=undefined;void recordingStore('put',recordingKey(targetChat,messageId),{...recording,blobs:[...recording.blobs]}).catch(()=>{});
+          showFoleyStatus(`SFX skipped: ${error.message}. Speech continues.`);
+        }
         index=nextIndex;const next=recording.segments[index];activePlayback={...activePlayback,passage:next?.passageIndex ?? (activePlayback.passage+1),chunk:next?.chunkIndex ?? 0,complete:index===recording.blobs.length};savePosition(0);activePlayback=null;
       }
       const playedAudio=await mix?.finish();if(playedCapture===mix)playedCapture=null;
@@ -4439,6 +4499,10 @@ export async function setup(ctx) {
       }
       const filename=playedAudioFilename(activeCharacterCard?.name || message?.name || 'Char',targetChat,message?.index_in_chat);
       if(disposed || targetChat!==chatId || token!==revision || !sameSpeech(ctx.messages.getContent(messageId),content))throw abortError();
+      const current=await recordingStore('get',recordingKey(targetChat,messageId));ctrl.signal.throwIfAborted();
+      if(!downloadableRecording(current,content) || current.playedAudio.blob.size!==played.blob.size || current.playedAudio.duration!==played.duration)
+        throw new Error('This recording was deleted or replaced while the download was prepared. Nothing was downloaded.');
+      if(disposed || targetChat!==chatId || token!==revision)throw abortError();
       const url=URL.createObjectURL(new Blob([wav],{type:'audio/wav'})),link=document.createElement('a');
       link.href=url;link.download=filename;link.hidden=true;document.body.append(link);link.click();link.remove();
       downloadUrls.set(url,setTimeout(()=>{URL.revokeObjectURL(url);downloadUrls.delete(url);},30000));
@@ -4655,7 +4719,7 @@ export async function setup(ctx) {
   };
   $('searchVoicesBtn')?.addEventListener('click', doSearchVoices);
   $('voiceSearchQuery')?.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); doSearchVoices(); } });
-  $('load').onclick=()=>run(async()=>{await flushSettings();config=capture();loadVersion++;await loadProviders();await persistConfig(chatId,config,true);saveState('Settings saved');clearPlan();status('Connections and voices reloaded.');});
+  $('load').onclick=()=>chatLoading?loadChat(true):run(async()=>{await flushSettings();config=capture();loadVersion++;await loadProviders();await persistConfig(chatId,config,true);saveState('Settings saved');clearPlan();status('Connections and voices reloaded.');});
   $('plannerMode')?.addEventListener('change',updatePlannerVisibility);
   $('allowLlmFallback').onchange=updatePlannerVisibility;
   $('sectionButtons').onchange=()=>run(async()=>{config=capture();refreshSectionControls();if(plan)renderPreview();scheduleSettingsSave();await flushSettings();});
@@ -4672,13 +4736,15 @@ export async function setup(ctx) {
   $('exportCast').onclick=()=>{$('castJson').value=JSON.stringify(castExport(capture()),null,2);status('Cast exported below. Copy this JSON to transfer it. Credentials are excluded.');};
   $('importCast').onclick=()=>run(async()=>{
     if(!chatId)throw new Error('Open a chat first.');
+    const targetChat=chatId,version=loadVersion,owned=()=>!disposed && chatId===targetChat && loadVersion===version;
     const imported=castImport(normalizeSavedSettings(JSON.parse($('castJson').value))),candidate={...capture(),...imported};
     const routes=new Set([scope(candidate),...candidate.fixed.map(actor=>actor.route || scope(candidate)),...Object.keys(candidate.casts),...Object.keys(candidate.singleVoices || {}),...Object.values(candidate.casts).flat().map(actor=>actor.route).filter(Boolean)]);
     for(const route of routes)await ensureCatalogue(route);
+    if(!owned())throw new Error('The chat changed during the import; nothing was imported. Import again in the chat you want.');
     for(const [route,choices] of Object.entries(candidate.singleVoices || {}))for(const voice of Object.values(choices))if(voice && !voiceCatalogues.get(route)?.some(v=>v.id===voice))throw new Error(`Imported voice ${voice} is unavailable on ${route}.`);
     validateSettings(candidate);
     for(const route of Object.keys(candidate.casts))validateCastConfig(casting({...candidate,connection:route.slice(7)}));
-    stop(false);config=candidate;await persistConfig(chatId,config);setFields();renderCast();
+    stop(false);config=candidate;await persistConfig(targetChat,config);if(!owned())return;setFields();renderCast();
     if(planSource)await restoreSavedPlan(planSource.messageId);
     status('Cast imported and validated. Saved attribution reused.');
   });
@@ -4882,19 +4948,31 @@ export async function setup(ctx) {
   }
 
   const paragraphCues = new Map();
-  function paragraphSegments(rawText, snap, preferredSpeaker = '') {
+  function paragraphSegments(rawText, snap, preferredSpeaker = '', messageId = null) {
     const cleanPara = transcriptFromMessage(rawText,snap.ignoredTags).trim();
     if (!cleanPara) return {segments: [], cleanPara, fromPlan: false};
 
     let segments = null;
 
-    // 1. If an existing message plan is cached in memory, reuse matching segments
-    if (plan && Array.isArray(plan.segments) && plan.segments.length > 0) {
-      const matched = plan.segments.filter(s => {
-        const segText = s.text.trim();
-        return cleanPara.includes(segText) || segText.includes(cleanPara);
-      });
-      if (matched.length) return {segments: matched, cleanPara, fromPlan: true};
+    // 1. Reuse the message plan only when it covers the whole paragraph, in order, for the same
+    //    message: either one spoken block contains it, or consecutive blocks add up to exactly it.
+    //    A partial overlap would silently drop the paragraph's other sentences.
+    const samePlan = plan && Array.isArray(plan.segments) && plan.segments.length > 0 && (messageId == null || planSource?.messageId === messageId);
+    if (samePlan) {
+      const norm = text => String(text || '').replace(/\s+/g, ' ').trim(), target = norm(cleanPara);
+      const spoken = plan.segments.map((segment, index) => index).filter(index => !plan.segments[index].kind);
+      // Sound markers placed right before the matched speech belong to it.
+      const leadingSounds = index => {let start = index;while (start > 0 && plan.segments[start - 1].kind) start--;return plan.segments.slice(start, index);};
+      const inside = spoken.find(index => norm(plan.segments[index].text).includes(target));
+      if (inside !== undefined) return {segments: [...leadingSounds(inside), {...plan.segments[inside], text: cleanPara}], cleanPara, fromPlan: true};
+      for (let first = 0; first < spoken.length; first++) {
+        let joined = '';
+        for (let last = first; last < spoken.length; last++) {
+          joined = norm(`${joined} ${plan.segments[spoken[last]].text}`);
+          if (joined === target) return {segments: [...leadingSounds(spoken[first]), ...plan.segments.slice(spoken[first], spoken[last] + 1)], cleanPara, fromPlan: true};
+          if (joined.length >= target.length || !target.startsWith(joined)) break;
+        }
+      }
     }
 
     // 2. Otherwise plan the paragraph directly in 0ms without blocking on LLM RPC
@@ -4932,13 +5010,13 @@ export async function setup(ctx) {
     return {segments: applySoundCues(segments, paragraphCues.get(cleanPara)), cleanPara, fromPlan: false};
   }
 
-  function planAndBatchParagraph(rawText, snap, filterMuted = false, preferredSpeaker = '') {
-    return playbackBatches(paragraphSegments(rawText, snap, preferredSpeaker).segments, snap, {filterMuted});
+  function planAndBatchParagraph(rawText, snap, filterMuted = false, preferredSpeaker = '', messageId = null) {
+    return playbackBatches(paragraphSegments(rawText, snap, preferredSpeaker, messageId).segments, snap, {filterMuted});
   }
 
   // Paragraphs outside the current message plan get their effects chosen once per text.
-  async function loadParagraphCues(rawText, snap, preferredSpeaker, signal, carried) {
-    const {segments, cleanPara, fromPlan} = paragraphSegments(rawText, snap, preferredSpeaker);
+  async function loadParagraphCues(rawText, snap, preferredSpeaker, signal, carried, messageId = null) {
+    const {segments, cleanPara, fromPlan} = paragraphSegments(rawText, snap, preferredSpeaker, messageId);
     if (fromPlan || !segments.length || paragraphCues.has(cleanPara) || !soundCuesWanted(snap)) return;
     // Cue carries the playing track into later paragraphs, so the planner changes it only when the scene does.
     const playing = carried || beds.music && {title: beds.music.title || '', feels: beds.music.feels};
@@ -4982,14 +5060,17 @@ export async function setup(ctx) {
       if(signal?.aborted)throw abortError();
       if(targetChat && targetChat!==chatId)throw new Error('The paragraph belongs to a different chat.');
       invalidateVolatileAudio({kind:'prune'});
+      const handoff=[...paragraphPrefetchControllers].filter(pending=>pending.choirFinished && typeof pending.choirNextText==='string' && pending.choirNextText.trim()===String(text || '').trim());
+      for(const pending of handoff)paragraphPrefetchControllers.delete(pending);
       stop(false,true);const token=revision;
+      for(const pending of handoff)paragraphPrefetchControllers.add(pending);
       const cap = capture();
       const castInfo = casting(cap);
       const snapshot = { ...structuredClone(cap), fixed: castInfo.fixed, voices: castInfo.voices, npcs: castInfo.npcs, defaultRoute: castInfo.defaultRoute, npcPolicy:castInfo.npcPolicy };
 
       snapshot.audioScope={chatId:targetChat || chatId,messageId:messageId || null};
       paragraphPlaybackScope=snapshot.audioScope;
-      const ctrl = new AbortController();
+      const ctrl = new AbortController();ctrl.choirNextText = nextText;
       controller = ctrl;
       paragraphPrefetchControllers.add(ctrl);
       let finishParagraphWork=()=>Promise.resolve();
@@ -4998,11 +5079,11 @@ export async function setup(ctx) {
       signal?.addEventListener('abort', onAbort, { once: true });
       try {
         let cueWarning='';
-        try{await loadParagraphCues(text,snapshot,speaker,ctrl.signal);}
+        try{await loadParagraphCues(text,snapshot,speaker,ctrl.signal,undefined,messageId);}
         catch(error){if(ctrl.signal.aborted || token!==revision)throw abortError();cueWarning=error.message;}
         if(disposed || token!==revision || ctrl.signal.aborted || signal?.aborted)throw abortError();
-        mixerPlaybackSegments=planAndBatchParagraph(text,snapshot,false,speaker);renderMixer();
-        const batches = planAndBatchParagraph(text,snapshot,true,speaker).filter(batch=>!playbackExcluded(batch));
+        mixerPlaybackSegments=planAndBatchParagraph(text,snapshot,false,speaker,messageId);renderMixer();
+        const batches = planAndBatchParagraph(text,snapshot,true,speaker,messageId).filter(batch=>!playbackExcluded(batch));
         if (!batches.length) {
           onStatus?.({ kind: 'idle', message: snapshot.muteNarrator ? 'Narrator muted' : 'No speech' });
           return { played: 0 };
@@ -5059,7 +5140,7 @@ export async function setup(ctx) {
         // Discover cues early; speech joins the queue when it falls within lookahead.
         if (snapshot.prefetch>0 && nextText && typeof nextText === 'string' && nextText.trim()) {
           // The current paragraph's music has not started yet, so name it directly.
-          const carried = lastMusic(paragraphCues.get(paragraphSegments(text, snapshot, speaker).cleanPara)?.music);
+          const carried = lastMusic(paragraphCues.get(paragraphSegments(text, snapshot, speaker, messageId).cleanPara)?.music);
           nextCueWork=loadParagraphCues(nextText, snapshot, '', ctrl.signal, carried).catch(() => {}).then(() => {
             if(ctrl.signal.aborted || token!==revision)return;
             nextBatches=planAndBatchParagraph(nextText,snapshot,true);
@@ -5067,6 +5148,11 @@ export async function setup(ctx) {
           }).catch(() => {});
         }
 
+        // Mutes reach this paragraph as they do the main player: the playing clip is skipped and a
+        // pending one stops being waited for.
+        const POLICY={policy:true},LATE={late:true};let wakeCompanion=null;
+        generationPolicyChanged=()=>wakeCompanion?.(POLICY);
+        advancePlayback=()=>skipAudio?.();
         for (let i = 0; i < batches.length; i++) {
           if (ctrl.signal.aborted || signal?.aborted) throw abortError();
           currentBatchIndex=i;
@@ -5079,9 +5165,17 @@ export async function setup(ctx) {
 
           onStatus?.({ kind: 'loading', speaker: batch.speaker });
           try{
-            const blob = await queueSpeech(batch);
+            let blob;
+            for(;;){
+              const waits=[queueSpeech(batch),new Promise(resolve=>{wakeCompanion=resolve;})];
+              // Speech never waits long for an effect: a late one is skipped and keeps downloading.
+              if(batch.kind==='sfx')waits.push(new Promise(resolve=>setTimeout(()=>resolve(LATE),SFX_WAIT_MS)));
+              const outcome=await Promise.race(waits);wakeCompanion=null;
+              if(outcome===POLICY && !playbackExcluded(batch) && !ctrl.signal.aborted)continue;
+              blob=outcome;break;
+            }
             if (ctrl.signal.aborted || signal?.aborted) throw abortError();
-            if(!blob || playbackExcluded(batch))continue;
+            if(!blob || blob===POLICY || blob===LATE || playbackExcluded(batch))continue;
             onStatus?.({ kind: 'playing', speaker: batch.speaker });
             await playBlob(blob,ctrl.signal,batch.speaker,0,snapshot.normalizeLoudness,false,{messageId,items:batches,index:i,gapMs:gapBefore(batches,i)});
             played++;
@@ -5099,13 +5193,14 @@ export async function setup(ctx) {
       } finally {
         // A finished paragraph may still be preparing nextText. Keep that work
         // cancellable by Stop, navigation and the caller until its queue drains.
+        ctrl.choirFinished=true;
         void finishParagraphWork().finally(()=>{
           paragraphPrefetchControllers.delete(ctrl);
           signal?.removeEventListener('abort',onAbort);
           if(!disposed)updateTransport();
         });
         if (controller === ctrl){controller=null;paragraphPlaybackScope=null;}
-        if (token === revision) clearReadAlong();
+        if (token === revision){clearReadAlong();advancePlayback=null;generationPolicyChanged=null;}
         updateTransport();
       }
     }

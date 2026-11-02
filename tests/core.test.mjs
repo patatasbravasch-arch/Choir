@@ -1077,3 +1077,11 @@ test('music ranking skips pieces too long to download under the 25 MB limit',()=
   const pieces=[{title:'Hour of calm',filename:'Hour.mp3',feel:'Calming',genre:'1',length:'60:12'},{title:'Short calm',filename:'Short.mp3',feel:'Calming',genre:'1',length:'3:30'},{title:'Unlisted',filename:'Unlisted.mp3',feel:'Calming',genre:'1'}];
   assert.deepEqual(rankMusic(pieces,{feels:['Calming']}).map(track=>track.title),['Short calm','Unlisted']);
 });
+
+test('a comma-ended quote does not carry its speaker across a second speech tag',async()=>{
+  const core=await import('../src/core.js');
+  const written=core.readInjectedPlan('<!--choir\nQ1|Mira|warm|Wait\n-->');
+  assert.equal(core.injectedCastRows('"Wait," Mira said. Eve replied, "No."',written).covered,false);
+  assert.equal(core.injectedCastRows('"Wait," Mira said. "I can explain."',written).covered,true);
+  assert.equal(core.injectedCastRows('"Wait." Mira said. Eve replied, "No."',written).covered,false);
+});
