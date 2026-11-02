@@ -1072,3 +1072,8 @@ test('quote-heavy replies are read without deep recursion or slowdown',async()=>
   assert.equal(speechSourceUnits('"I am 20" she said. "Fine."\n\n'.repeat(3000)).filter(unit=>unit.kind==='dialogue').length,6000);
   assert.ok(Date.now()-started<3000,'scored once per paragraph');
 });
+
+test('music ranking skips pieces too long to download under the 25 MB limit',()=>{
+  const pieces=[{title:'Hour of calm',filename:'Hour.mp3',feel:'Calming',genre:'1',length:'60:12'},{title:'Short calm',filename:'Short.mp3',feel:'Calming',genre:'1',length:'3:30'},{title:'Unlisted',filename:'Unlisted.mp3',feel:'Calming',genre:'1'}];
+  assert.deepEqual(rankMusic(pieces,{feels:['Calming']}).map(track=>track.title),['Short calm','Unlisted']);
+});
