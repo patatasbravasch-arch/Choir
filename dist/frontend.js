@@ -6397,10 +6397,12 @@ export async function setup(ctx) {
     segments[index]={...rest,speaker,...(voice?{voice}:{})};
     const edited=validatePlan({segments},planSource.transcript,cast);
     // Playback follows `plan`; a save that fails puts the previous plan back, so it never plays what was not saved.
-    const before={plan,attribution:planAttribution};
+    const before={plan,attribution:planAttribution},source=planSource,targetChat=chatId,version=loadVersion;
+    const owned=()=>!disposed && planSource===source && chatId===targetChat && loadVersion===version;
     plan={...edited,warning:plan.warning || ''};
-    try{rememberPlanCast(edited);await persistConfig(chatId,config);await persistPlan();}
-    catch(error){plan=before.plan;planAttribution=before.attribution;renderCast();renderPreview();throw error;}
+    try{rememberPlanCast(edited);await persistConfig(targetChat,config);await persistPlan();}
+    catch(error){if(owned()){plan=before.plan;planAttribution=before.attribution;renderCast();renderPreview();}throw error;}
+    if(!owned())return;
     renderCast();renderPreview();status(`Block ${index+1} is now read by ${speaker}; saved with this plan.`);
   }
   async function refreshCacheStatus(){

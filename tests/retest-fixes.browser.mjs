@@ -120,7 +120,8 @@ test('skipping unnecessary card analysis still restores a saved speaker correcti
     h.store.get('chat:chat-a').injectPlan='auto';
     await h.reload();h.message.content='Mira smiled. "Hello."\n<!--choir\nQ1|Mira|warm|Hello\n-->';
     await h.plan();choice(h,2,'Guard');await until(()=>h.$('status').textContent.startsWith('Block 2 is now'));
-    await h.reload();await h.plan();
+    // The saved correction is restored when the chat opens again. (Plan latest on a shown plan re-plans by design.)
+    await h.reload();await until(()=>h.$('planJson').value);
     assert.equal(JSON.parse(h.$('planJson').value).segments[1].speaker,'Guard');
   }finally{await h.close();}
 });
