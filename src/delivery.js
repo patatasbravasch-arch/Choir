@@ -131,7 +131,7 @@ export function voiceDelivery({segment, actor, narrator = false, family, connect
   else parameter = styleParam && styleParam !== 'none' && supports(styleParam) ? styleParam : ['instructions', 'instruct', 'prompt'].find(supports);
   // Clear native Fish directions because its cues are already in the text;
   // empty Gemini instructions override the relay's conversational default.
-  if (parameter && (instructions || ['gemini','fish_audio'].includes(family))) parameters[parameter] = fishS2?'':instructions;
+  if (parameter && (instructions || ignoreStyle || ['gemini','fish_audio'].includes(family))) parameters[parameter] = fishS2?'':instructions;
   let text = segment.text;
   // Sustained acting stays in Gemini metadata. Preserve explicit point events
   // there, translate them for Fish S2, and omit unsupported cues elsewhere.
@@ -146,7 +146,7 @@ export function voiceDelivery({segment, actor, narrator = false, family, connect
   // Older Google relays accept the direction as a natural-language prompt.
   // New Gemini uses metadata and never receives this prompt wrapper.
   if (family === 'gemini' && !modernGemini && (!openRouter || !parameter) && instructions) text = `Read the text below verbatim. Delivery: ${instructions}\n\nText:\n${text}`;
-  return {text, style: ['gemini','fish_audio'].includes(family) ? instructions : acting, parameters};
+  return {text, style: ['gemini','fish_audio'].includes(family) ? instructions : ignoreStyle ? '' : acting, parameters};
 }
 
 export function normalizeMixerColumns(value) {

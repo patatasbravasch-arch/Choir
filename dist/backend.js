@@ -1992,7 +1992,9 @@ function injectedCastRows(transcript, plan) {
       for(let piece=at+1;piece<next;piece++){
         const between=transcript.slice(dialogue[piece-1].end,dialogue[piece].start);
         const interrupted=/[,\u2014\u2013-][\s]*["\u201d]$/.test(dialogue[piece-1].text.trimEnd());
-        const oneTag=!/[.!?\u2026]["\u201d']?\s+\S/.test(between.trim());
+        const clauses=between.replace(/\b(?:Mr|Mrs|Ms|Mx|Dr|St|Prof|Sr|Jr|Capt|Lt|Sgt|Col|Gen|Rev|Mt)\./g,title=>title.slice(0,-1))
+          .split(/[.;:!?\u2026]+/).filter(part=>/\p{L}/u.test(part));
+        const oneTag=clauses.length<=1;
         if(!interrupted || !oneTag || between.length>120 || /\n[ \t]*\n/.test(between))break;
         assigned.set(piece,quote);
       }
@@ -2349,24 +2351,11 @@ async function planWithJev({ transcript, config, apiKey, endpoint, context = '',
   if (config.allowLlmFallback === true && speakerChoices.some((choice,index)=>choice===UNLISTED_SPEAKER && !unisonSpeakers(transcript,dialogueUnits[index],config)?.length)) throw new Error('Jev found dialogue from someone who is not in the cast.');
   const unresolved = speakerChoices.filter((choice,index)=>choice===UNLISTED_SPEAKER && !unisonSpeakers(transcript,dialogueUnits[index],config)?.length);
   if(unresolved.length>1)throw new Error('Jev could not identify multiple dialogue speakers. Choose the Standard LLM planner or add their names and aliases to the cast; unnamed people cannot safely share one Unknown speaker voice.');
-  // Delivery styles are optional: a rejected emotion answer must not discard the speakers.
-  if (classifyDelivery) {
-    try { emotionChoices = await classifyDelivery(); }
-    catch (error) { if (signal?.aborted) throw error; emotionChoices = []; }
-  }
-
   const dialogueSpeakerMap = new Map();
   const dialogueEmotionMap = new Map();
   for (let i = 0; i < dialogueUnits.length; i++) {
     const u = dialogueUnits[i];
-    const notSpoken = speakerChoices[i] === NOT_SPOKEN;
-    dialogueSpeakerMap.set(u.id, notSpoken ? narrator?.speaker || 'Narrator' : speakerChoices[i] === UNLISTED_SPEAKER ? 'Unknown speaker' : speakerChoices[i]);
-    const emotion = emotionChoices[i];
-    if (!notSpoken && Object.hasOwn(JEV_DELIVERY, emotion)) {
-      // Neutral must override an expressive base style in Automatic acting;
-      // leaving it empty would silently fall back to that character's base.
-      dialogueEmotionMap.set(u.id, JEV_DELIVERY[emotion][0]);
-    }
+    dialogueSpeakerMap.set(u.id, speakerChoices[i] === NOT_SPOKEN ? narrator?.speaker || 'Narrator' : speakerChoices[i] === UNLISTED_SPEAKER ? 'Unknown speaker' : speakerChoices[i]);
   }
 
   // Unlike community casting, catalogue casting previously never checked an
@@ -2395,6 +2384,21 @@ async function planWithJev({ transcript, config, apiKey, endpoint, context = '',
       const gender=answers?.[`voice_gender_${start+index}`]?.choice;
       if(!['female','male','neutral'].includes(gender))throw new Error(`Jev could not determine the voice gender for ${actor.speaker}. Choose their voice or gender in the cast, or use the Standard LLM planner.`);
       inferredGenders.set(normalizeName(actor.speaker),gender);
+    }
+  }
+
+  // Delivery is optional and asked last: a rejected emotion answer must not discard the speakers,
+  // and no gate above can still throw the plan away after it was paid for.
+  if (classifyDelivery) {
+    try { emotionChoices = await classifyDelivery(); }
+    catch (error) { if (signal?.aborted) throw error; emotionChoices = []; }
+  }
+  for (let i = 0; i < dialogueUnits.length; i++) {
+    const emotion = emotionChoices[i];
+    if (speakerChoices[i] !== NOT_SPOKEN && Object.hasOwn(JEV_DELIVERY, emotion)) {
+      // Neutral must override an expressive base style in Automatic acting;
+      // leaving it empty would silently fall back to that character's base.
+      dialogueEmotionMap.set(dialogueUnits[i].id, JEV_DELIVERY[emotion][0]);
     }
   }
 
