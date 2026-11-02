@@ -1847,9 +1847,12 @@ function segmentSoundCues(value, text, kind='sfx') {
 const secondsOf = length => String(length || '').split(':').reduce((total, part) => total * 60 + (Number(part) || 0), 0);
 
 // Pieces are raw catalog entries; the best fits for the wanted feels, genres and keywords come first.
+// Music downloads are capped at 25 MB; at Incompetech's 320 kbps that is about 10 minutes,
+// so hour-long pieces (~120 MB) are never picked only to fail. Unlisted lengths stay eligible.
+export const MUSIC_MAX_SECONDS = 600;
 export function rankMusic(pieces, {feels=[], genres=[], keywords=[]}={}, n=10) {
   const wantFeels = feels.map(feel => feel.toLowerCase()), wantGenres = genres.map(genre => genre.toLowerCase()), words = keywords.map(word => word.toLowerCase());
-  return (Array.isArray(pieces) ? pieces : []).filter(piece => piece?.filename && piece.title).map(piece => {
+  return (Array.isArray(pieces) ? pieces : []).filter(piece => piece?.filename && piece.title && secondsOf(piece.length) <= MUSIC_MAX_SECONDS).map(piece => {
     const pieceFeels = String(piece.feel || '').split(',').map(feel => feel.trim().toLowerCase());
     const text = [piece.title, piece.description, piece.instruments].join(' ').toLowerCase();
     const score = 3 * wantFeels.filter(feel => pieceFeels.includes(feel)).length
