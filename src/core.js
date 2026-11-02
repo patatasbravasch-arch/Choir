@@ -1991,7 +1991,9 @@ export function injectedCastRows(transcript, plan) {
       for(let piece=at+1;piece<next;piece++){
         const between=transcript.slice(dialogue[piece-1].end,dialogue[piece].start);
         const interrupted=/[,\u2014\u2013-][\s]*["\u201d]$/.test(dialogue[piece-1].text.trimEnd());
-        const oneTag=!/[.!?\u2026]["\u201d']?\s+\S/.test(between.trim());
+        const clauses=between.replace(/\b(?:Mr|Mrs|Ms|Mx|Dr|St|Prof|Sr|Jr|Capt|Lt|Sgt|Col|Gen|Rev|Mt)\./g,title=>title.slice(0,-1))
+          .split(/[.;:!?\u2026]+/).filter(part=>/\p{L}/u.test(part));
+        const oneTag=clauses.length<=1;
         if(!interrupted || !oneTag || between.length>120 || /\n[ \t]*\n/.test(between))break;
         assigned.set(piece,quote);
       }
