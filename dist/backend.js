@@ -1985,13 +1985,15 @@ function injectedCastRows(transcript, plan) {
     placed.forEach(([at,quote],index)=>{
       assigned.set(at,quote);
       // Later pieces of the same counted quote keep its speaker only when the
-      // speech was cut mid-sentence ("Wes," she said. "Meet someone.") by a
-      // short tag; a finished line may belong to someone else, so it goes to the planner.
+      // speech was cut mid-sentence ("Wes," she said. "Meet someone.") by one
+      // short tag. A finished line, or a second sentence between the pieces
+      // ("Mira said. Eve replied,"), may belong to someone else: the planner is asked.
       const next=placed[index+1]?.[0] ?? dialogue.length;
       for(let piece=at+1;piece<next;piece++){
         const between=transcript.slice(dialogue[piece-1].end,dialogue[piece].start);
         const interrupted=/[,\u2014\u2013-][\s]*["\u201d]$/.test(dialogue[piece-1].text.trimEnd());
-        if(!interrupted || between.length>120 || /\n[ \t]*\n/.test(between))break;
+        const oneTag=!/[.!?\u2026]["\u201d']?\s+\S/.test(between.trim());
+        if(!interrupted || !oneTag || between.length>120 || /\n[ \t]*\n/.test(between))break;
         assigned.set(piece,quote);
       }
     });
@@ -2269,6 +2271,9 @@ async function planWithJev({ transcript, config, apiKey, endpoint, context = '',
   const dialogueUnits = units.filter(u => u.kind === 'dialogue');
   let speakerChoices = [];
   let emotionChoices = [];
+  // Delivery is asked only once the speakers are settled and no fallback to the LLM planner
+  // will replace this plan; an answer that would be discarded costs a whole Decision round.
+  let classifyDelivery = null;
 
   // Each question carries its line in place: a bare quote such as "Robots?" cannot be attributed on its own.
   const passage = u => `${transcript.slice(Math.max(0, u.start - 300), u.start)}[[${u.text}]]${transcript.slice(u.end, u.end + 300)}`;
@@ -2293,19 +2298,11 @@ async function planWithJev({ transcript, config, apiKey, endpoint, context = '',
       speakerChoices = choices.length
         ? (await ask('speaker', u => ({ type: 'choice', instructions: `Who says the words marked [[ ]] out loud, or thinks them, at this moment in the scene? Use speech tags, nearby actions and turn-taking. If nobody says or thinks them (a quoted term, written text, or words only reported), choose Nobody. Passage: "${passage(u)}"`, criteria }))).map(choice => choice || UNLISTED_SPEAKER)
         : dialogueUnits.map(() => UNLISTED_SPEAKER);
-      if (config.useStyle !== false) {
-        // Delivery styles are optional: a rejected emotion answer must not discard the speakers.
-        try {
-          emotionChoices = await ask('emotion', u => ({
-            type: 'choice',
-            instructions: `${DELIVERY_CONTEXT_RULES}\nChoose the best delivery of the line marked [[ ]] in this passage: "${passage(u)}"`,
-            criteria: JEV_DELIVERY_CHOICES
-          }));
-        } catch (error) {
-          if (signal?.aborted) throw error;
-          emotionChoices = [];
-        }
-      }
+      if (config.useStyle !== false) classifyDelivery = () => ask('emotion', u => ({
+        type: 'choice',
+        instructions: `${DELIVERY_CONTEXT_RULES}\nChoose the best delivery of the line marked [[ ]] in this passage: "${passage(u)}"`,
+        criteria: JEV_DELIVERY_CHOICES
+      }));
     } else {
       const items = dialogueUnits.map(u => {
         const localContext = transcript.slice(Math.max(0, u.start - 300), Math.min(transcript.length, u.end + 300));
@@ -2322,22 +2319,14 @@ async function planWithJev({ transcript, config, apiKey, endpoint, context = '',
         question: 'Which character speaks this dialogue'
       }) : dialogueUnits.map(() => UNLISTED_SPEAKER);
 
-      if (config.useStyle !== false) {
-        const emotions = Object.entries(JEV_DELIVERY_CHOICES).map(([name,description])=>({name,description}));
-        try {
-          emotionChoices = await classifyWithJev({
-            items,
-            candidates: emotions,
-            apiKey: key,
-            endpoint: ep,
-            signal,
-            question: `${DELIVERY_CONTEXT_RULES}\nUse this line's before-and-after context in state.lines (or state), and choose its best delivery`
-          });
-        } catch (error) {
-          if(signal?.aborted)throw error;
-          emotionChoices = [];
-        }
-      }
+      if (config.useStyle !== false) classifyDelivery = () => classifyWithJev({
+        items,
+        candidates: Object.entries(JEV_DELIVERY_CHOICES).map(([name,description])=>({name,description})),
+        apiKey: key,
+        endpoint: ep,
+        signal,
+        question: `${DELIVERY_CONTEXT_RULES}\nUse this line's before-and-after context in state.lines (or state), and choose its best delivery`
+      });
     }
   }
   // Name speakers outside the cast from the story's own names; lines whose speaker stays unnamed keep the fallback below.
@@ -2360,6 +2349,11 @@ async function planWithJev({ transcript, config, apiKey, endpoint, context = '',
   if (config.allowLlmFallback === true && speakerChoices.some((choice,index)=>choice===UNLISTED_SPEAKER && !unisonSpeakers(transcript,dialogueUnits[index],config)?.length)) throw new Error('Jev found dialogue from someone who is not in the cast.');
   const unresolved = speakerChoices.filter((choice,index)=>choice===UNLISTED_SPEAKER && !unisonSpeakers(transcript,dialogueUnits[index],config)?.length);
   if(unresolved.length>1)throw new Error('Jev could not identify multiple dialogue speakers. Choose the Standard LLM planner or add their names and aliases to the cast; unnamed people cannot safely share one Unknown speaker voice.');
+  // Delivery styles are optional: a rejected emotion answer must not discard the speakers.
+  if (classifyDelivery) {
+    try { emotionChoices = await classifyDelivery(); }
+    catch (error) { if (signal?.aborted) throw error; emotionChoices = []; }
+  }
 
   const dialogueSpeakerMap = new Map();
   const dialogueEmotionMap = new Map();
@@ -2705,7 +2699,9 @@ async function chooseCommunityVoice({ speaker, wish, language, used, profile, in
     try{return await Promise.race([run(choiceController.signal),stopped]);}finally{clearTimeout(timer);signal?.removeEventListener('abort',cancel);}
   };
   let pick;
-  {
+  // One usable candidate leaves nothing to choose; asking a model would only cost a call.
+  if(voices.length===1)pick=0;
+  else {
     let failure;
     if(typeof spindle.decisions?.evaluate==='function' || input.jevApiKey?.trim()){
       try{pick=await bounded(async choiceSignal=>validate((await decide(state,questions,input,userId,choiceSignal))?.q0?.choice));}
@@ -2753,7 +2749,7 @@ async function castCommunityVoices(raw, config, chosen, cast, prefetch) {
   const keyOf = name => normalizeName(resolveActor(name)?.speaker || name);
   const language = /^[a-z]{2}/.exec(String(raw.language || '').toLowerCase())?.[0] || 'en';
   const used = new Set([...actors.map(actor => actor.voice), ...[...chosen.values()].map(voice => voice.id)].filter(Boolean));
-  const selections=raw.segments.flatMap(segment=>[segment,...(Array.isArray(segment?.unison)?segment.unison:[])]);
+  const selections=raw.segments.flatMap(segment=>Array.isArray(segment?.unison) && segment.unison.length?segment.unison:[segment]);
   const targets=new Map();
   for (const segment of selections) {
     const key = keyOf(segment?.speaker);
@@ -3040,7 +3036,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
         let content='';
         try{content=(await generateRaw({choirPurpose:'Non-story check',type:'raw',userId,model:connection.model,connection_id:connection.id,messages:skipCheckPrompt(lines,width),
           ...textGenerationOptions(connection,{max_tokens:4096,temperature:0}),signal:controller.signal})).content;}
-        catch(error){if(controller.signal.aborted || width===60)throw error;}
+        catch(error){if(controller.signal.aborted || width===60 || fatalProviderError(error))throw error;}
         if(controller.signal.aborted)return;
         if((labels=parseSkipRows(content,lines.length)))break;
       }

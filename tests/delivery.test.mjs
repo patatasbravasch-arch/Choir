@@ -212,3 +212,9 @@ test('Fish S1 treats cannot as a negation',async()=>{
  const {fishS1Cues}=await import('../src/delivery.js');
  assert.deepEqual(fishS1Cues('Cannot be angry'),[]);assert.deepEqual(fishS1Cues('calm, cannot sound scared'),['calm']);
 });
+
+test('Ignore style sends no acting to a generic provider but keeps pronunciation and accent; Automatic still sends it',()=>{
+ const generic=styleParam=>voiceDelivery({segment:{speaker:'Mira',text:'Hello.',style:'Warm'},actor:{speaker:'Mira',style:'Calm',pronunciation:'Mira: MEE-rah',accent:'Irish'},family:'openai',connection:{provider:'openai_tts',model:'gpt'},supported:{instructions:{type:'string'}},styleParam});
+ const ignored=generic('none');assert.ok(!/Warm|Calm/.test(ignored.parameters.instructions || ''));assert.match(ignored.parameters.instructions,/MEE-rah/);assert.match(ignored.parameters.instructions,/Accent: Irish/);
+ assert.match(generic('').parameters.instructions,/Warm/);
+});

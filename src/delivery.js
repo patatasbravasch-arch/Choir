@@ -122,12 +122,13 @@ export function voiceDelivery({segment, actor, narrator = false, family, connect
     if (Array.isArray(allowed) && !allowed.some(value => (value.id ?? value) === actor.accent)) throw new Error(`Accent ${actor.accent} is not supported by ${connection.name || 'this connection'}.`);
     parameters.accent = actor.accent;
   }
-  const instructions = [acting, actor?.pronunciation, actor?.accent && !supports('accent') ? `Accent: ${actor.accent}` : ''].filter(Boolean).join('. ');
+  const ignoreStyle = !['gemini','fish_audio'].includes(family) && styleParam === 'none';
+  const instructions = [ignoreStyle ? '' : acting, actor?.pronunciation, actor?.accent && !supports('accent') ? `Accent: ${actor.accent}` : ''].filter(Boolean).join('. ');
   const openRouter = connection.provider === 'openrouter_tts';
   let parameter;
   if (family === 'gemini') parameter = modernGemini || !openRouter && supports('speech_style') ? 'speech_style' : !openRouter && supports('instructions') ? 'instructions' : undefined;
   else if (family === 'fish_audio') parameter = !openRouter && supports('voice_direction') ? 'voice_direction' : undefined;
-  else parameter = styleParam && supports(styleParam) ? styleParam : ['instructions', 'instruct', 'prompt'].find(supports);
+  else parameter = styleParam && styleParam !== 'none' && supports(styleParam) ? styleParam : ['instructions', 'instruct', 'prompt'].find(supports);
   // Clear native Fish directions because its cues are already in the text;
   // empty Gemini instructions override the relay's conversational default.
   if (parameter && (instructions || ['gemini','fish_audio'].includes(family))) parameters[parameter] = fishS2?'':instructions;

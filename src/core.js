@@ -1984,13 +1984,15 @@ export function injectedCastRows(transcript, plan) {
     placed.forEach(([at,quote],index)=>{
       assigned.set(at,quote);
       // Later pieces of the same counted quote keep its speaker only when the
-      // speech was cut mid-sentence ("Wes," she said. "Meet someone.") by a
-      // short tag; a finished line may belong to someone else, so it goes to the planner.
+      // speech was cut mid-sentence ("Wes," she said. "Meet someone.") by one
+      // short tag. A finished line, or a second sentence between the pieces
+      // ("Mira said. Eve replied,"), may belong to someone else: the planner is asked.
       const next=placed[index+1]?.[0] ?? dialogue.length;
       for(let piece=at+1;piece<next;piece++){
         const between=transcript.slice(dialogue[piece-1].end,dialogue[piece].start);
         const interrupted=/[,\u2014\u2013-][\s]*["\u201d]$/.test(dialogue[piece-1].text.trimEnd());
-        if(!interrupted || between.length>120 || /\n[ \t]*\n/.test(between))break;
+        const oneTag=!/[.!?\u2026]["\u201d']?\s+\S/.test(between.trim());
+        if(!interrupted || !oneTag || between.length>120 || /\n[ \t]*\n/.test(between))break;
         assigned.set(piece,quote);
       }
     });
