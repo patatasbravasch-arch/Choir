@@ -1464,3 +1464,26 @@ test('new characters\' voices are picked by one batched Decision among described
   const ranked=JSON.parse(JSON.stringify((await plain.result()).message.result));
   assert.equal(raw,1);assert.equal(ranked.segments.find(segment=>segment.speaker==='Nurse').voice,'f2');assert.equal(ranked.segments.find(segment=>segment.speaker==='Clerk').voice,'f3');
 });
+
+test('shared or silent NPC voices ask no voice Decision, and a missing Decision connection is not logged as a call',async()=>{
+  const voices=[{id:'n',gender:'male',description:'Deep'},{id:'f1',gender:'female',description:'Soft'},{id:'f2',gender:'female',description:'Warm'},{id:'f3',gender:'female',description:'Bright'}];
+  const cast={...config,voices,fixed:[{speaker:'Narrator',voice:'n',style:''}],npcs:[],useStyle:false};
+  const transcript='"Hi," the nurse said. "Hello," the clerk said.',rows='D0|Nurse|\nD2|Clerk|\nNPC|Nurse|female|warm\nNPC|Clerk|female|bright';
+  for(const npcPolicy of [{mode:'single',voice:'f3'},{mode:'skip'}]){
+    let asked=0;const h=await harness(async()=>({content:rows}),null,null,null,null,{evaluate:async()=>{asked++;return {answers:{}};}});
+    h.send('plan',{transcript,config:{...cast,npcPolicy}});
+    const result=JSON.parse(JSON.stringify((await h.result()).message.result));
+    assert.equal(asked,0,npcPolicy.mode);
+    if(npcPolicy.mode==='single')assert.ok(result.segments.filter(segment=>segment.speaker!=='Narrator').every(segment=>segment.voice==='f3'));
+  }
+  // No Decision connection: nothing is sent, so the ranked voices are kept and no failed call appears.
+  const none=await harness(async()=>({content:rows}),null,null,null,null,{evaluate:async()=>{throw Error('No default Decision connection configured');}});
+  none.send('plan',{transcript,config:cast});
+  const ranked=JSON.parse(JSON.stringify((await none.result()).message.result));
+  assert.equal(ranked.segments.find(segment=>segment.speaker==='Nurse').voice,'f2');
+  assert.ok(!none.sent.some(item=>item.message.call?.purpose==='Jev NPC voices'));
+  // The Decision connection chosen in settings is the one asked.
+  let connection;const chosen=await harness(async()=>({content:rows}),null,null,null,null,{evaluate:async input=>{connection=input.connection_id;return {answers:{}};}});
+  chosen.send('plan',{transcript,config:{...cast,decisionConnection:'dc1'}});
+  await chosen.result();assert.equal(connection,'dc1');
+});

@@ -1456,7 +1456,9 @@ async function castReply(transcript, config, context, llm) {
     const rows=[...cast.npcs.values()],fuzzyRows=rows.filter(row=>castKey(row.name)===castKey(name));
     const row=rows.find(row=>normalizeName(row.name)===key) || rows.find(row=>resolveActor(row.name)===actor && actor) || (fuzzyRows.length===1?fuzzyRows[0]:undefined) || {};
     const gender=[selected?.gender,row.gender].find(value=>['female','male','neutral'].includes(value)) || 'auto';
-    let choice={speaker:name,voice:selected?.voice || '',gender};
+    // A new NPC under a shared voice takes it at once; there is nothing to rank or pick.
+    const shared=npc && config.npcPolicy?.mode==='single'?config.npcPolicy.voice:'';
+    let choice={speaker:name,voice:selected?.voice || shared || '',gender};
     if(!choice.voice) {
       const route=actor?selected.route || config.defaultRoute || '':npcRoute(config),pool=routeVoices(config,route,npc);
       const fits=voice=>gender==='auto' || !voice.gender || voice.gender===gender,free=pool.filter(voice=>!used.has(voice.id));
@@ -1470,7 +1472,8 @@ async function castReply(transcript, config, context, llm) {
       choice.voice=(listed || ranked[0] || (!community && (free[0] || pool[0])))?.id || '';
       if(choice.voice){
         used.add(choice.voice);
-        if(!listed && ranked.length>1)choice.voicePick={wish:String(row.voice || ''),candidates:ranked.slice(0,8).map(voice=>voice.id)};
+        // Silent NPCs ("skip") still need a valid voice, but never one worth a Decision.
+        if(!listed && ranked.length>1 && !(npc && config.npcPolicy?.mode==='skip'))choice.voicePick={wish:String(row.voice || ''),candidates:ranked.slice(0,8).map(voice=>voice.id)};
       }
       else if(config.communityRoutes?.[route]) {
         const words=String(row.voice || '').toLowerCase().match(/[a-z-]+/g) || [];
@@ -2142,7 +2145,9 @@ function reportCall(userId, entry) {
   try { spindle.sendToFrontend({ namespace: 'choir', call: { at: Date.now(), ...entry } }, userId); } catch {}
 }
 const DECISION_PURPOSES = [[/^speaker_/, 'Jev speakers'], [/^emotion_/, 'Jev delivery'], [/^name_/, 'Jev new names'], [/^voice_gender_/, 'Jev voice genders'], [/^npc_voice_/, 'Jev NPC voices'], [/^(?:gender|age|language)$/, 'Jev voice profile'], [/^q0$/, 'Decision choice (voice or sound)']];
-async function evaluateDecisions(request, options) {
+// An optional question with no Decision connection to answer it sends nothing, so it is not logged as a failed call.
+const noDecisionConnection = (request, error) => !request.connection_id && /no default decision connection/i.test(error?.message || '');
+async function evaluateDecisions(request, options, { optional = false } = {}) {
   const keys = Object.keys(request.questions || {}), started = Date.now();
   const purpose = DECISION_PURPOSES.find(([pattern]) => keys.some(key => pattern.test(key)))?.[1] || 'Decision';
   try {
@@ -2150,8 +2155,9 @@ async function evaluateDecisions(request, options) {
     reportCall(request.userId, { kind: 'Decision', purpose, model: result?.model, questions: keys.length, ms: Date.now() - started });
     return result;
   } catch (error) {
+    if (optional && noDecisionConnection(request, error)) throw error;
     reportCall(request.userId, { kind: 'Decision', purpose, questions: keys.length, ms: Date.now() - started, error: String(error?.message || error).slice(0, 200) });
-    if (!request.connection_id && /no default decision connection/i.test(error?.message || '')) {
+    if (noDecisionConnection(request, error)) {
       throw new Error('No Decision connection is selected. Choose one in Choir under Settings → Planner → Decision connection, or mark a Decision connection as default in Lumiverse.', { cause: error });
     }
     throw error;
@@ -2528,6 +2534,8 @@ async function castCatalogueVoices(raw, input, userId, signal, progress) {
   const picks = new Map();
   for (const entry of entries) if (entry?.voicePick?.candidates?.length > 1 && !picks.has(normalizeName(entry.speaker))) picks.set(normalizeName(entry.speaker), { speaker: entry.speaker, gender: entry.gender, voice: entry.voice, ...entry.voicePick });
   for (const entry of entries) if (entry) delete entry.voicePick;
+  // The settings' Decision connection and Jev key travel in the cast config.
+  input = { ...input, decisionConnection: input.decisionConnection || input.config?.decisionConnection, jevApiKey: input.jevApiKey || input.apiKey || input.config?.jevApiKey, jevEndpoint: input.jevEndpoint || input.endpoint || input.config?.jevEndpoint };
   if (!picks.size || typeof spindle.decisions?.evaluate !== 'function' && !input.jevApiKey?.trim()) return;
   const list = [...picks.values()].slice(0, 256), catalogue = Array.isArray(input.config?.voices) ? input.config.voices : [];
   const describe = id => { const voice = catalogue.find(item => item.id === id); return [id, voice?.gender, voice?.description || voice?.name].filter(Boolean).join(' — '); };
@@ -2538,7 +2546,7 @@ async function castCatalogueVoices(raw, input, userId, signal, progress) {
   }]));
   progress?.({ stage: 'Choosing voices for new characters' });
   let answers;
-  try { answers = await decide({ characters: list.map(pick => pick.speaker) }, questions, input, userId, signal); }
+  try { answers = await decide({ characters: list.map(pick => pick.speaker) }, questions, input, userId, signal, { optional: true }); }
   catch (error) { if (signal?.aborted) throw error; return; }
   const used = new Set(entries.map(entry => entry?.voice).filter(Boolean));
   for (const [index, pick] of list.entries()) {
@@ -2549,9 +2557,9 @@ async function castCatalogueVoices(raw, input, userId, signal, progress) {
   }
 }
 
-async function decide(state, questions, input, userId, signal) {
+async function decide(state, questions, input, userId, signal, flags) {
   return typeof spindle.decisions?.evaluate === 'function'
-    ? (await evaluateDecisions({ userId, connection_id: input.decisionConnection || undefined, state, questions }, { signal })).answers
+    ? (await evaluateDecisions({ userId, connection_id: input.decisionConnection || undefined, state, questions }, { signal }, flags)).answers
     : input.jevApiKey?.trim() ? await jevDecision({ apiKey: input.jevApiKey, endpoint: input.jevEndpoint, state, questions, signal }) : {};
 }
 
