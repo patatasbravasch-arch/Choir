@@ -1455,7 +1455,9 @@ export async function castReply(transcript, config, context, llm) {
     const rows=[...cast.npcs.values()],fuzzyRows=rows.filter(row=>castKey(row.name)===castKey(name));
     const row=rows.find(row=>normalizeName(row.name)===key) || rows.find(row=>resolveActor(row.name)===actor && actor) || (fuzzyRows.length===1?fuzzyRows[0]:undefined) || {};
     const gender=[selected?.gender,row.gender].find(value=>['female','male','neutral'].includes(value)) || 'auto';
-    let choice={speaker:name,voice:selected?.voice || '',gender};
+    // A new NPC under a shared voice takes it at once; there is nothing to rank or pick.
+    const shared=npc && config.npcPolicy?.mode==='single'?config.npcPolicy.voice:'';
+    let choice={speaker:name,voice:selected?.voice || shared || '',gender};
     if(!choice.voice) {
       const route=actor?selected.route || config.defaultRoute || '':npcRoute(config),pool=routeVoices(config,route,npc);
       const fits=voice=>gender==='auto' || !voice.gender || voice.gender===gender,free=pool.filter(voice=>!used.has(voice.id));
@@ -1469,7 +1471,8 @@ export async function castReply(transcript, config, context, llm) {
       choice.voice=(listed || ranked[0] || (!community && (free[0] || pool[0])))?.id || '';
       if(choice.voice){
         used.add(choice.voice);
-        if(!listed && ranked.length>1)choice.voicePick={wish:String(row.voice || ''),candidates:ranked.slice(0,8).map(voice=>voice.id)};
+        // Silent NPCs ("skip") still need a valid voice, but never one worth a Decision.
+        if(!listed && ranked.length>1 && !(npc && config.npcPolicy?.mode==='skip'))choice.voicePick={wish:String(row.voice || ''),candidates:ranked.slice(0,8).map(voice=>voice.id)};
       }
       else if(config.communityRoutes?.[route]) {
         const words=String(row.voice || '').toLowerCase().match(/[a-z-]+/g) || [];
