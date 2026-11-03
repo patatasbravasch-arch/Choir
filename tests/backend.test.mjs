@@ -1510,3 +1510,48 @@ test('shared or silent NPC voices ask no voice Decision, and a missing Decision 
   chosen.send('plan',{transcript,config:{...cast,decisionConnection:'dc1'}});
   await chosen.result();assert.equal(connection,'dc1');
 });
+
+test('a quote answered as not spoken stays with the narrator even under a collective tag; a spoken one is still unison',async()=>{
+  const cast={voices:[{id:'n'},{id:'kore',gender:'female'},{id:'puck',gender:'male'}],fixed:[{speaker:'Narrator',voice:'n',style:''},{speaker:'Alice',voice:'kore',style:''},{speaker:'Bob',voice:'puck',style:''}],npcs:[],useStyle:false};
+  const transcript='OOC summary: Alice and Bob said in unison, "Hello."';
+  const plan=async rows=>{const h=await harness(async()=>({content:rows}));h.send('plan',{transcript,config:cast});return JSON.parse(JSON.stringify((await h.result()).message.result));};
+  const cited=await plan('D1|NOT_SPOKEN|');
+  assert.ok(cited.segments.every(segment=>segment.speaker==='Narrator' && !segment.unison),JSON.stringify(cited.segments));
+  const spoken=await plan('D1|Alice|');
+  assert.deepEqual(spoken.segments.find(segment=>segment.unison)?.unison.map(member=>member.voice),['kore','puck']);
+  // Jev answering Nobody is honoured the same way.
+  const jev=await harness(null,null,null,null,null,{evaluate:async input=>({answers:Object.fromEntries(Object.keys(input.questions).map(key=>[key,{choice:key.startsWith('speaker_')?'Nobody (not spoken aloud)':'natural'}]))})});
+  jev.send('planJev',{transcript,config:cast});
+  const answered=(await jev.result()).message;
+  assert.equal(answered.error,undefined);
+  assert.ok(answered.result.segments.every(segment=>segment.speaker==='Narrator' && !segment.unison),JSON.stringify(answered.result.segments));
+});
+
+test('two actors whose names differ only by | and ¦ stay distinct in the prompt and in the planner rows',async()=>{
+  const cast={voices:[{id:'n'},{id:'kore'},{id:'puck'}],fixed:[{speaker:'Narrator',voice:'n',style:''},{speaker:'Alice | Captain',voice:'kore',style:''},{speaker:'Alice ¦ Captain',voice:'puck',style:''}],npcs:[],useStyle:false};
+  let prompt;const voiceFor=async row=>{const h=await harness(async input=>{prompt=input.messages[1].content;return {content:row};});h.send('plan',{transcript:'"Hi."',config:cast});return (await h.result()).message.result.segments[0].voice;};
+  assert.equal(await voiceFor('D0|Alice ¦ Captain|'),'puck');
+  assert.match(prompt,/- Alice │ Captain\n- Alice ¦ Captain\n\(│ is part of a name/);
+  assert.equal(await voiceFor('D0|Alice │ Captain|'),'kore');
+  // A cast without a literal ¦ keeps writing | as ¦.
+  const plain={...cast,fixed:cast.fixed.slice(0,2)};
+  const h=await harness(async input=>{prompt=input.messages[1].content;return {content:'D0|Alice ¦ Captain|'};});
+  h.send('plan',{transcript:'"Hi."',config:plain});
+  assert.equal((await h.result()).message.result.segments[0].voice,'kore');assert.match(prompt,/- Alice ¦ Captain\n/);
+});
+
+test('an unfinished Choir note in an earlier reply is stripped from the history, other comments are kept',async()=>{
+  let interceptor;const h=await harness(null,null,null,null,null,null,{},{registerInterceptor:handler=>{interceptor=handler;},userStorage:{getJson:async(path,{fallback})=>fallback,setJson:async()=>{}}});
+  const history=[{role:'assistant',content:'Story. <!--choir\nQ1|Alice|soft\n'},{role:'assistant',content:'Closed. <!--choir\nQ1|Mira|x\n--> End.'},{role:'assistant',content:'Kept <!-- author note --> text.'},{role:'user',content:'Next <!--choir'}];
+  const {messages}=await interceptor(history,{chatId:'chat-a',userId:'user-a',generationType:'normal'});
+  assert.deepEqual(messages.map(message=>message.content),['Story.','Closed.  End.','Kept <!-- author note --> text.','Next <!--choir']);
+  void h;
+});
+
+test('an optional sound choice with no Decision connection is not logged as a failed call',async()=>{
+  const h=await harness(null,null,null,null,null,{evaluate:async()=>{throw Error('No default Decision connection configured');}},{},{cors:async()=>({status:200,headers:{'content-type':'application/json'},body:JSON.stringify({results:[{id:1,name:'door',tags:['door'],duration:1,previews:{'preview-hq-mp3':'https://cdn.freesound.org/a.mp3'}},{id:2,name:'door two',tags:['door'],duration:1,previews:{'preview-hq-mp3':'https://cdn.freesound.org/b.mp3'}}]})})});
+  h.send('freesound',{query:'door',apiKey:'fixture-key',moment:'The door opened.'});
+  const message=(await h.result()).message;
+  assert.ok(!h.sent.some(item=>item.message.call?.error),JSON.stringify(h.sent.map(item=>item.message.call).filter(Boolean)));
+  void message;
+});

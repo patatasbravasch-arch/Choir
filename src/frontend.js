@@ -464,7 +464,7 @@ export async function setup(ctx) {
   let audioDatabase,audioDatabaseHandle;
   const sessionAudio=new Map();
   const paragraphAudioCache=new Map(),foleyCache=new Map(),volatilePolicies=new Map(),transcriptCache=new Map();
-  let audioInvalidations=null,paragraphPlaybackScope=null;
+  let audioInvalidations=null,paragraphPlaybackScope=null,paragraphPlaybackText='';
   const audioExpired=record=>record?.expiresAt!=null && record.expiresAt<=Date.now();
   function recordingWithRetention(record,retention){
     const createdAt=record.createdAt ?? Date.now();
@@ -492,6 +492,9 @@ export async function setup(ctx) {
     if(stopParagraph)stop(false);
     if(broadcast && change.kind!=='prune')try{audioInvalidations?.postMessage(change);}catch{}
   }
+  // Each saved mix gets its own revision, so an export can tell a replacement from the mix it read,
+  // even when both have the same size and length.
+  const mixRevision=()=>globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
   function invalidateRecordingAudio(key){const [,targetChat,messageId]=JSON.parse(key);invalidateVolatileAudio({kind:'delete',chatId:targetChat,messageId});}
   function readVolatileAudio(cache,key){
     const entry=cache.get(key);
@@ -4128,7 +4131,7 @@ export async function setup(ctx) {
       const playedAudio=await mix?.finish();if(playedCapture===mix)playedCapture=null;
       // A carried music load can save its cache after foreground playback
       // finishes. That late write must retain the newly completed mix.
-      if(playedAudio)savedPlayedAudio={...playedAudio,content:source.content,complete:fullMessage && mix.continuous};
+      if(playedAudio)savedPlayedAudio={...playedAudio,revision:mixRevision(),content:source.content,complete:fullMessage && mix.continuous};
       await waitForSaves();
       if(saveError)status(`Audio could not be saved: ${saveError}`,true);
       return {blobs,segments,warnings:[...warnings],passages,passageKeys:savedPassageKeys(),playedAudio:playedAudio?savedPlayedAudio:null,recordingMetadata};
@@ -4261,7 +4264,7 @@ export async function setup(ctx) {
         player.push(recording.segments);player.finish();
         const {warnings,playedAudio}=await player.playbackPromise;
         if(token!==revision || ctrl.signal.aborted)throw abortError();
-        if(playedAudio){const saved=await recordingStore('get',recordingKey(targetChat,messageId));await recordingStore('put',recordingKey(targetChat,messageId),{...saved,playedAudio:{...playedAudio,content:recording.content}});}
+        if(playedAudio){const saved=await recordingStore('get',recordingKey(targetChat,messageId));await recordingStore('put',recordingKey(targetChat,messageId),{...saved,playedAudio:{...playedAudio,revision:mixRevision(),content:recording.content}});}
         if(token===revision)status('Playback finished. Name pronunciation updated.'+playedAudioHint(playedAudio)+foleyWarning(warnings));
         return;
       }
@@ -4302,7 +4305,7 @@ export async function setup(ctx) {
       }
       const playedAudio=await mix?.finish();if(playedCapture===mix)playedCapture=null;
       if(token!==revision || ctrl.signal.aborted)throw abortError();
-      if(playedAudio)await recordingStore('put',recordingKey(targetChat,messageId),{...recording,playedAudio:{...playedAudio,content:recording.content,complete:wholeMessage && mix.continuous}});
+      if(playedAudio)await recordingStore('put',recordingKey(targetChat,messageId),{...recording,playedAudio:{...playedAudio,revision:mixRevision(),content:recording.content,complete:wholeMessage && mix.continuous}});
       if(token===revision)status('Replay finished.'+playedAudioHint(playedAudio?{...playedAudio,complete:wholeMessage && mix.continuous}:null));
     } finally {if(token===revision){playedCapture?.discard();playedCapture=null;fadeOutBeds();activePlayback=null;advancePlayback=null;generationPolicyChanged=null;updateNextControls();controller=null;setBusy(false);}}
   }
@@ -4479,7 +4482,7 @@ export async function setup(ctx) {
       }
       // A deletion or retention change in another tab must still win during a
       // long export. Validate each saved mix again before writing the archive.
-      for(let index=checks.length-1;index>=0;index--){const check=checks[index],current=await recordingStore('get',check.key);assertCurrent();const local=ctx.messages.getRecent(500).find(message=>message.id===check.messageId);if(!downloadableRecording(current,check.content) || current.playedAudio.blob.size!==check.played.blob.size || current.playedAudio.duration!==check.played.duration || local && !sameSpeech(local.content,check.content)){entries.splice(index,1);skipped++;}}
+      for(let index=checks.length-1;index>=0;index--){const check=checks[index],current=await recordingStore('get',check.key);assertCurrent();const local=ctx.messages.getRecent(500).find(message=>message.id===check.messageId);if(!downloadableRecording(current,check.content) || current.playedAudio.revision!==check.played.revision || current.playedAudio.blob.size!==check.played.blob.size || current.playedAudio.duration!==check.played.duration || local && !sameSpeech(local.content,check.content)){entries.splice(index,1);skipped++;}}
       if(!entries.length)throw new Error('No complete, current recordings are available. Play a whole message first.');
       entries.sort((a,b)=>a.index-b.index);const zip=createWavArchive(entries);assertCurrent();saveDownload(zip,entries[0].filename.replace(/ - \d+\.wav$/u,'.zip'));status(`Downloaded ${entries.length} saved recording${entries.length===1?'':'s'} as separate WAVs in one ZIP.${skipped?` Skipped ${skipped} partial, expired or changed recording${skipped===1?'':'s'}.`:''}`);
     }finally{await decoder?.close().catch(()=>{});if(controller===ctrl){controller=null;setBusy(false);}}
@@ -4514,7 +4517,7 @@ export async function setup(ctx) {
       const filename=playedAudioFilename(activeCharacterCard?.name || message?.name || 'Char',targetChat,message?.index_in_chat);
       if(disposed || targetChat!==chatId || token!==revision || !sameSpeech(ctx.messages.getContent(messageId),content))throw abortError();
       const current=await recordingStore('get',recordingKey(targetChat,messageId));ctrl.signal.throwIfAborted();
-      if(!downloadableRecording(current,content) || current.playedAudio.blob.size!==played.blob.size || current.playedAudio.duration!==played.duration)
+      if(!downloadableRecording(current,content) || current.playedAudio.revision!==played.revision || current.playedAudio.blob.size!==played.blob.size || current.playedAudio.duration!==played.duration)
         throw new Error('This recording was deleted or replaced while the download was prepared. Nothing was downloaded.');
       if(disposed || targetChat!==chatId || token!==revision)throw abortError();
       const url=URL.createObjectURL(new Blob([wav],{type:'audio/wav'})),link=document.createElement('a');
@@ -4872,6 +4875,12 @@ export async function setup(ctx) {
       const edited=typeof payload?.message?.content==='string'?payload.message.content:id && ctx.messages.getContent(id);
       const spokenUnchanged=(event==='MESSAGE_EDITED' || event==='SWIPE_EDITED') && edited!=null && sameSpeech(edited,affected?.content);
       if(affected && (!id || id===affected.messageId) && !spokenUnchanged){stop(false);clearPlan();status('Message changed. Generate a fresh plan.');}
+      // Companion playback of the changed message stops too, unless its paragraph is still there word for word.
+      const companion=paragraphPlaybackScope;
+      if(companion?.messageId && id===companion.messageId){
+        if(event==='MESSAGE_DELETED')invalidateVolatileAudio({kind:'delete',chatId:companion.chatId,messageId:id});
+        else if(edited==null || !sameSpeech(edited,paragraphPlaybackText) && !String(edited).includes(paragraphPlaybackText))stop(false);
+      }
       renderMessages();
     }));
   }
@@ -5096,7 +5105,7 @@ export async function setup(ctx) {
       const snapshot = { ...structuredClone(cap), fixed: castInfo.fixed, voices: castInfo.voices, npcs: castInfo.npcs, defaultRoute: castInfo.defaultRoute, npcPolicy:castInfo.npcPolicy };
 
       snapshot.audioScope={chatId:targetChat || chatId,messageId:messageId || null};
-      paragraphPlaybackScope=snapshot.audioScope;
+      paragraphPlaybackScope=snapshot.audioScope;paragraphPlaybackText=String(text || '').trim();
       const ctrl = new AbortController();ctrl.choirNextText = nextText;ctrl.choirSignature = signature;
       controller = ctrl;
       paragraphPrefetchControllers.add(ctrl);
@@ -5104,6 +5113,10 @@ export async function setup(ctx) {
       updateTransport();
       const onAbort = () => ctrl.abort();
       signal?.addEventListener('abort', onAbort, { once: true });
+      ctrl.choirDetach = () => signal?.removeEventListener('abort', onAbort);
+      // Adopted next-text work now belongs to this paragraph: the finished caller that started it
+      // can no longer cancel it, and this paragraph's own cancellation does.
+      for(const pending of handoff){pending.choirDetach?.();ctrl.signal.addEventListener('abort',()=>pending.abort(),{once:true});}
       try {
         let cueWarning='';
         try{await loadParagraphCues(text,snapshot,speaker,ctrl.signal,undefined,messageId,paragraphIndex);}
@@ -5229,7 +5242,7 @@ export async function setup(ctx) {
           signal?.removeEventListener('abort',onAbort);
           if(!disposed)updateTransport();
         });
-        if (controller === ctrl){controller=null;paragraphPlaybackScope=null;}
+        if (controller === ctrl){controller=null;paragraphPlaybackScope=null;paragraphPlaybackText='';}
         if (token === revision){clearReadAlong();advancePlayback=null;generationPolicyChanged=null;}
         updateTransport();
       }

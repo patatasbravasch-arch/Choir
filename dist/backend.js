@@ -773,7 +773,8 @@ function validatePlan(raw, transcript, config) {
       if (!matchOk) throw new Error(`Segment ${index+1} changes or skips the original text. Copy exact consecutive substrings.`);
       cursor = tIdx;
     }
-    const detected=/^["“«「『„][\s\S]*["”»」』“]$/.test(text)?unisonSpeakers(transcript,{kind:'dialogue',start:sourceStart,end:cursor},config):null;
+    const narrated=(aliases.get(normalizeName(segment.speaker)) || normalizeName(segment.speaker))==='narrator';
+    const detected=!narrated && /^["“«「『„][\s\S]*["”»」』“]$/.test(text)?unisonSpeakers(transcript,{kind:'dialogue',start:sourceStart,end:cursor},config):null;
     const supplied=segment.unison;
     if(supplied!==undefined && (!Array.isArray(supplied) || supplied.length<2 || supplied.length>5 || !/^["“«「『„][\s\S]*["”»」』“]$/.test(text)))throw new Error('Unison needs 2–5 speakers and one quoted dialogue turn.');
     // A collective tag without clear names keeps the planner's single speaker.
@@ -1351,21 +1352,21 @@ function routeVoices(config, route, npc) {
 }
 
 function castingPrompt(units, config, context) {
-  const actors=[...config.fixed,...config.npcs],cast=[];
+  const actors=[...config.fixed,...config.npcs],cast=[],mark=castMark(config);
   for(const actor of actors) {
     if(normalizeName(actor.speaker)==='narrator')continue;
     const aliases=(actor.aliases || []).filter(Boolean);
     const profile=(config.characterProfiles || []).find(item=>item.speaker===actor.speaker);
     const role=profile?.role || (config.npcs.includes(actor)?'npc':'');
     const about=Array.from(String(profile?.description || '').replace(/\s+/g,' ')).slice(0,220).join('');
-    cast.push(`- ${castField(actor.speaker)}${aliases.length?` (aliases: ${aliases.map(castField).join(', ')})`:''}${role?` [${role}]`:''}${about?`: ${about}`:''}`);
+    cast.push(`- ${castField(actor.speaker,mark)}${aliases.length?` (aliases: ${aliases.map(alias=>castField(alias,mark)).join(', ')})`:''}${role?` [${role}]`:''}${about?`: ${about}`:''}`);
   }
-  const unvoiced=actors.filter(actor=>!(config.npcs.includes(actor)?npcCastActor(actor,config):actor).voice).map(actor=>castField(actor.speaker));
+  const unvoiced=actors.filter(actor=>!(config.npcs.includes(actor)?npcCastActor(actor,config):actor).voice).map(actor=>castField(actor.speaker,mark));
   const system=CASTING_SYSTEM+`\n${DELIVERY_CONTEXT_RULES}`+(unvoiced.length?`\nThese cast members have no voice yet; add an NPC line for each of them too: ${unvoiced.join(', ')}.`:'')
     +(config.communityRoutes && Object.keys(config.communityRoutes).length?`\nChoose the NPC voice words from: ${FISH_VOICE_TAGS}. Then add one line: LANG|ISO 639-1 code of the story's language.`:'');
   const lines=units.map(unit=>unit.kind==='dialogue'?`D${unit.id}: ${unit.text}`:`   ${unit.text}`);
   return [{role:'system',content:system},
-    {role:'user',content:`Cast:\n${cast.join('\n')}${cast.some(line=>line.includes('\u00a6'))?'\n(\u00a6 is part of a name; copy it exactly, never as |.)':''}\n\nEarlier chat (context only):\n${context}\n\nReply to cast (indented lines are narration):\n${lines.join('\n')}`}];
+    {role:'user',content:`Cast:\n${cast.join('\n')}${actors.some(actor=>[actor.speaker,...(actor.aliases || [])].some(name=>String(name ?? '').includes('|')))?`\n(${mark} is part of a name; copy it exactly, never as |.)`:''}\n\nEarlier chat (context only):\n${context}\n\nReply to cast (indented lines are narration):\n${lines.join('\n')}`}];
 }
 
 // Voices whose name, description or tags share the most words with the planner's description come first;
@@ -1378,15 +1379,20 @@ function rankVoices(voices,wish){
 
 // Names may contain | (e.g. "Alice | Captain"), the row separator; prompts and rows write it as ¦
 // and parsed names turn it back, so such a name stays one field and keeps its assigned voice.
-const castField=name=>String(name ?? '').replace(/\|/g,'\u00a6');
-const fromCastField=value=>String(value ?? '').replace(/\u00a6/g,'|');
+// When a cast name already contains \u00a6, another mark no name uses stands in for |, so two
+// distinct actors ("Alice | Captain", "Alice \u00a6 Captain") never reach the planner as one name.
+const PIPE_MARKS=['\u00a6','\u2502','\u2223','\u01c0'];
+const pipeMark=names=>PIPE_MARKS.find(mark=>!names.some(name=>String(name ?? '').includes(mark))) || PIPE_MARKS[0];
+const castMark=config=>pipeMark([...(config.fixed || []),...(config.npcs || [])].flatMap(actor=>[actor.speaker,...(actor.aliases || [])]));
+const castField=(name,mark='\u00a6')=>String(name ?? '').replace(/\|/g,mark);
+const fromCastField=(value,mark='\u00a6')=>String(value ?? '').split(mark).join('|');
 // Rows: `D<id>|speaker|style`, `NPC|name|gender|voice` and `LANG|code`; anything else is ignored.
-function parseCastRows(text) {
+function parseCastRows(text,mark) {
   const speakers=new Map(),styles=new Map(),npcs=new Map();let language='';
   for(const line of String(text || '').split(/\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]/)) {
     const parts=line.trim().replace(/^[-* ]+|[-* ]+$/g,'').split('|').map(part=>part.trim().replace(/^[*`]+|[*`]+$/g,''));
-    if(parts.length>=2 && /^D?\d+$/.test(parts[0])){const id=Number(parts[0].replace(/^D/,''));speakers.set(id,fromCastField(parts[1]));styles.set(id,parts[2] ?? '');}
-    else if(parts.length>=3 && parts[0].toUpperCase()==='NPC'){const name=fromCastField(parts[1]);npcs.set(normalizeName(name),{name,gender:parts[2].toLowerCase(),voice:parts[3] ?? ''});}
+    if(parts.length>=2 && /^D?\d+$/.test(parts[0])){const id=Number(parts[0].replace(/^D/,''));speakers.set(id,fromCastField(parts[1],mark));styles.set(id,parts[2] ?? '');}
+    else if(parts.length>=3 && parts[0].toUpperCase()==='NPC'){const name=fromCastField(parts[1],mark);npcs.set(normalizeName(name),{name,gender:parts[2].toLowerCase(),voice:parts[3] ?? ''});}
     else if(parts.length>=2 && parts[0].toUpperCase()==='LANG')language=parts[1];
   }
   return {speakers,styles,npcs,language};
@@ -1408,7 +1414,7 @@ async function castReply(transcript, config, context, llm) {
       const text=await llm(messages);
       // A blocked repair keeps the rows already accepted (the reply's own note included).
       if(!String(text || '').trim())return attempt?{...found,blocked:true}:null;
-      const rows=parseCastRows(text);
+      const rows=parseCastRows(text,castMark(config));
       for(const [id,speaker] of rows.speakers)if(ids.includes(id) && !found.speakers.has(id)){found.speakers.set(id,speaker);found.styles.set(id,rows.styles.get(id));}
       for(const [key,npc] of rows.npcs)if(!found.npcs.has(key))found.npcs.set(key,npc);
       found.language||=rows.language;
@@ -1493,7 +1499,8 @@ async function castReply(transcript, config, context, llm) {
   };
   const segments=units.map(unit=>{
     if(unit.kind==='narration')return {...choose(narrator),style:'',unit_ids:[unit.id]};
-    const members=unisonSpeakers(transcript,unit,config);
+    // A quote answered as not spoken (Narrator) is a citation; its collective tag is not re-read as unison.
+    const members=speakers.get(unit.id)===narrator?null:unisonSpeakers(transcript,unit,config);
     return {...choose(speakers.get(unit.id)),style:cast.styles.get(unit.id) || 'natural, matching the scene',unit_ids:[unit.id],
       ...(members?.length>=2?{unison:members.map(member=>{const {gender,...voice}=choose(actors.find(actor=>actor.speaker===member));return voice;})}:{})};
   });
@@ -2067,6 +2074,7 @@ function injectedSkipLines(lines, plan) {
 }
 
 function injectionPrompt({cast=[], sfx=false, ambience=false}={}) {
+  const mark=pipeMark(cast);
   const sounds=[
     sfx?'SFX|1 to 3 English search words naming the sound|2 to 6 exact consecutive words from your reply where it happens (at most 4, only concrete sounds that happen now: doors, steps, impacts, weather; never voices or music)':'',
     ambience?'AMB|1 to 3 English search words for a sustained background|2 to 6 exact words where the scene settles there (at most 2)':''
@@ -2081,7 +2089,7 @@ function injectionPrompt({cast=[], sfx=false, ambience=false}={}) {
     'LANG|language code',
     ...(sounds.length?sounds:[]),
     '-->',
-    'One Q row per quoted passage of dialogue in your reply, in order (Q1 is the first "…" quote); first words are the first 3 words inside its quotation marks, copied exactly. Speaker is the exact name of who says it aloud; use NOT_SPOKEN for quoted words nobody says aloud (terms, signs, written text, remembered speech). Cast: '+(cast.length?cast.map(castField).join(', '):'none listed')+'.'+(cast.some(name=>String(name).includes('|'))?' (\u00a6 is part of a name; copy it exactly, never as |.)':''),
+    'One Q row per quoted passage of dialogue in your reply, in order (Q1 is the first "…" quote); first words are the first 3 words inside its quotation marks, copied exactly. Speaker is the exact name of who says it aloud; use NOT_SPOKEN for quoted words nobody says aloud (terms, signs, written text, remembered speech). Cast: '+(cast.length?cast.map(name=>castField(name,mark)).join(', '):'none listed')+'.'+(cast.some(name=>String(name).includes('|'))?` (${mark} is part of a name; copy it exactly, never as |.)`:''),
     'For each line of your reply that is not story to be read aloud (status or tracker lines, stat lists, headers, menus, notes to the reader), add SKIP|its first 4 words, copied exactly. Write no SKIP rows when every line is story.',
     'For each speaker not in the cast, add one separate NPC row: NPC|Name|female, male or neutral|young, middle-aged or old and 1 to 3 tone words. Their Q rows use just the name.',
     'LANG is the ISO 639-1 code of the language your reply is written in (en, fr, ja…).',
@@ -2400,7 +2408,9 @@ async function planWithJev({ transcript, config, apiKey, endpoint, context = '',
   // Resolve all required identities in bounded batches; names alone are not
   // evidence for voice gender, and manually assigned voices remain untouched.
   const inferredGenders = new Map(), automatic = new Map();
-  for(const u of dialogueUnits)for(const name of unisonSpeakers(transcript,u,config) || [dialogueSpeakerMap.get(u.id)]){
+  // Quotes Jev answered as Nobody are citations read by the narrator, never re-read as unison.
+  const collectiveOf = u => normalizeName(dialogueSpeakerMap.get(u.id)) === normalizeName(narrator?.speaker || 'Narrator') ? null : unisonSpeakers(transcript, u, config);
+  for(const u of dialogueUnits)for(const name of collectiveOf(u) || [dialogueSpeakerMap.get(u.id)]){
     const original=allCast.find(actor=>[actor.speaker,...(actor.aliases || [])].some(alias=>normalizeName(alias)===normalizeName(name)));
     const npc=!config.fixed.includes(original),actor=npc?npcCastActor(original || {speaker:name,voice:'',gender:'auto'},config):original;
     // Quotes nobody says aloud are read by the narrator, who has no story gender: ordinary narration voice choice.
@@ -2451,7 +2461,7 @@ async function planWithJev({ transcript, config, apiKey, endpoint, context = '',
         gender: narrator?.gender || 'auto'
       });
     } else {
-      const collective=unisonSpeakers(transcript,u,config);
+      const collective=collectiveOf(u);
       if(collective && collective.length<2)throw new Error('Name the people speaking in unison so both voices can be assigned.');
       const members=[];
       for(const chosenName of collective || [dialogueSpeakerMap.get(u.id)]){
@@ -2584,7 +2594,7 @@ async function decide(state, questions, input, userId, signal, flags) {
 async function chooseSound(choices, input, userId, signal, state, instructions) {
   const ids = choices.map((_, i) => `s${i}`);
   const questions = { q0: { type: 'choice', instructions, criteria: Object.fromEntries(choices.map((choice, i) => [ids[i], choice])) } };
-  const pick = async signal => Math.max(0, ids.indexOf((await decide(state, questions, input, userId, signal))?.q0?.choice));
+  const pick = async signal => Math.max(0, ids.indexOf((await decide(state, questions, input, userId, signal, { optional: true }))?.q0?.choice));
   // The choice is cancelled at 5 s or with the request, so a late answer never keeps spending.
   const decision = new AbortController(), stop = () => decision.abort();
   const stopped = new Promise(resolve => decision.signal.addEventListener('abort', () => resolve(0), { once: true }));
@@ -2776,7 +2786,7 @@ async function chooseCommunityVoice({ speaker, wish, language, used, profile, in
   else {
     let failure;
     if(typeof spindle.decisions?.evaluate==='function' || input.jevApiKey?.trim()){
-      try{pick=await bounded(async choiceSignal=>validate((await decide(state,questions,input,userId,choiceSignal))?.q0?.choice));}
+      try{pick=await bounded(async choiceSignal=>validate((await decide(state,questions,input,userId,choiceSignal,{optional:true}))?.q0?.choice));}
       catch(error){if(signal?.aborted)throw error;failure=error;}
     }else failure=new Error('No Decision connection available.');
     if(failure){
@@ -2850,7 +2860,8 @@ async function castCommunityVoices(raw, config, chosen, cast, prefetch) {
 // {{choirPrompt}} in the user's preset, so it is never sent twice.
 const injectContexts = new Map(), injectUsers = new Map();
 const injectFile = chatId => `inject/${encodeURIComponent(chatId)}.json`;
-const stripInjectedBlocks = text => text.replace(/<!--\s*choir\b[\s\S]*?-->/gi, '').trimEnd();
+// A reply cut off mid-note (stopped or truncated) leaves an unclosed block; it goes too.
+const stripInjectedBlocks = text => stripInjectedPlan(text);
 async function loadInjectContext(userId, chatId) {
   if (!chatId) return null;
   if (injectContexts.has(chatId)) return injectContexts.get(chatId);
