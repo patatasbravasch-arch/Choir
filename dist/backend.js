@@ -663,8 +663,8 @@ function npcCastActor(actor,config){
 // Resolve plural pronouns from the nearby named people, never from the entire cast.
 function unisonSpeakers(transcript,unit,config) {
   if(unit.kind!=='dialogue')return null;
-  const following=transcript.slice(unit.end).split(/[.!?\n"“”]/)[0];
-  const preceding=transcript.slice(Math.max(0,unit.start-400),unit.start).split(/["“”]/).at(-1);
+  const following=transcript.slice(unit.end).split(/[.!?\n"“”«»「」『』„]/)[0];
+  const preceding=transcript.slice(Math.max(0,unit.start-400),unit.start).split(/["“”«»「」『』„]/).at(-1);
   const verbs=/\b(?:say|says|said|reply|replies|replied|ask|asks|asked|shout|shouts|shouted|yell|yells|yelled|scream|screams|screamed|whisper|whispers|whispered|call|calls|called|speak|speaks|spoke|answer|answers|answered|cry|cries|cried|exclaim|exclaims|exclaimed|chant|chants|chanted|sing|sings|sang|murmur|murmurs|murmured|declare|declares|declared)\b/i;
   const collective=/\b(?:in (?:perfect |complete )?unison|together|simultaneously)\b/i;
   const tag=[following,preceding.split(/[.!?\n]/).at(-1)].find(text=>text.length<=250 && verbs.test(text) && collective.test(text));
@@ -721,8 +721,11 @@ function validatePlan(raw, transcript, config) {
     let actor = cast.get(key);
     if (!actor) {
       const policy=config.npcPolicy,route=policy?.route || config.defaultRoute || segment.route || '';
-      const voice=policy?.mode==='single'?policy.voice:segment.voice;
-      if (!available(voice,route)) throw new Error(`NPC ${segment.speaker} needs a voice from its selected TTS connection's catalogue.`);
+      // A silent NPC ("skip") is never synthesized, so a route with no catalogue voice for it
+      // must not block the voiced cast; it keeps no voice until the user gives it one.
+      const silent=policy?.mode==='skip' && !available(segment.voice,route);
+      const voice=policy?.mode==='single'?policy.voice:silent?'':segment.voice;
+      if (!silent && !available(voice,route)) throw new Error(`NPC ${segment.speaker} needs a voice from its selected TTS connection's catalogue.`);
       if (cast.size >= 550) throw new Error('Too many NPCs. Reset the NPC cast.');
       actor = npcCastActor({speaker:segment.speaker.trim(), voice, style:'',
         ...(route?{route}:{}),
@@ -732,6 +735,7 @@ function validatePlan(raw, transcript, config) {
     }
     if (!actor.voice) {
       const route=actor.route || config.defaultRoute || '';
+      if (!fixedNames.has(key) && config.npcPolicy?.mode==='skip' && !available(segment.voice,route)) return actor;
       if (!available(segment.voice,route)) throw new Error(`Speaker ${actor.speaker} needs an LLM-selected voice from its TTS connection's catalogue.`);
       checkAutomaticGender(segment.voice,actor.gender,route);
       actor.voice=segment.voice;
@@ -769,9 +773,9 @@ function validatePlan(raw, transcript, config) {
       if (!matchOk) throw new Error(`Segment ${index+1} changes or skips the original text. Copy exact consecutive substrings.`);
       cursor = tIdx;
     }
-    const detected=/^["“][\s\S]*["”]$/.test(text)?unisonSpeakers(transcript,{kind:'dialogue',start:sourceStart,end:cursor},config):null;
+    const detected=/^["“«「『„][\s\S]*["”»」』“]$/.test(text)?unisonSpeakers(transcript,{kind:'dialogue',start:sourceStart,end:cursor},config):null;
     const supplied=segment.unison;
-    if(supplied!==undefined && (!Array.isArray(supplied) || supplied.length<2 || supplied.length>5 || !/^["“][\s\S]*["”]$/.test(text)))throw new Error('Unison needs 2–5 speakers and one quoted dialogue turn.');
+    if(supplied!==undefined && (!Array.isArray(supplied) || supplied.length<2 || supplied.length>5 || !/^["“«「『„][\s\S]*["”»」』“]$/.test(text)))throw new Error('Unison needs 2–5 speakers and one quoted dialogue turn.');
     // A collective tag without clear names keeps the planner's single speaker.
     const names=supplied?.map(member=>member?.speaker) || (detected?.length?detected:null);
     if(names && (names.length<2 || names.length>5))throw new Error('The unison tag needs 2–5 clearly identified cast members.');
@@ -1089,7 +1093,9 @@ function speechSourceUnits(transcript) {
     if(afterDigit(at) && (!open || feet(at) || !closesQuote(at)))return '';
     open=!open;return mark;
   });
-  for(const match of masked.matchAll(/"[^"\n]*(?:\n(?![ \t]*\n)[^"\n]*)*(?:"|(?=\n[ \t]*\n))|“[^”]*”/g)) {
+  // Other languages' paired marks: French/Russian «…», Japanese/Chinese 「…」 and 『…』, German/Polish „…“ or „…”.
+  // Each closes at its own partner and never across a blank line.
+  for(const match of masked.matchAll(/"[^"\n]*(?:\n(?![ \t]*\n)[^"\n]*)*(?:"|(?=\n[ \t]*\n))|“[^”]*”|«(?:[^»\n]|\n(?![ \t]*\n))*»|「(?:[^」\n]|\n(?![ \t]*\n))*」|『(?:[^』\n]|\n(?![ \t]*\n))*』|„(?:[^“”\n]|\n(?![ \t]*\n))*[“”]/g)) {
     narration(transcript.slice(cursor,match.index));add(transcript.slice(match.index,match.index+match[0].length),'dialogue');cursor=match.index+match[0].length;
   }
   narration(transcript.slice(cursor));return units;
@@ -1116,7 +1122,7 @@ function resolvePlanReferences(raw, transcript, config) {
   const merged=[];
   for(const segment of segments) {
     const last=merged.at(-1);
-    if(last && !last.unison && !segment.unison && !unisonSpeakers(transcript,{kind:/^["“]/.test(segment.text)?'dialogue':'narration',start:segment.__start,end:segment.__end},config) && last.speaker===segment.speaker && last.voice===segment.voice && last.style===segment.style && last.gender===segment.gender) {
+    if(last && !last.unison && !segment.unison && !unisonSpeakers(transcript,{kind:/^["“«「『„]/.test(segment.text)?'dialogue':'narration',start:segment.__start,end:segment.__end},config) && last.speaker===segment.speaker && last.voice===segment.voice && last.style===segment.style && last.gender===segment.gender) {
       last.__end=segment.__end;last.text=transcript.slice(last.__start,last.__end);
     } else merged.push(segment);
   }
@@ -1472,10 +1478,13 @@ async function castReply(transcript, config, context, llm) {
       choice.voice=(listed || ranked[0] || (!community && (free[0] || pool[0])))?.id || '';
       if(choice.voice){
         used.add(choice.voice);
-        // Silent NPCs ("skip") still need a valid voice, but never one worth a Decision.
-        if(!listed && ranked.length>1 && !(npc && config.npcPolicy?.mode==='skip'))choice.voicePick={wish:String(row.voice || ''),candidates:ranked.slice(0,8).map(voice=>voice.id)};
+        // Silent NPCs ("skip") and actors set to No voice still get a valid voice, but never
+        // one worth a Decision until they are heard.
+        const unheard=npc && config.npcPolicy?.mode==='skip' || actor?.excluded || normalizeName(name)==='narrator' && config.muteNarrator;
+        if(!listed && ranked.length>1 && !unheard)choice.voicePick={wish:String(row.voice || ''),candidates:ranked.slice(0,8).map(voice=>voice.id)};
       }
-      else if(config.communityRoutes?.[route]) {
+      // Silent NPCs never pay for a community search.
+      else if(config.communityRoutes?.[route] && !(npc && config.npcPolicy?.mode==='skip')) {
         const words=String(row.voice || '').toLowerCase().match(/[a-z-]+/g) || [];
         choice.voiceSearch={gender,age:words.find(word=>['young','middle-aged','old'].includes(word)) || '',tags:words.filter(word=>FISH_TAGS.has(word)).slice(0,4)};
       }
@@ -1638,12 +1647,12 @@ function fastClassifyPlan(transcript, config, failure) {
 
   const getImmediateTag = (u) => {
     const afterRaw = transcript.slice(u.end);
-    const afterBoundary = afterRaw.search(/[.!?\n"“”]|$/);
+    const afterBoundary = afterRaw.search(/[.!?\n"“”«»「」『』„]|$/);
     // A clause leading into the next quote belongs to that next turn.
-    const afterTag = /["“]/.test(afterRaw[afterBoundary] || '') ? '' : afterRaw.slice(0, Math.min(afterBoundary + 1, 50));
+    const afterTag = /["“«「『„]/.test(afterRaw[afterBoundary] || '') ? '' : afterRaw.slice(0, Math.min(afterBoundary + 1, 50));
 
     const beforeRaw = transcript.slice(0, u.start);
-    const prevPunc = Math.max(...['.', '!', '?', '"', '“', '”', '\n'].map(mark=>beforeRaw.lastIndexOf(mark)));
+    const prevPunc = Math.max(...['.', '!', '?', '"', '“', '”', '«', '»', '「', '」', '『', '』', '„', '\n'].map(mark=>beforeRaw.lastIndexOf(mark)));
     const beforeTag = beforeRaw.slice(prevPunc === -1 ? 0 : prevPunc + 1);
 
     return { beforeTag, afterTag };
@@ -1989,15 +1998,19 @@ function stripInjectedPlan(content) {
 // to many models, two to Choir), so rows are matched by the quote's opening
 // words, never by position alone: a single miscount would shift every later
 // speaker. Without opening words, rows are used only when the counts agree.
+const SPEECH_VERBS=/\b(?:say|says|said|reply|replies|replied|ask|asks|asked|answer|answers|answered|shout|shouts|shouted|whisper|whispers|whispered|call|calls|called|cry|cries|cried|add|adds|added|continue|continues|continued|interrupt|interrupts|interrupted|retort|retorts|retorted|snap|snaps|snapped|murmur|murmurs|murmured)\b/gi;
 function injectedCastRows(transcript, plan) {
   const dialogue=speechSourceUnits(transcript).filter(unit=>unit.kind==='dialogue'),assigned=new Map();
   const words=text=>String(text || '').normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu,' ').trim().split(/\s+/).filter(Boolean);
   const opens=(unit,opening)=>{const quote=words(unit.text),start=words(opening);return start.length>0 && start.every((word,index)=>quote[index]===word);};
-  const ordered=[...plan.quotes.entries()].sort((a,b)=>a[0]-b[0]).map(([,quote])=>quote);
+  const numbered=[...plan.quotes.entries()].sort((a,b)=>a[0]-b[0]),ordered=numbered.map(([,quote])=>quote);
   if(ordered.some(quote=>quote.opening)){
     const placed=[];let from=0;
-    for(const quote of ordered.filter(quote=>quote.opening)){
-      const at=dialogue.findIndex((unit,index)=>index>=from && opens(unit,quote.opening));
+    for(const [number,quote] of numbered.filter(([,quote])=>quote.opening)){
+      // Two quotes opening alike ("Yes, I do." twice) are told apart only by the row's number;
+      // when it names neither, the row is left for the planner rather than given to the first.
+      const matches=dialogue.flatMap((unit,index)=>index>=from && opens(unit,quote.opening)?[index]:[]);
+      const at=matches.length===1?matches[0]:matches.includes(number-1)?number-1:-1;
       if(at>=0){placed.push([at,quote]);from=at+1;}
     }
     placed.forEach(([at,quote],index)=>{
@@ -2009,10 +2022,13 @@ function injectedCastRows(transcript, plan) {
       const next=placed[index+1]?.[0] ?? dialogue.length;
       for(let piece=at+1;piece<next;piece++){
         const between=transcript.slice(dialogue[piece-1].end,dialogue[piece].start);
-        const interrupted=/[,\u2014\u2013-][\s]*["\u201d]$/.test(dialogue[piece-1].text.trimEnd());
+        const interrupted=/[,，、\u2014\u2013-][\s]*["\u201d»」』\u201c]$/.test(dialogue[piece-1].text.trimEnd());
         const clauses=between.replace(/\b(?:Mr|Mrs|Ms|Mx|Dr|St|Prof|Sr|Jr|Capt|Lt|Sgt|Col|Gen|Rev|Mt)\./g,title=>title.slice(0,-1))
           .split(/[.;:!?\u2026]+/).filter(part=>/\p{L}/u.test(part));
-        const oneTag=clauses.length<=1;
+        // A handoff ("Alice said, but Bob cut in:") is one clause yet two speakers: a contrast,
+        // a second speech verb or a colon leading into the next quote stops the carry.
+        const handoff=/\b(?:but|yet|while|until|before|when|whereupon|then)\b|:\s*$/i.test(between) || (between.match(SPEECH_VERBS) || []).length>1;
+        const oneTag=clauses.length<=1 && !handoff;
         if(!interrupted || !oneTag || between.length>120 || /\n[ \t]*\n/.test(between))break;
         assigned.set(piece,quote);
       }

@@ -1465,6 +1465,29 @@ test('new characters\' voices are picked by one batched Decision among described
   assert.equal(raw,1);assert.equal(ranked.segments.find(segment=>segment.speaker==='Nurse').voice,'f2');assert.equal(ranked.segments.find(segment=>segment.speaker==='Clerk').voice,'f3');
 });
 
+test('a silent NPC on a route with no catalogue voice does not block the voiced cast or search the community library',async()=>{
+  const cast={voices:[{id:'n',route:'native:gemini'},{id:'a',route:'native:gemini',gender:'female'}],defaultRoute:'native:fish',communityRoutes:{'native:fish':'community'},useStyle:false,
+    fixed:[{speaker:'Narrator',voice:'n',route:'native:gemini',style:''},{speaker:'Alice',voice:'a',route:'native:gemini',style:''}],npcs:[],npcPolicy:{mode:'skip'}};
+  const transcript='A guard said, "Wait." Alice said, "Go."';
+  let calls=0;const h=await harness(async()=>{calls++;return {content:'D1|Gate guard|\nD3|Alice|\nNPC|Gate guard|male|old, gruff'};},null,null,null,null,{evaluate:async()=>{calls++;return {answers:{}};}});
+  h.send('plan',{transcript,config:cast});
+  const message=(await h.result()).message;
+  assert.equal(message.error,undefined);
+  const result=JSON.parse(JSON.stringify(message.result));
+  assert.equal(result.segments.find(segment=>segment.speaker==='Gate guard').voice,'');
+  assert.equal(result.segments.find(segment=>segment.speaker==='Alice').voice,'a');
+  assert.equal(calls,1,'only the planner call; no community search or voice Decision');
+});
+
+test('an actor set to No voice gets a voice without an optional voice Decision',async()=>{
+  const voices=[{id:'n',gender:'male'},{id:'f1',gender:'female',description:'Soft'},{id:'f2',gender:'female',description:'Warm'}];
+  const cast={...config,voices,fixed:[{speaker:'Narrator',voice:'n',style:''},{speaker:'Alice',voice:'',gender:'female',excluded:true,style:''}],npcs:[],useStyle:false};
+  let asked=0;const h=await harness(async()=>({content:'D1|Alice|'}),null,null,null,null,{evaluate:async()=>{asked++;return {answers:{}};}});
+  h.send('plan',{transcript:'Alice said, "Hi."',config:cast});
+  const result=JSON.parse(JSON.stringify((await h.result()).message.result));
+  assert.equal(asked,0);assert.ok(['f1','f2'].includes(result.segments.find(segment=>segment.speaker==='Alice').voice));
+});
+
 test('shared or silent NPC voices ask no voice Decision, and a missing Decision connection is not logged as a call',async()=>{
   const voices=[{id:'n',gender:'male',description:'Deep'},{id:'f1',gender:'female',description:'Soft'},{id:'f2',gender:'female',description:'Warm'},{id:'f3',gender:'female',description:'Bright'}];
   const cast={...config,voices,fixed:[{speaker:'Narrator',voice:'n',style:''}],npcs:[],useStyle:false};
