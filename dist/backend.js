@@ -1332,7 +1332,7 @@ Rules:
 - style: a short delivery instruction including emotion and acting intensity, optionally pacing or volume; never words to speak. Use Natural, conversational delivery for unmarked dialogue.
 Output format, plain text only, one line per D id in order, nothing else:
 D<id>|speaker|style
-Then one line per new NPC you used: NPC|name|female/male/neutral|voice id from the available voices (match gender and character).`;
+Then one line per new NPC you used: NPC|name|female/male/neutral|young, middle-aged or old; 1 to 4 words describing the voice (e.g. warm, gruff, bright, calm).`;
 
 // Names compare without case, punctuation or a leading article.
 const castKey = value => String(value || '').toLowerCase().replace(/[^\p{L}\p{N}_]+/gu, ' ').trim().replace(/^(?:the|a|an) /, '');
@@ -1354,14 +1354,20 @@ function castingPrompt(units, config, context) {
     const about=Array.from(String(profile?.description || '').replace(/\s+/g,' ')).slice(0,220).join('');
     cast.push(`- ${castField(actor.speaker)}${aliases.length?` (aliases: ${aliases.map(castField).join(', ')})`:''}${role?` [${role}]`:''}${about?`: ${about}`:''}`);
   }
-  const used=new Set(actors.map(actor=>actor.voice));
-  const voices=routeVoices(config,npcRoute(config),true).slice(0,60).filter(voice=>!used.has(voice.id)).map(voice=>`${voice.id} (${voice.gender ?? ''}, ${voice.description ?? ''})`).join('; ');
   const unvoiced=actors.filter(actor=>!(config.npcs.includes(actor)?npcCastActor(actor,config):actor).voice).map(actor=>castField(actor.speaker));
   const system=CASTING_SYSTEM+`\n${DELIVERY_CONTEXT_RULES}`+(unvoiced.length?`\nThese cast members have no voice yet; add an NPC line for each of them too: ${unvoiced.join(', ')}.`:'')
-    +(config.communityRoutes && Object.keys(config.communityRoutes).length?`\nIf no voice id fits (none listed), write the NPC voice as young, middle-aged or old and 1 to 4 tone words from: ${FISH_VOICE_TAGS}. Then add one line: LANG|ISO 639-1 code of the story's language.`:'');
+    +(config.communityRoutes && Object.keys(config.communityRoutes).length?`\nChoose the NPC voice words from: ${FISH_VOICE_TAGS}. Then add one line: LANG|ISO 639-1 code of the story's language.`:'');
   const lines=units.map(unit=>unit.kind==='dialogue'?`D${unit.id}: ${unit.text}`:`   ${unit.text}`);
   return [{role:'system',content:system},
-    {role:'user',content:`Cast:\n${cast.join('\n')}${cast.some(line=>line.includes('\u00a6'))?'\n(\u00a6 is part of a name; copy it exactly, never as |.)':''}\n\nAvailable voices for new NPCs: ${voices}\n\nEarlier chat (context only):\n${context}\n\nReply to cast (indented lines are narration):\n${lines.join('\n')}`}];
+    {role:'user',content:`Cast:\n${cast.join('\n')}${cast.some(line=>line.includes('\u00a6'))?'\n(\u00a6 is part of a name; copy it exactly, never as |.)':''}\n\nEarlier chat (context only):\n${context}\n\nReply to cast (indented lines are narration):\n${lines.join('\n')}`}];
+}
+
+// Voices whose name, description or tags share the most words with the planner's description come first;
+// ties keep catalogue order. Gender words are left out (the candidates already match it).
+function rankVoices(voices,wish){
+  const words=(String(wish || '').toLowerCase().match(/[a-z][a-z-]{2,}/g) || []).filter(word=>!['female','male','neutral','voice'].includes(word));
+  const score=voice=>{const text=[voice.id,voice.name,voice.description,...(voice.tags || [])].join(' ').toLowerCase();return words.filter(word=>text.includes(word)).length;};
+  return voices.map((voice,index)=>({voice,index,score:score(voice)})).sort((a,b)=>b.score-a.score || a.index-b.index).map(({voice})=>voice);
 }
 
 // Names may contain | (e.g. "Alice | Captain"), the row separator; prompts and rows write it as ¦
@@ -1455,8 +1461,17 @@ async function castReply(transcript, config, context, llm) {
       const route=actor?selected.route || config.defaultRoute || '':npcRoute(config),pool=routeVoices(config,route,npc);
       const fits=voice=>gender==='auto' || !voice.gender || voice.gender===gender,free=pool.filter(voice=>!used.has(voice.id));
       const community=Boolean(config.communityRoutes?.[route] && (!npc || !config.npcPolicy || config.npcPolicy.mode==='llm'));
-      choice.voice=(pool.find(voice=>voice.id===row.voice && fits(voice)) || free.find(voice=>gender==='auto' || voice.gender===gender) || free.find(fits) || pool.find(fits) || (!community && (free[0] || pool[0])))?.id || '';
-      if(choice.voice)used.add(choice.voice);
+      // The planner describes the voice (gender, age, tone) rather than picking from a list it never sees:
+      // free voices of that gender are ranked by the description, and when several fit, the backend
+      // may let a Decision choose among them (voicePick). An id the planner still writes is honoured.
+      const listed=pool.find(voice=>voice.id===row.voice && fits(voice));
+      const exact=free.filter(voice=>gender!=='auto' && voice.gender===gender),loose=free.filter(fits);
+      const ranked=rankVoices(exact.length?exact:loose.length?loose:pool.filter(fits),row.voice);
+      choice.voice=(listed || ranked[0] || (!community && (free[0] || pool[0])))?.id || '';
+      if(choice.voice){
+        used.add(choice.voice);
+        if(!listed && ranked.length>1)choice.voicePick={wish:String(row.voice || ''),candidates:ranked.slice(0,8).map(voice=>voice.id)};
+      }
       else if(config.communityRoutes?.[route]) {
         const words=String(row.voice || '').toLowerCase().match(/[a-z-]+/g) || [];
         choice.voiceSearch={gender,age:words.find(word=>['young','middle-aged','old'].includes(word)) || '',tags:words.filter(word=>FISH_TAGS.has(word)).slice(0,4)};
@@ -2126,7 +2141,7 @@ function reportCall(userId, entry) {
   if (!userId || typeof spindle?.sendToFrontend !== 'function') return;
   try { spindle.sendToFrontend({ namespace: 'choir', call: { at: Date.now(), ...entry } }, userId); } catch {}
 }
-const DECISION_PURPOSES = [[/^speaker_/, 'Jev speakers'], [/^emotion_/, 'Jev delivery'], [/^name_/, 'Jev new names'], [/^voice_gender_/, 'Jev voice genders'], [/^(?:gender|age|language)$/, 'Jev voice profile'], [/^q0$/, 'Decision choice (voice or sound)']];
+const DECISION_PURPOSES = [[/^speaker_/, 'Jev speakers'], [/^emotion_/, 'Jev delivery'], [/^name_/, 'Jev new names'], [/^voice_gender_/, 'Jev voice genders'], [/^npc_voice_/, 'Jev NPC voices'], [/^(?:gender|age|language)$/, 'Jev voice profile'], [/^q0$/, 'Decision choice (voice or sound)']];
 async function evaluateDecisions(request, options) {
   const keys = Object.keys(request.questions || {}), started = Date.now();
   const purpose = DECISION_PURPOSES.find(([pattern]) => keys.some(key => pattern.test(key)))?.[1] || 'Decision';
@@ -2505,6 +2520,35 @@ const fatalProviderError = error => /\((?:401|402|403|404|429)\)|\b(?:401|402|40
 const FISH_LANGUAGES = { en: 'English', zh: 'Chinese', ja: 'Japanese', ko: 'Korean', es: 'Spanish', pt: 'Portuguese', fr: 'French', de: 'German', it: 'Italian', ru: 'Russian', ar: 'Arabic', nl: 'Dutch', pl: 'Polish' };
 
 // One Decision question set, answered by a Lumiverse Decision connection or a Jev key; no answers without either.
+// Several catalogue voices fit a new character's description: one batched Decision question per
+// reply picks among them. No Decision connection, a failure or an invalid answer keeps the
+// best-ranked voice already chosen, so this never adds an LLM call. Picks are stripped either way.
+async function castCatalogueVoices(raw, input, userId, signal, progress) {
+  const entries = (raw?.segments || []).flatMap(segment => [segment, ...(Array.isArray(segment?.unison) ? segment.unison : [])]);
+  const picks = new Map();
+  for (const entry of entries) if (entry?.voicePick?.candidates?.length > 1 && !picks.has(normalizeName(entry.speaker))) picks.set(normalizeName(entry.speaker), { speaker: entry.speaker, gender: entry.gender, voice: entry.voice, ...entry.voicePick });
+  for (const entry of entries) if (entry) delete entry.voicePick;
+  if (!picks.size || typeof spindle.decisions?.evaluate !== 'function' && !input.jevApiKey?.trim()) return;
+  const list = [...picks.values()].slice(0, 256), catalogue = Array.isArray(input.config?.voices) ? input.config.voices : [];
+  const describe = id => { const voice = catalogue.find(item => item.id === id); return [id, voice?.gender, voice?.description || voice?.name].filter(Boolean).join(' — '); };
+  const questions = Object.fromEntries(list.map((pick, index) => [`npc_voice_${index}`, {
+    type: 'choice',
+    instructions: `Choose the speaking voice for "${pick.speaker}", described as: ${[pick.gender !== 'auto' ? pick.gender : '', pick.wish].filter(Boolean).join('; ') || 'no description'}. Pick the closest match.`,
+    criteria: Object.fromEntries(pick.candidates.map((id, choice) => [`v${choice}`, describe(id)]))
+  }]));
+  progress?.({ stage: 'Choosing voices for new characters' });
+  let answers;
+  try { answers = await decide({ characters: list.map(pick => pick.speaker) }, questions, input, userId, signal); }
+  catch (error) { if (signal?.aborted) throw error; return; }
+  const used = new Set(entries.map(entry => entry?.voice).filter(Boolean));
+  for (const [index, pick] of list.entries()) {
+    const choice = pick.candidates[Number(/^v(\d+)$/.exec(answers?.[`npc_voice_${index}`]?.choice || '')?.[1])];
+    if (!choice || choice === pick.voice || used.has(choice)) continue;
+    used.delete(pick.voice); used.add(choice);
+    for (const entry of entries) if (entry && normalizeName(entry.speaker) === normalizeName(pick.speaker)) entry.voice = choice;
+  }
+}
+
 async function decide(state, questions, input, userId, signal) {
   return typeof spindle.decisions?.evaluate === 'function'
     ? (await evaluateDecisions({ userId, connection_id: input.decisionConnection || undefined, state, questions }, { signal })).answers
@@ -3024,6 +3068,8 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
         progress({stage:`Choosing a Fish community voice for ${wanted.speaker}`});
         return chooseCommunityVoice({...wanted,input,userId,signal:controller.signal});
       },wanted=>prefetchCommunityVoices({...wanted,signal:controller.signal}));
+      if(controller.signal.aborted)return;
+      await castCatalogueVoices(raw,input,userId,controller.signal,progress);
       if(controller.signal.aborted)return;
       const plan=validatePlan(resolvePlanReferences(raw,input.transcript,config),input.transcript,config);
       send({result:{...plan,...(communityVoices.size?{communityVoices:[...communityVoices.values()]}:{}),...(jevFailure?{warning:jevFailure.message}:{})}});return;

@@ -752,11 +752,10 @@ test('community routes hide their own catalogue from the casting prompt and ask 
   const cast={voices:[{id:'own',route:'native:fish'},{id:'kept',route:'native:both'},{id:'Kore',route:'native:google'}],fixed:[{speaker:'Narrator',voice:'Kore',style:'',route:'native:google'}],npcs:[],defaultRoute:'native:fish'};
   const units=speechSourceUnits('"Hello."');
   const own=castingPrompt(units,cast,'');
-  assert.doesNotMatch(own[0].content,/LANG/);assert.match(own[1].content,/Available voices for new NPCs: own \(, \)\n/);
+  assert.doesNotMatch(own[0].content,/LANG/);assert.doesNotMatch(own[1].content,/Available voices|\bown\b/);
   const community=castingPrompt(units,{...cast,communityRoutes:{'native:fish':'community','native:both':'both'}},'');
-  assert.match(community[0].content,/young, middle-aged or old and 1 to 4 tone words from: deep, low/);assert.match(community[0].content,/LANG\|ISO 639-1/);
-  assert.match(community[1].content,/Available voices for new NPCs: \n/);
-  assert.match(castingPrompt(units,{...cast,defaultRoute:'native:both',communityRoutes:{'native:both':'both'}},'')[1].content,/Available voices for new NPCs: kept \(, \)\n/);
+  assert.match(community[0].content,/Choose the NPC voice words from: deep, low/);assert.match(community[0].content,/LANG\|ISO 639-1/);
+  assert.doesNotMatch(community[1].content,/Available voices/);
 });
 
 const castingCast=()=>({voices:[{id:'n',gender:'male',description:'Deep'},{id:'m',gender:'female',description:'Bright'},{id:'f1',gender:'female',description:'Soft'},{id:'f2',gender:'female',description:'Warm'},{id:'x1',gender:'male',description:'Gravelly'}],
@@ -764,11 +763,11 @@ const castingCast=()=>({voices:[{id:'n',gender:'male',description:'Deep'},{id:'m
   characterProfiles:[{speaker:'Jay',role:'persona',description:'A tall\n\nquiet man. '+'x'.repeat(300)},{speaker:'Mira Vale',role:'character',description:''}]});
 const scripted=answers=>{const calls=[];const llm=async messages=>{calls.push(messages);const answer=answers[calls.length-1];return typeof answer==='function'?answer(messages):answer ?? '';};return {calls,llm};};
 
-test('the casting prompt lists the cast, unused voices, recent context and the reply with marked dialogue',()=>{
+test('the casting prompt lists the cast, recent context and the reply with marked dialogue, and asks new voices to be described',()=>{
   const transcript='Mira looked up. "Hi." "Bye," I said.';
   const [system,user]=castingPrompt(speechSourceUnits(transcript),castingCast(),'earlier');
-  assert.match(system.content,/^You are an audiobook casting director\./);assert.match(system.content,/NPC\|name\|female\/male\/neutral\|voice id from the available voices \(match gender and character\)\./);
-  assert.equal(user.content,`Cast:\n- Jay (aliases: I) [persona]: A tall quiet man. ${'x'.repeat(202)}\n- Mira Vale (aliases: Mira) [character]\n- Guard [npc]\n\nAvailable voices for new NPCs: f1 (female, Soft)\n\nEarlier chat (context only):\nearlier\n\nReply to cast (indented lines are narration):\n   Mira looked up.\nD1: "Hi."\nD2: "Bye,"\n   I said.`);
+  assert.match(system.content,/^You are an audiobook casting director\./);assert.match(system.content,/NPC\|name\|female\/male\/neutral\|young, middle-aged or old; 1 to 4 words describing the voice/);
+  assert.equal(user.content,`Cast:\n- Jay (aliases: I) [persona]: A tall quiet man. ${'x'.repeat(202)}\n- Mira Vale (aliases: Mira) [character]\n- Guard [npc]\n\nEarlier chat (context only):\nearlier\n\nReply to cast (indented lines are narration):\n   Mira looked up.\nD1: "Hi."\nD2: "Bye,"\n   I said.`);
   const unvoiced=castingCast();unvoiced.fixed[2].voice='';
   assert.match(castingPrompt([],unvoiced,'')[0].content,/no voice yet; add an NPC line for each of them too: Mira Vale\.$/);
 });
@@ -790,7 +789,8 @@ test('Fish preferred pool overrides community discovery and rejects a suggested 
  const transcript='"Halt!"',raw=await castReply(transcript,config,'',llm);
  const plan=validatePlan(resolvePlanReferences(raw,transcript,config),transcript,config);
  assert.equal(plan.segments[0].voice,selected);assert.equal(plan.segments[0].route,route);assert.equal(raw.segments[0].voiceSearch,undefined);
- assert.ok(calls[0][1].content.includes(selected));assert.ok(!calls[0][1].content.includes(outside));assert.ok(!calls[0][1].content.includes(other));
+ // No voice ids reach the planner; the preferred pool is applied when the voice is chosen.
+ assert.ok(![selected,outside,other].some(id=>calls[0][1].content.includes(id)));
 });
 
 test('castReply canonicalises aliases, reads NOT_SPOKEN as narration and casts new NPCs with a suitable unused voice',async()=>{
@@ -1084,4 +1084,18 @@ test('a comma-ended quote does not carry its speaker across a second speech tag'
   assert.equal(core.injectedCastRows('"Wait," Mira said. Eve replied, "No."',written).covered,false);
   assert.equal(core.injectedCastRows('"Wait," Mira said. "I can explain."',written).covered,true);
   assert.equal(core.injectedCastRows('"Wait." Mira said. Eve replied, "No."',written).covered,false);
+});
+
+test('a new character\'s voice is ranked by the planner\'s description among free voices of its gender',async()=>{
+  const {castReply,validatePlan,resolvePlanReferences}=await import('../src/core.js');
+  const config={voices:[{id:'n',gender:'male',description:'Deep'},{id:'f1',gender:'female',description:'Soft'},{id:'f2',gender:'female',description:'Warm, mature'},{id:'f3',gender:'female',description:'Bright'},{id:'m1',gender:'male',description:'Gruff'}],
+    fixed:[{speaker:'Narrator',voice:'n',style:''}],npcs:[],useStyle:false};
+  const text='"Welcome," the nurse said.';
+  const raw=await castReply(text,config,'',async()=>'D0|Nurse|warm\nNPC|Nurse|female|middle-aged; warm, mature');
+  const nurse=raw.segments.find(segment=>segment.speaker==='Nurse');
+  assert.equal(nurse.voice,'f2');assert.deepEqual(nurse.voicePick.candidates,['f2','f1','f3']);
+  assert.equal(validatePlan(resolvePlanReferences(raw,text,config),text,config).segments.find(segment=>segment.speaker==='Nurse').voice,'f2');
+  // One fitting voice leaves nothing to choose.
+  const alone=await castReply('"Halt!"',config,'',async()=>'D0|Guard|\nNPC|Guard|male|old; gruff');
+  assert.equal(alone.segments[0].voice,'m1');assert.equal(alone.segments[0].voicePick,undefined);
 });

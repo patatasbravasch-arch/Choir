@@ -231,13 +231,13 @@ test('explicit LLM mode ignores stale Jev and heuristic flags',async()=>{
   assert.equal((await h.result()).message.result.segments[0].speaker,'Mira');assert.equal(calls,1);
 });
 
-test('LLM casting receives character profiles and unused catalogue voices and casts an unassigned lead',async()=>{
+test('LLM casting receives character profiles but no voice catalogue, and casts an unassigned lead',async()=>{
   const profiles=[{speaker:'Mira',role:'character',description:'A young singer with a bright voice.'}];
   const voices=[{id:'Charon',gender:'male',description:'Deep'},{id:'Kore',gender:'female',description:'Firm'},{id:'Leda',gender:'female',description:'Youthful'}];
   let request;const h=await harness(async input=>{request=input;return {content:'D0|Mira|bright\nNPC|Mira|female|Leda'};});
   h.send('plan',{transcript:'"Hello."',config:{...config,voices,fixed:[...config.fixed,{speaker:'Mira',voice:'',style:''}],characterProfiles:profiles}});
   const result=(await h.result()).message.result;
-  assert.match(request.messages[1].content,/- Mira \[character\]: A young singer with a bright voice\.\n\nAvailable voices for new NPCs: Kore \(female, Firm\); Leda \(female, Youthful\)\n/);
+  assert.match(request.messages[1].content,/- Mira \[character\]: A young singer with a bright voice\.\n\nEarlier chat/);assert.doesNotMatch(request.messages[1].content,/Available voices|Kore|Leda/);
   assert.match(request.messages[0].content,/no voice yet; add an NPC line for each of them too: Mira\./);
   assert.equal(result.segments[0].voice,'Leda');assert.equal(result.segments[0].style,'bright');
 });
@@ -1113,7 +1113,7 @@ test('a described voice is searched in the Fish community library with relaxed t
   assert.equal(urls[0].origin+urls[0].pathname,'https://api.fish.audio/model');
   assert.equal(evaluated.connection_id,'decision-a');assert.deepEqual(evaluated.state,{character:'Mira',role:'character',voice:'female, soft, bright',language:'pt'});
   assert.deepEqual(evaluated.questions.q0.criteria,{s0:'Ana — female, young; Ana voice (en)',s1:'Bea — female, young, soft; Bea voice (en)'});
-  assert.match(prompt[1].content,/Available voices for new NPCs: \n/);assert.match(prompt[0].content,/LANG\|ISO 639-1/);
+  assert.doesNotMatch(prompt[1].content,/Available voices/);assert.match(prompt[0].content,/LANG\|ISO 639-1/);
 });
 
 test('a failed or slow Fish choice ranks speech by simple traits instead of the top result, and search errors remain visible',async()=>{
@@ -1442,4 +1442,25 @@ test('the non-story check does not retry a bad key, quota, rate limit or unknown
   let calls=0;const refused=await harness(async()=>{if(++calls===1)throw Error('PROHIBITED_CONTENT');return {content:'0 K'};});
   refused.send('skipCheck',{lines:['The gate closed.']});
   assert.equal((await refused.result()).message.error,undefined);assert.equal(calls,2);
+});
+
+test('new characters\' voices are picked by one batched Decision among described candidates, never by an extra LLM call',async()=>{
+  const voices=[{id:'n',gender:'male',description:'Deep'},{id:'f1',gender:'female',description:'Soft'},{id:'f2',gender:'female',description:'Warm'},{id:'f3',gender:'female',description:'Bright'}];
+  const cast={...config,voices,fixed:[{speaker:'Narrator',voice:'n',style:''}],npcs:[],useStyle:false};
+  const transcript='"Hi," the nurse said. "Hello," the clerk said.',rows='D0|Nurse|\nD2|Clerk|\nNPC|Nurse|female|warm\nNPC|Clerk|female|bright';
+  let asked;const h=await harness(async()=>({content:rows}),null,null,null,null,{evaluate:async input=>{asked=input;
+    // The nurse takes the soft voice; the clerk is offered the same one, which must not be shared.
+    return {answers:{npc_voice_0:{choice:Object.keys(input.questions.npc_voice_0.criteria).find(id=>input.questions.npc_voice_0.criteria[id].includes('Soft'))},npc_voice_1:{choice:Object.keys(input.questions.npc_voice_1.criteria).find(id=>input.questions.npc_voice_1.criteria[id].includes('Soft'))}}};}});
+  h.send('plan',{transcript,config:cast});
+  const result=JSON.parse(JSON.stringify((await h.result()).message.result));
+  assert.deepEqual(Object.keys(asked.questions),['npc_voice_0','npc_voice_1']);assert.match(asked.questions.npc_voice_0.instructions,/Nurse.*female; warm/);
+  const voiceOf=name=>result.segments.find(segment=>segment.speaker===name).voice;
+  assert.equal(voiceOf('Nurse'),'f1');assert.equal(voiceOf('Clerk'),'f3','a voice already taken is not given twice');
+  assert.ok(result.segments.every(segment=>segment.voicePick===undefined));
+  assert.ok(h.sent.some(item=>item.message.call?.purpose==='Jev NPC voices'));
+  // Without a Decision connection the best description match is used, with no further call.
+  let raw=0;const plain=await harness(async()=>{raw++;return {content:rows};});
+  plain.send('plan',{transcript,config:cast});
+  const ranked=JSON.parse(JSON.stringify((await plain.result()).message.result));
+  assert.equal(raw,1);assert.equal(ranked.segments.find(segment=>segment.speaker==='Nurse').voice,'f2');assert.equal(ranked.segments.find(segment=>segment.speaker==='Clerk').voice,'f3');
 });
