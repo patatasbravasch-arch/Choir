@@ -70,7 +70,7 @@ function reportCall(userId, entry) {
   if (!userId || typeof spindle?.sendToFrontend !== 'function') return;
   try { spindle.sendToFrontend({ namespace: 'choir', call: { at: Date.now(), ...entry } }, userId); } catch {}
 }
-const DECISION_PURPOSES = [[/^speaker_/, 'Jev speakers'], [/^emotion_/, 'Jev delivery'], [/^name_/, 'Jev new names'], [/^voice_gender_/, 'Jev voice genders'], [/^(?:gender|age|language)$/, 'Jev voice profile'], [/^q0$/, 'Decision choice (voice or sound)']];
+const DECISION_PURPOSES = [[/^speaker_/, 'Jev speakers'], [/^emotion_/, 'Jev delivery'], [/^name_/, 'Jev new names'], [/^voice_gender_/, 'Jev voice genders'], [/^npc_voice_/, 'Jev NPC voices'], [/^(?:gender|age|language)$/, 'Jev voice profile'], [/^q0$/, 'Decision choice (voice or sound)']];
 async function evaluateDecisions(request, options) {
   const keys = Object.keys(request.questions || {}), started = Date.now();
   const purpose = DECISION_PURPOSES.find(([pattern]) => keys.some(key => pattern.test(key)))?.[1] || 'Decision';
@@ -449,6 +449,35 @@ export const fatalProviderError = error => /\((?:401|402|403|404|429)\)|\b(?:401
 const FISH_LANGUAGES = { en: 'English', zh: 'Chinese', ja: 'Japanese', ko: 'Korean', es: 'Spanish', pt: 'Portuguese', fr: 'French', de: 'German', it: 'Italian', ru: 'Russian', ar: 'Arabic', nl: 'Dutch', pl: 'Polish' };
 
 // One Decision question set, answered by a Lumiverse Decision connection or a Jev key; no answers without either.
+// Several catalogue voices fit a new character's description: one batched Decision question per
+// reply picks among them. No Decision connection, a failure or an invalid answer keeps the
+// best-ranked voice already chosen, so this never adds an LLM call. Picks are stripped either way.
+async function castCatalogueVoices(raw, input, userId, signal, progress) {
+  const entries = (raw?.segments || []).flatMap(segment => [segment, ...(Array.isArray(segment?.unison) ? segment.unison : [])]);
+  const picks = new Map();
+  for (const entry of entries) if (entry?.voicePick?.candidates?.length > 1 && !picks.has(normalizeName(entry.speaker))) picks.set(normalizeName(entry.speaker), { speaker: entry.speaker, gender: entry.gender, voice: entry.voice, ...entry.voicePick });
+  for (const entry of entries) if (entry) delete entry.voicePick;
+  if (!picks.size || typeof spindle.decisions?.evaluate !== 'function' && !input.jevApiKey?.trim()) return;
+  const list = [...picks.values()].slice(0, 256), catalogue = Array.isArray(input.config?.voices) ? input.config.voices : [];
+  const describe = id => { const voice = catalogue.find(item => item.id === id); return [id, voice?.gender, voice?.description || voice?.name].filter(Boolean).join(' — '); };
+  const questions = Object.fromEntries(list.map((pick, index) => [`npc_voice_${index}`, {
+    type: 'choice',
+    instructions: `Choose the speaking voice for "${pick.speaker}", described as: ${[pick.gender !== 'auto' ? pick.gender : '', pick.wish].filter(Boolean).join('; ') || 'no description'}. Pick the closest match.`,
+    criteria: Object.fromEntries(pick.candidates.map((id, choice) => [`v${choice}`, describe(id)]))
+  }]));
+  progress?.({ stage: 'Choosing voices for new characters' });
+  let answers;
+  try { answers = await decide({ characters: list.map(pick => pick.speaker) }, questions, input, userId, signal); }
+  catch (error) { if (signal?.aborted) throw error; return; }
+  const used = new Set(entries.map(entry => entry?.voice).filter(Boolean));
+  for (const [index, pick] of list.entries()) {
+    const choice = pick.candidates[Number(/^v(\d+)$/.exec(answers?.[`npc_voice_${index}`]?.choice || '')?.[1])];
+    if (!choice || choice === pick.voice || used.has(choice)) continue;
+    used.delete(pick.voice); used.add(choice);
+    for (const entry of entries) if (entry && normalizeName(entry.speaker) === normalizeName(pick.speaker)) entry.voice = choice;
+  }
+}
+
 async function decide(state, questions, input, userId, signal) {
   return typeof spindle.decisions?.evaluate === 'function'
     ? (await evaluateDecisions({ userId, connection_id: input.decisionConnection || undefined, state, questions }, { signal })).answers
@@ -968,6 +997,8 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
         progress({stage:`Choosing a Fish community voice for ${wanted.speaker}`});
         return chooseCommunityVoice({...wanted,input,userId,signal:controller.signal});
       },wanted=>prefetchCommunityVoices({...wanted,signal:controller.signal}));
+      if(controller.signal.aborted)return;
+      await castCatalogueVoices(raw,input,userId,controller.signal,progress);
       if(controller.signal.aborted)return;
       const plan=validatePlan(resolvePlanReferences(raw,input.transcript,config),input.transcript,config);
       send({result:{...plan,...(communityVoices.size?{communityVoices:[...communityVoices.values()]}:{}),...(jevFailure?{warning:jevFailure.message}:{})}});return;
