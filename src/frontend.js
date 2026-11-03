@@ -2008,7 +2008,10 @@ export async function setup(ctx) {
         ttsRequestLog.push(inspected);if(ttsRequestLog.length>50)ttsRequestLog.shift();renderTtsInspector();
       }
       const response=await api('/tts/synthesize',{method:'POST',headers:{'Content-Type':'application/json'},body,signal:request.signal});
-      const blob=await response.blob();if(inspected){inspected.status='Succeeded';inspected.ms=Date.now()-inspected.at;renderTtsInspector();}return blob;
+      const blob=await response.blob();
+      // An empty or non-audio success would be cached and fail every replay; it is a failed request.
+      if(blob.size===0 || /^(?:text\/|application\/(?:json|xml))/i.test(blob.type || ''))throw new Error(blob.size?`The TTS connection returned ${blob.type} instead of audio.`:'The TTS connection returned empty audio.');
+      if(inspected){inspected.status='Succeeded';inspected.ms=Date.now()-inspected.at;renderTtsInspector();}return blob;
     }catch(error){
       if(inspected){inspected.status=signal?.aborted || error.name==='AbortError' && !timedOut?'Cancelled':'Failed';inspected.ms=Date.now()-inspected.at;renderTtsInspector();}
       if(signal?.aborted || error.name==='AbortError' && !timedOut)throw error;
@@ -3559,7 +3562,7 @@ export async function setup(ctx) {
         const done=error=>{if(settled)return;settled=true;signal.removeEventListener('abort',cancel);audio.onended=null;audio.onerror=null;endGap();syncPlayedAudio();if(currentAudio===audio){finishAudio=null;skipAudio=null;updateNextControls();}error?reject(error):resolve();};
         const cancel=()=>{audio.pause();done(abortError());};finishAudio=cancel;
         skipAudio=()=>{audio.pause();done();};updateNextControls();
-        audio.onended=()=>done();audio.onerror=()=>done(new Error('Browser could not decode this provider’s audio. Use WAV or MP3.'));
+        audio.onended=()=>done();audio.onerror=()=>done(Object.assign(new Error('Browser could not decode this provider’s audio. Use WAV or MP3.'),{undecodable:true}));
         signal.addEventListener('abort',cancel,{once:true});
         if(speakerExcluded(speaker) || speaker==='SFX' && config?.enableSfx===false){done();return;}
         if(track)stopFollowing=followSpeech(audio,track);
@@ -3588,7 +3591,8 @@ export async function setup(ctx) {
   function savePosition(seconds=0){
     if(!activePlayback)return;
     const value={...activePlayback,seconds};
-    void ctx.settings.set(`position:${value.chatId}`,value).catch(error=>status(`Playback position could not be saved: ${error.message}`,true));
+    // A late failure from a chat the user has left must not replace the current chat's status.
+    void ctx.settings.set(`position:${value.chatId}`,value).catch(error=>{if(!disposed && value.chatId===chatId)status(`Playback position could not be saved: ${error.message}`,true);});
   }
   const speechMembers=segment=>segment.unison?segment.unison.map(member=>({...member,text:segment.text,passageIndex:segment.passageIndex})):segment.turns || [segment];
   const withoutBase=(segment,cast)=>{
@@ -3971,6 +3975,8 @@ export async function setup(ctx) {
             synthesisStatus(idx,()=>seg.kind==='sfx'?`Loading sound effect ${audioProgress(segments,idx)}`:`Synthesizing ${audioProgress(segments,idx)}: ${seg.speaker} · ${seg.voice}`);
             const request=synthesisSettings(seg,snapshot),key=cacheKey(seg,snapshot);
             let blob=passages[key];
+            // Companion playback of the same speech in this message already paid for it.
+            if(!blob && !seg.kind)blob=await readVolatileAudio(paragraphAudioCache,segmentCacheKey(seg,snapshot))?.promise.catch(()=>undefined);
             // A shared request cancelled by Next leaves this clip to request the audio itself.
             if(!blob && inflight.has(key))blob=await inflight.get(key).catch(error=>{if(error?.name==='AbortError' && !ctrl.signal.aborted)return undefined;throw error;});
             if(!blob){flightKey=key;const promise=new Promise((resolve,reject)=>{resolveFlight=resolve;rejectFlight=reject;});promise.catch(()=>{});inflight.set(key,promise);}
@@ -3999,6 +4005,7 @@ export async function setup(ctx) {
             if(token!==revision || job.signal.aborted)throw abortError();
             resolveFlight?.(blob);
             blobs[idx]=blob;passages[key]=blob;
+            if(!seg.kind)shareSpeech(seg,snapshot,blob);
             preparePlayback(blob,seg,snapshot);
             void persist();
             void refreshCacheStatus().catch(()=>{});
@@ -4069,6 +4076,11 @@ export async function setup(ctx) {
         for(const kind in beds){const marker=bedIndex(segments,playIdx,kind);followBed(segments[marker]?.[kind],()=>loadBed(marker),kind,()=>{delete passages[cacheKey(segments[marker],snapshot)];blobs[marker]=undefined;void persist();});}
         try{await playBlob(blob,ctrl.signal,seg.speaker,offset,snapshot.normalizeLoudness,paused,{messageId:source.messageId,items:segments,index:playIdx,gapMs:gapBefore(segments,playIdx)});}
         catch(error){
+          // Undecodable speech is dropped from both caches, so the next Play requests it afresh.
+          if(error?.undecodable && !seg.kind){
+            for(const member of [seg,...(seg.unison?speechMembers(seg):[])]){const key=cacheKey(member,snapshot);delete passages[key];dropVolatileSource(key);}
+            blobs[playIdx]=undefined;await persist();
+          }
           if(seg.kind!=='sfx' || ctrl.signal.aborted || token!==revision)throw error;
           warnFoley(error);delete passages[cacheKey(seg,snapshot)];blobs[playIdx]=undefined;dropVolatileSource(cacheKey(seg,snapshot));await persist();
         }
@@ -4910,6 +4922,12 @@ export async function setup(ctx) {
   function segmentCacheKey(seg, snap) {
     return volatileKey(cacheKey(seg,snap),snap);
   }
+  // Full-message speech is offered to companion playback of the same message, so switching
+  // players never pays twice for an identical request. Deletion and retention clear it as usual.
+  function shareSpeech(seg,snap,blob){
+    const key=segmentCacheKey(seg,snap);
+    if(!readVolatileAudio(paragraphAudioCache,key))void loadVolatileAudio(paragraphAudioCache,key,cacheKey(seg,snap),snap,null,()=>blob,80).catch(()=>{});
+  }
   function getCachedOrSynthesize(seg, snap, sig, prepare=true) {
     const k = segmentCacheKey(seg, snap);
     return loadVolatileAudio(paragraphAudioCache,k,cacheKey(seg,snap),snap,sig,()=>synthesizeSegment(seg,snap,sig),80).then(blob=>prepare?preparePlayback(blob,seg,snap):blob);
@@ -5157,6 +5175,7 @@ export async function setup(ctx) {
             await playBlob(blob,ctrl.signal,batch.speaker,0,snapshot.normalizeLoudness,paused,{messageId,items:batches,index:i,gapMs:gapBefore(batches,i)});
             played++;
           }catch(error){
+            if(error?.undecodable && !batch.kind)for(const member of [batch,...(batch.unison?speechMembers(batch):[])]){paragraphAudioCache.delete(segmentCacheKey(member,snapshot));dropVolatileSource(cacheKey(member,snapshot));}
             if(batch.kind!=='sfx' || ctrl.signal.aborted || signal?.aborted)throw error;
             paragraphAudioCache.delete(segmentCacheKey(batch,snapshot));dropVolatileSource(cacheKey(batch,snapshot));warnFoley(error);
           }

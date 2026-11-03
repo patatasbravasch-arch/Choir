@@ -1099,3 +1099,35 @@ test('a new character\'s voice is ranked by the planner\'s description among fre
   const alone=await castReply('"Halt!"',config,'',async()=>'D0|Guard|\nNPC|Guard|male|old; gruff');
   assert.equal(alone.segments[0].voice,'m1');assert.equal(alone.segments[0].voicePick,undefined);
 });
+
+test('a repeated quote opening goes to the quote its row number names, or to the planner, never to the first match',async()=>{
+  const core=await import('../src/core.js');
+  const text='Alice said, "Yes, I do." Bob replied, "Yes, I do."',note=rows=>core.readInjectedPlan(`<!-- choir\n${rows}\n-->`);
+  assert.deepEqual(core.injectedCastRows(text,note('Q2|Bob|calm|Yes I do')),{rows:'D3|Bob|calm',covered:false});
+  assert.deepEqual(core.injectedCastRows(text,note('Q1|Alice|calm|Yes I do\nQ2|Bob|calm|Yes I do')),{rows:'D1|Alice|calm\nD3|Bob|calm',covered:true});
+  // A number naming neither repeat leaves the row to the planner.
+  assert.deepEqual(core.injectedCastRows(text,note('Q7|Bob|calm|Yes I do')),{rows:'',covered:false});
+});
+
+test('a speaker handoff between two pieces stops the carried speaker; a plain interruption still carries',async()=>{
+  const core=await import('../src/core.js');
+  const note=rows=>core.readInjectedPlan(`<!-- choir\n${rows}\n-->`);
+  assert.deepEqual(core.injectedCastRows('"Wait," Alice said, but Bob cut in: "No."',note('Q1|Alice|calm|Wait')),{rows:'D0|Alice|calm',covered:false});
+  assert.deepEqual(core.injectedCastRows('"Wait," Alice said, then Bob answered, "No."',note('Q1|Alice|calm|Wait')).covered,false);
+  assert.deepEqual(core.injectedCastRows('"Wait," Alice said. "I can explain."',note('Q1|Alice|calm|Wait')),{rows:'D0|Alice|calm\nD2|Alice|calm',covered:true});
+});
+
+test('French, Russian, Japanese, Chinese, German and Polish quotation marks are dialogue',async()=>{
+  const core=await import('../src/core.js');
+  const dialogue=text=>core.speechSourceUnits(text).filter(unit=>unit.kind==='dialogue').map(unit=>unit.text);
+  assert.deepEqual(dialogue('Alice dit : « Bonjour, Bob. » Puis elle part.'),['« Bonjour, Bob. »']);
+  assert.deepEqual(dialogue('Aliceは「こんにちは、ボブ。」と言った。『はい』'),['「こんにちは、ボブ。」','『はい』']);
+  assert.deepEqual(dialogue('Er sagte: „Hallo, Bob.“ Sie rief: „Tschüss!”'),['„Hallo, Bob.“','„Tschüss!”']);
+  // Marks never span a blank line, and English quotes are unchanged.
+  assert.deepEqual(dialogue('« Un\n\nDeux »'),[]);
+  assert.deepEqual(dialogue('“Curly,” she said. "Straight," he said, 6\'2" tall.'),['“Curly,”','"Straight,"']);
+  const japanese='Aliceは「こんにちは、ボブ。」と言った。';
+  assert.deepEqual(core.injectedCastRows(japanese,core.readInjectedPlan('<!-- choir\nQ1|Alice|calm\nLANG|ja\n-->')),{rows:'D1|Alice|calm\nLANG|ja',covered:true});
+  // An interrupted guillemet quote still carries its speaker across a short tag.
+  assert.equal(core.injectedCastRows('« Wes, » dit-elle. « Viens. »',core.readInjectedPlan('<!-- choir\nQ1|Léa|douce|Wes\n-->')).covered,true);
+});
