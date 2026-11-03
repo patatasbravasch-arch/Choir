@@ -1,4 +1,4 @@
-import { injectionPrompt, parseCastRows, backendRequestKind, cardAnalysisRoles, reconcileCastDuplicates, castIdentityResolver, validateCastConfig, validatePlan, npcCastActor, parsePlanJson, resolvePlanReferences, castReply, speechSourceUnits, normalizeName, unisonSpeakers, fastClassifyPlan, resolvePlannerMode, soundCuePrompt, parseSoundCues, rankMusic, MUSIC_GENRES, skipCheckPrompt, parseSkipRows, skippedLines, DELIVERY_CONTEXT_RULES } from './core.js';
+import { injectionPrompt, stripInjectedPlan, parseCastRows, backendRequestKind, cardAnalysisRoles, reconcileCastDuplicates, castIdentityResolver, validateCastConfig, validatePlan, npcCastActor, parsePlanJson, resolvePlanReferences, castReply, speechSourceUnits, normalizeName, unisonSpeakers, fastClassifyPlan, resolvePlannerMode, soundCuePrompt, parseSoundCues, rankMusic, MUSIC_GENRES, skipCheckPrompt, parseSkipRows, skippedLines, DELIVERY_CONTEXT_RULES } from './core.js';
 
 async function jevPost(url, headers, payload, signal) {
   signal?.throwIfAborted();
@@ -310,7 +310,9 @@ export async function planWithJev({ transcript, config, apiKey, endpoint, contex
   // Resolve all required identities in bounded batches; names alone are not
   // evidence for voice gender, and manually assigned voices remain untouched.
   const inferredGenders = new Map(), automatic = new Map();
-  for(const u of dialogueUnits)for(const name of unisonSpeakers(transcript,u,config) || [dialogueSpeakerMap.get(u.id)]){
+  // Quotes Jev answered as Nobody are citations read by the narrator, never re-read as unison.
+  const collectiveOf = u => normalizeName(dialogueSpeakerMap.get(u.id)) === normalizeName(narrator?.speaker || 'Narrator') ? null : unisonSpeakers(transcript, u, config);
+  for(const u of dialogueUnits)for(const name of collectiveOf(u) || [dialogueSpeakerMap.get(u.id)]){
     const original=allCast.find(actor=>[actor.speaker,...(actor.aliases || [])].some(alias=>normalizeName(alias)===normalizeName(name)));
     const npc=!config.fixed.includes(original),actor=npc?npcCastActor(original || {speaker:name,voice:'',gender:'auto'},config):original;
     // Quotes nobody says aloud are read by the narrator, who has no story gender: ordinary narration voice choice.
@@ -361,7 +363,7 @@ export async function planWithJev({ transcript, config, apiKey, endpoint, contex
         gender: narrator?.gender || 'auto'
       });
     } else {
-      const collective=unisonSpeakers(transcript,u,config);
+      const collective=collectiveOf(u);
       if(collective && collective.length<2)throw new Error('Name the people speaking in unison so both voices can be assigned.');
       const members=[];
       for(const chosenName of collective || [dialogueSpeakerMap.get(u.id)]){
@@ -494,7 +496,7 @@ async function decide(state, questions, input, userId, signal, flags) {
 async function chooseSound(choices, input, userId, signal, state, instructions) {
   const ids = choices.map((_, i) => `s${i}`);
   const questions = { q0: { type: 'choice', instructions, criteria: Object.fromEntries(choices.map((choice, i) => [ids[i], choice])) } };
-  const pick = async signal => Math.max(0, ids.indexOf((await decide(state, questions, input, userId, signal))?.q0?.choice));
+  const pick = async signal => Math.max(0, ids.indexOf((await decide(state, questions, input, userId, signal, { optional: true }))?.q0?.choice));
   // The choice is cancelled at 5 s or with the request, so a late answer never keeps spending.
   const decision = new AbortController(), stop = () => decision.abort();
   const stopped = new Promise(resolve => decision.signal.addEventListener('abort', () => resolve(0), { once: true }));
@@ -686,7 +688,7 @@ export async function chooseCommunityVoice({ speaker, wish, language, used, prof
   else {
     let failure;
     if(typeof spindle.decisions?.evaluate==='function' || input.jevApiKey?.trim()){
-      try{pick=await bounded(async choiceSignal=>validate((await decide(state,questions,input,userId,choiceSignal))?.q0?.choice));}
+      try{pick=await bounded(async choiceSignal=>validate((await decide(state,questions,input,userId,choiceSignal,{optional:true}))?.q0?.choice));}
       catch(error){if(signal?.aborted)throw error;failure=error;}
     }else failure=new Error('No Decision connection available.');
     if(failure){
@@ -760,7 +762,8 @@ async function castCommunityVoices(raw, config, chosen, cast, prefetch) {
 // {{choirPrompt}} in the user's preset, so it is never sent twice.
 const injectContexts = new Map(), injectUsers = new Map();
 const injectFile = chatId => `inject/${encodeURIComponent(chatId)}.json`;
-const stripInjectedBlocks = text => text.replace(/<!--\s*choir\b[\s\S]*?-->/gi, '').trimEnd();
+// A reply cut off mid-note (stopped or truncated) leaves an unclosed block; it goes too.
+const stripInjectedBlocks = text => stripInjectedPlan(text);
 async function loadInjectContext(userId, chatId) {
   if (!chatId) return null;
   if (injectContexts.has(chatId)) return injectContexts.get(chatId);

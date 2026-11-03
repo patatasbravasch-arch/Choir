@@ -773,7 +773,8 @@ function validatePlan(raw, transcript, config) {
       if (!matchOk) throw new Error(`Segment ${index+1} changes or skips the original text. Copy exact consecutive substrings.`);
       cursor = tIdx;
     }
-    const detected=/^["“«「『„][\s\S]*["”»」』“]$/.test(text)?unisonSpeakers(transcript,{kind:'dialogue',start:sourceStart,end:cursor},config):null;
+    const narrated=(aliases.get(normalizeName(segment.speaker)) || normalizeName(segment.speaker))==='narrator';
+    const detected=!narrated && /^["“«「『„][\s\S]*["”»」』“]$/.test(text)?unisonSpeakers(transcript,{kind:'dialogue',start:sourceStart,end:cursor},config):null;
     const supplied=segment.unison;
     if(supplied!==undefined && (!Array.isArray(supplied) || supplied.length<2 || supplied.length>5 || !/^["“«「『„][\s\S]*["”»」』“]$/.test(text)))throw new Error('Unison needs 2–5 speakers and one quoted dialogue turn.');
     // A collective tag without clear names keeps the planner's single speaker.
@@ -1351,21 +1352,21 @@ function routeVoices(config, route, npc) {
 }
 
 function castingPrompt(units, config, context) {
-  const actors=[...config.fixed,...config.npcs],cast=[];
+  const actors=[...config.fixed,...config.npcs],cast=[],mark=castMark(config);
   for(const actor of actors) {
     if(normalizeName(actor.speaker)==='narrator')continue;
     const aliases=(actor.aliases || []).filter(Boolean);
     const profile=(config.characterProfiles || []).find(item=>item.speaker===actor.speaker);
     const role=profile?.role || (config.npcs.includes(actor)?'npc':'');
     const about=Array.from(String(profile?.description || '').replace(/\s+/g,' ')).slice(0,220).join('');
-    cast.push(`- ${castField(actor.speaker)}${aliases.length?` (aliases: ${aliases.map(castField).join(', ')})`:''}${role?` [${role}]`:''}${about?`: ${about}`:''}`);
+    cast.push(`- ${castField(actor.speaker,mark)}${aliases.length?` (aliases: ${aliases.map(alias=>castField(alias,mark)).join(', ')})`:''}${role?` [${role}]`:''}${about?`: ${about}`:''}`);
   }
-  const unvoiced=actors.filter(actor=>!(config.npcs.includes(actor)?npcCastActor(actor,config):actor).voice).map(actor=>castField(actor.speaker));
+  const unvoiced=actors.filter(actor=>!(config.npcs.includes(actor)?npcCastActor(actor,config):actor).voice).map(actor=>castField(actor.speaker,mark));
   const system=CASTING_SYSTEM+`\n${DELIVERY_CONTEXT_RULES}`+(unvoiced.length?`\nThese cast members have no voice yet; add an NPC line for each of them too: ${unvoiced.join(', ')}.`:'')
     +(config.communityRoutes && Object.keys(config.communityRoutes).length?`\nChoose the NPC voice words from: ${FISH_VOICE_TAGS}. Then add one line: LANG|ISO 639-1 code of the story's language.`:'');
   const lines=units.map(unit=>unit.kind==='dialogue'?`D${unit.id}: ${unit.text}`:`   ${unit.text}`);
   return [{role:'system',content:system},
-    {role:'user',content:`Cast:\n${cast.join('\n')}${cast.some(line=>line.includes('\u00a6'))?'\n(\u00a6 is part of a name; copy it exactly, never as |.)':''}\n\nEarlier chat (context only):\n${context}\n\nReply to cast (indented lines are narration):\n${lines.join('\n')}`}];
+    {role:'user',content:`Cast:\n${cast.join('\n')}${actors.some(actor=>[actor.speaker,...(actor.aliases || [])].some(name=>String(name ?? '').includes('|')))?`\n(${mark} is part of a name; copy it exactly, never as |.)`:''}\n\nEarlier chat (context only):\n${context}\n\nReply to cast (indented lines are narration):\n${lines.join('\n')}`}];
 }
 
 // Voices whose name, description or tags share the most words with the planner's description come first;
@@ -1378,15 +1379,20 @@ function rankVoices(voices,wish){
 
 // Names may contain | (e.g. "Alice | Captain"), the row separator; prompts and rows write it as ¦
 // and parsed names turn it back, so such a name stays one field and keeps its assigned voice.
-const castField=name=>String(name ?? '').replace(/\|/g,'\u00a6');
-const fromCastField=value=>String(value ?? '').replace(/\u00a6/g,'|');
+// When a cast name already contains \u00a6, another mark no name uses stands in for |, so two
+// distinct actors ("Alice | Captain", "Alice \u00a6 Captain") never reach the planner as one name.
+const PIPE_MARKS=['\u00a6','\u2502','\u2223','\u01c0'];
+const pipeMark=names=>PIPE_MARKS.find(mark=>!names.some(name=>String(name ?? '').includes(mark))) || PIPE_MARKS[0];
+const castMark=config=>pipeMark([...(config.fixed || []),...(config.npcs || [])].flatMap(actor=>[actor.speaker,...(actor.aliases || [])]));
+const castField=(name,mark='\u00a6')=>String(name ?? '').replace(/\|/g,mark);
+const fromCastField=(value,mark='\u00a6')=>String(value ?? '').split(mark).join('|');
 // Rows: `D<id>|speaker|style`, `NPC|name|gender|voice` and `LANG|code`; anything else is ignored.
-function parseCastRows(text) {
+function parseCastRows(text,mark) {
   const speakers=new Map(),styles=new Map(),npcs=new Map();let language='';
   for(const line of String(text || '').split(/\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]/)) {
     const parts=line.trim().replace(/^[-* ]+|[-* ]+$/g,'').split('|').map(part=>part.trim().replace(/^[*`]+|[*`]+$/g,''));
-    if(parts.length>=2 && /^D?\d+$/.test(parts[0])){const id=Number(parts[0].replace(/^D/,''));speakers.set(id,fromCastField(parts[1]));styles.set(id,parts[2] ?? '');}
-    else if(parts.length>=3 && parts[0].toUpperCase()==='NPC'){const name=fromCastField(parts[1]);npcs.set(normalizeName(name),{name,gender:parts[2].toLowerCase(),voice:parts[3] ?? ''});}
+    if(parts.length>=2 && /^D?\d+$/.test(parts[0])){const id=Number(parts[0].replace(/^D/,''));speakers.set(id,fromCastField(parts[1],mark));styles.set(id,parts[2] ?? '');}
+    else if(parts.length>=3 && parts[0].toUpperCase()==='NPC'){const name=fromCastField(parts[1],mark);npcs.set(normalizeName(name),{name,gender:parts[2].toLowerCase(),voice:parts[3] ?? ''});}
     else if(parts.length>=2 && parts[0].toUpperCase()==='LANG')language=parts[1];
   }
   return {speakers,styles,npcs,language};
@@ -1408,7 +1414,7 @@ async function castReply(transcript, config, context, llm) {
       const text=await llm(messages);
       // A blocked repair keeps the rows already accepted (the reply's own note included).
       if(!String(text || '').trim())return attempt?{...found,blocked:true}:null;
-      const rows=parseCastRows(text);
+      const rows=parseCastRows(text,castMark(config));
       for(const [id,speaker] of rows.speakers)if(ids.includes(id) && !found.speakers.has(id)){found.speakers.set(id,speaker);found.styles.set(id,rows.styles.get(id));}
       for(const [key,npc] of rows.npcs)if(!found.npcs.has(key))found.npcs.set(key,npc);
       found.language||=rows.language;
@@ -1493,7 +1499,8 @@ async function castReply(transcript, config, context, llm) {
   };
   const segments=units.map(unit=>{
     if(unit.kind==='narration')return {...choose(narrator),style:'',unit_ids:[unit.id]};
-    const members=unisonSpeakers(transcript,unit,config);
+    // A quote answered as not spoken (Narrator) is a citation; its collective tag is not re-read as unison.
+    const members=speakers.get(unit.id)===narrator?null:unisonSpeakers(transcript,unit,config);
     return {...choose(speakers.get(unit.id)),style:cast.styles.get(unit.id) || 'natural, matching the scene',unit_ids:[unit.id],
       ...(members?.length>=2?{unison:members.map(member=>{const {gender,...voice}=choose(actors.find(actor=>actor.speaker===member));return voice;})}:{})};
   });
@@ -2067,6 +2074,7 @@ function injectedSkipLines(lines, plan) {
 }
 
 function injectionPrompt({cast=[], sfx=false, ambience=false}={}) {
+  const mark=pipeMark(cast);
   const sounds=[
     sfx?'SFX|1 to 3 English search words naming the sound|2 to 6 exact consecutive words from your reply where it happens (at most 4, only concrete sounds that happen now: doors, steps, impacts, weather; never voices or music)':'',
     ambience?'AMB|1 to 3 English search words for a sustained background|2 to 6 exact words where the scene settles there (at most 2)':''
@@ -2081,7 +2089,7 @@ function injectionPrompt({cast=[], sfx=false, ambience=false}={}) {
     'LANG|language code',
     ...(sounds.length?sounds:[]),
     '-->',
-    'One Q row per quoted passage of dialogue in your reply, in order (Q1 is the first "…" quote); first words are the first 3 words inside its quotation marks, copied exactly. Speaker is the exact name of who says it aloud; use NOT_SPOKEN for quoted words nobody says aloud (terms, signs, written text, remembered speech). Cast: '+(cast.length?cast.map(castField).join(', '):'none listed')+'.'+(cast.some(name=>String(name).includes('|'))?' (\u00a6 is part of a name; copy it exactly, never as |.)':''),
+    'One Q row per quoted passage of dialogue in your reply, in order (Q1 is the first "…" quote); first words are the first 3 words inside its quotation marks, copied exactly. Speaker is the exact name of who says it aloud; use NOT_SPOKEN for quoted words nobody says aloud (terms, signs, written text, remembered speech). Cast: '+(cast.length?cast.map(name=>castField(name,mark)).join(', '):'none listed')+'.'+(cast.some(name=>String(name).includes('|'))?` (${mark} is part of a name; copy it exactly, never as |.)`:''),
     'For each line of your reply that is not story to be read aloud (status or tracker lines, stat lists, headers, menus, notes to the reader), add SKIP|its first 4 words, copied exactly. Write no SKIP rows when every line is story.',
     'For each speaker not in the cast, add one separate NPC row: NPC|Name|female, male or neutral|young, middle-aged or old and 1 to 3 tone words. Their Q rows use just the name.',
     'LANG is the ISO 639-1 code of the language your reply is written in (en, fr, ja…).',
@@ -3893,7 +3901,7 @@ export async function setup(ctx) {
   let audioDatabase,audioDatabaseHandle;
   const sessionAudio=new Map();
   const paragraphAudioCache=new Map(),foleyCache=new Map(),volatilePolicies=new Map(),transcriptCache=new Map();
-  let audioInvalidations=null,paragraphPlaybackScope=null;
+  let audioInvalidations=null,paragraphPlaybackScope=null,paragraphPlaybackText='';
   const audioExpired=record=>record?.expiresAt!=null && record.expiresAt<=Date.now();
   function recordingWithRetention(record,retention){
     const createdAt=record.createdAt ?? Date.now();
@@ -3921,6 +3929,9 @@ export async function setup(ctx) {
     if(stopParagraph)stop(false);
     if(broadcast && change.kind!=='prune')try{audioInvalidations?.postMessage(change);}catch{}
   }
+  // Each saved mix gets its own revision, so an export can tell a replacement from the mix it read,
+  // even when both have the same size and length.
+  const mixRevision=()=>globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
   function invalidateRecordingAudio(key){const [,targetChat,messageId]=JSON.parse(key);invalidateVolatileAudio({kind:'delete',chatId:targetChat,messageId});}
   function readVolatileAudio(cache,key){
     const entry=cache.get(key);
@@ -7524,7 +7535,7 @@ export async function setup(ctx) {
       const playedAudio=await mix?.finish();if(playedCapture===mix)playedCapture=null;
       // A carried music load can save its cache after foreground playback
       // finishes. That late write must retain the newly completed mix.
-      if(playedAudio)savedPlayedAudio={...playedAudio,content:source.content,complete:fullMessage && mix.continuous};
+      if(playedAudio)savedPlayedAudio={...playedAudio,revision:mixRevision(),content:source.content,complete:fullMessage && mix.continuous};
       await waitForSaves();
       if(saveError)status(`Audio could not be saved: ${saveError}`,true);
       return {blobs,segments,warnings:[...warnings],passages,passageKeys:savedPassageKeys(),playedAudio:playedAudio?savedPlayedAudio:null,recordingMetadata};
@@ -7657,7 +7668,7 @@ export async function setup(ctx) {
         player.push(recording.segments);player.finish();
         const {warnings,playedAudio}=await player.playbackPromise;
         if(token!==revision || ctrl.signal.aborted)throw abortError();
-        if(playedAudio){const saved=await recordingStore('get',recordingKey(targetChat,messageId));await recordingStore('put',recordingKey(targetChat,messageId),{...saved,playedAudio:{...playedAudio,content:recording.content}});}
+        if(playedAudio){const saved=await recordingStore('get',recordingKey(targetChat,messageId));await recordingStore('put',recordingKey(targetChat,messageId),{...saved,playedAudio:{...playedAudio,revision:mixRevision(),content:recording.content}});}
         if(token===revision)status('Playback finished. Name pronunciation updated.'+playedAudioHint(playedAudio)+foleyWarning(warnings));
         return;
       }
@@ -7698,7 +7709,7 @@ export async function setup(ctx) {
       }
       const playedAudio=await mix?.finish();if(playedCapture===mix)playedCapture=null;
       if(token!==revision || ctrl.signal.aborted)throw abortError();
-      if(playedAudio)await recordingStore('put',recordingKey(targetChat,messageId),{...recording,playedAudio:{...playedAudio,content:recording.content,complete:wholeMessage && mix.continuous}});
+      if(playedAudio)await recordingStore('put',recordingKey(targetChat,messageId),{...recording,playedAudio:{...playedAudio,revision:mixRevision(),content:recording.content,complete:wholeMessage && mix.continuous}});
       if(token===revision)status('Replay finished.'+playedAudioHint(playedAudio?{...playedAudio,complete:wholeMessage && mix.continuous}:null));
     } finally {if(token===revision){playedCapture?.discard();playedCapture=null;fadeOutBeds();activePlayback=null;advancePlayback=null;generationPolicyChanged=null;updateNextControls();controller=null;setBusy(false);}}
   }
@@ -7875,7 +7886,7 @@ export async function setup(ctx) {
       }
       // A deletion or retention change in another tab must still win during a
       // long export. Validate each saved mix again before writing the archive.
-      for(let index=checks.length-1;index>=0;index--){const check=checks[index],current=await recordingStore('get',check.key);assertCurrent();const local=ctx.messages.getRecent(500).find(message=>message.id===check.messageId);if(!downloadableRecording(current,check.content) || current.playedAudio.blob.size!==check.played.blob.size || current.playedAudio.duration!==check.played.duration || local && !sameSpeech(local.content,check.content)){entries.splice(index,1);skipped++;}}
+      for(let index=checks.length-1;index>=0;index--){const check=checks[index],current=await recordingStore('get',check.key);assertCurrent();const local=ctx.messages.getRecent(500).find(message=>message.id===check.messageId);if(!downloadableRecording(current,check.content) || current.playedAudio.revision!==check.played.revision || current.playedAudio.blob.size!==check.played.blob.size || current.playedAudio.duration!==check.played.duration || local && !sameSpeech(local.content,check.content)){entries.splice(index,1);skipped++;}}
       if(!entries.length)throw new Error('No complete, current recordings are available. Play a whole message first.');
       entries.sort((a,b)=>a.index-b.index);const zip=createWavArchive(entries);assertCurrent();saveDownload(zip,entries[0].filename.replace(/ - \d+\.wav$/u,'.zip'));status(`Downloaded ${entries.length} saved recording${entries.length===1?'':'s'} as separate WAVs in one ZIP.${skipped?` Skipped ${skipped} partial, expired or changed recording${skipped===1?'':'s'}.`:''}`);
     }finally{await decoder?.close().catch(()=>{});if(controller===ctrl){controller=null;setBusy(false);}}
@@ -7910,7 +7921,7 @@ export async function setup(ctx) {
       const filename=playedAudioFilename(activeCharacterCard?.name || message?.name || 'Char',targetChat,message?.index_in_chat);
       if(disposed || targetChat!==chatId || token!==revision || !sameSpeech(ctx.messages.getContent(messageId),content))throw abortError();
       const current=await recordingStore('get',recordingKey(targetChat,messageId));ctrl.signal.throwIfAborted();
-      if(!downloadableRecording(current,content) || current.playedAudio.blob.size!==played.blob.size || current.playedAudio.duration!==played.duration)
+      if(!downloadableRecording(current,content) || current.playedAudio.revision!==played.revision || current.playedAudio.blob.size!==played.blob.size || current.playedAudio.duration!==played.duration)
         throw new Error('This recording was deleted or replaced while the download was prepared. Nothing was downloaded.');
       if(disposed || targetChat!==chatId || token!==revision)throw abortError();
       const url=URL.createObjectURL(new Blob([wav],{type:'audio/wav'})),link=document.createElement('a');
@@ -8268,6 +8279,12 @@ export async function setup(ctx) {
       const edited=typeof payload?.message?.content==='string'?payload.message.content:id && ctx.messages.getContent(id);
       const spokenUnchanged=(event==='MESSAGE_EDITED' || event==='SWIPE_EDITED') && edited!=null && sameSpeech(edited,affected?.content);
       if(affected && (!id || id===affected.messageId) && !spokenUnchanged){stop(false);clearPlan();status('Message changed. Generate a fresh plan.');}
+      // Companion playback of the changed message stops too, unless its paragraph is still there word for word.
+      const companion=paragraphPlaybackScope;
+      if(companion?.messageId && id===companion.messageId){
+        if(event==='MESSAGE_DELETED')invalidateVolatileAudio({kind:'delete',chatId:companion.chatId,messageId:id});
+        else if(edited==null || !sameSpeech(edited,paragraphPlaybackText) && !String(edited).includes(paragraphPlaybackText))stop(false);
+      }
       renderMessages();
     }));
   }
@@ -8492,7 +8509,7 @@ export async function setup(ctx) {
       const snapshot = { ...structuredClone(cap), fixed: castInfo.fixed, voices: castInfo.voices, npcs: castInfo.npcs, defaultRoute: castInfo.defaultRoute, npcPolicy:castInfo.npcPolicy };
 
       snapshot.audioScope={chatId:targetChat || chatId,messageId:messageId || null};
-      paragraphPlaybackScope=snapshot.audioScope;
+      paragraphPlaybackScope=snapshot.audioScope;paragraphPlaybackText=String(text || '').trim();
       const ctrl = new AbortController();ctrl.choirNextText = nextText;ctrl.choirSignature = signature;
       controller = ctrl;
       paragraphPrefetchControllers.add(ctrl);
@@ -8500,6 +8517,10 @@ export async function setup(ctx) {
       updateTransport();
       const onAbort = () => ctrl.abort();
       signal?.addEventListener('abort', onAbort, { once: true });
+      ctrl.choirDetach = () => signal?.removeEventListener('abort', onAbort);
+      // Adopted next-text work now belongs to this paragraph: the finished caller that started it
+      // can no longer cancel it, and this paragraph's own cancellation does.
+      for(const pending of handoff){pending.choirDetach?.();ctrl.signal.addEventListener('abort',()=>pending.abort(),{once:true});}
       try {
         let cueWarning='';
         try{await loadParagraphCues(text,snapshot,speaker,ctrl.signal,undefined,messageId,paragraphIndex);}
@@ -8625,7 +8646,7 @@ export async function setup(ctx) {
           signal?.removeEventListener('abort',onAbort);
           if(!disposed)updateTransport();
         });
-        if (controller === ctrl){controller=null;paragraphPlaybackScope=null;}
+        if (controller === ctrl){controller=null;paragraphPlaybackScope=null;paragraphPlaybackText='';}
         if (token === revision){clearReadAlong();advancePlayback=null;generationPolicyChanged=null;}
         updateTransport();
       }
