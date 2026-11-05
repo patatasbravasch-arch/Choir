@@ -2,6 +2,12 @@
 
 Release notes for Choir on the `lunch-test` and `staging` branches, newest first. A few lunch-test builds between staging.29 and staging.30 were numbered `1.1.6-lunch-test.N`.
 
+**Review fixes (5 November).**
+- Silent NPCs and excluded actors no longer need a voice gender, a catalogue on an unused connection, or a voice when a saved plan is reloaded; any of these could stop planning or replay.
+- The optional "Jev NPC voices" Decision gives up after five seconds and keeps the ranked voice, instead of holding a finished plan until the ten-minute planner deadline. Cancelling still cancels.
+- Plan inside the reply: `{{choirPrompt}}` works on the first reply after a restart, is left out of impersonation, quiet and continue generations, and cached contexts are kept per user on shared servers. A failed sync is retried on the next settings save. More speech verbs (yelled, interjected, exclaimed, muttered…) end a carried speaker.
+- Paranoid mode: clearing the log or changing chats also clears LLM and Decision entries, whichever inspector view is open.
+
 **Smaller planner prompt, described NPC voices.** The LLM planner no longer receives the voice catalogue on every call (about 180 tokens saved per call with Gemini's 30 voices, about 800 with a 60-voice described catalogue). For each new character it writes gender, age and a few tone words instead. Choir ranks the free voices of that gender by the description; when several fit, one batched Jev/Decision question per reply picks among them (shown as "Jev NPC voices" in Paranoid mode). With one fitting voice, or no Decision connection, the best match is used with no call. Chosen voices are remembered as before, so this happens once per character. Assigned voices, the preferred-voices pool, single shared voice and disabled NPCs work as before.
 
 **NPC voice picks: no wasted or phantom Decisions.** With a single shared NPC voice or silent NPCs, new characters no longer trigger a "Jev NPC voices" Decision (the shared voice is used directly; silent NPCs keep the best match). With no Decision connection configured, the skipped pick no longer shows as a failed call in Paranoid mode, since nothing was sent. The pick now also uses the Decision connection chosen in Choir's settings.

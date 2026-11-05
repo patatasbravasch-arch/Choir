@@ -626,7 +626,7 @@ function validateCastConfig(config) {
   }
   if (!Array.isArray(config.npcs) || config.npcs.length > 500) throw new Error('Invalid NPC cast.');
   for (const npc of config.npcs) {
-    if(!config.voices.some(v=>(v.route || '')===(npc.route || config.defaultRoute || '')) && !(communityRoute(npc.route) && npc.voice===''))throw new Error(`Load the voice catalogue for ${npc.speaker}'s TTS connection.`);
+    if(policy?.mode!=='skip' && !config.voices.some(v=>(v.route || '')===(npc.route || config.defaultRoute || '')) && !(communityRoute(npc.route) && npc.voice===''))throw new Error(`Load the voice catalogue for ${npc.speaker}'s TTS connection.`);
     if(npc.gender !== undefined && !['auto','female','male','neutral'].includes(npc.gender))throw new Error('Invalid NPC voice gender preference.');
     const name = normalizeName(npc.speaker);
     if (!name || names.has(name) || (npc.voice !== '' && !available(npc))) throw new Error(`Invalid or conflicting NPC assignment: ${npc.speaker}`);
@@ -821,6 +821,7 @@ function restoreAttribution(saved, transcript, config) {
     const policy=npc?config.npcPolicy:null;
     const selectedActor=npc?npcCastActor(actor || {route:policy?.route || route,voice:''},config):actor;
     const selectedRoute=selectedActor?.route || policy?.route || route;
+    if(npc && policy?.mode==='skip')return {voice:selectedActor?.voice || '',route:selectedRoute};
     if(!selectedActor?.voice && !['single','preferred'].includes(policy?.mode))throw new Error(`Speaker ${segment.speaker} needs a real automatic voice choice. Plan this reply to choose its voice.`);
     const choices=config.voices.filter(v=>(v.route || '')===selectedRoute && (policy?.mode!=='preferred' || policy.voices.includes(v.id)));
     const voice=selectedActor?.voice || choices.find(v=>!selectedActor?.gender || selectedActor.gender==='auto' || v.gender===selectedActor.gender)?.id;
@@ -2005,7 +2006,7 @@ function stripInjectedPlan(content) {
 // to many models, two to Choir), so rows are matched by the quote's opening
 // words, never by position alone: a single miscount would shift every later
 // speaker. Without opening words, rows are used only when the counts agree.
-const SPEECH_VERBS=/\b(?:say|says|said|reply|replies|replied|ask|asks|asked|answer|answers|answered|shout|shouts|shouted|whisper|whispers|whispered|call|calls|called|cry|cries|cried|add|adds|added|continue|continues|continued|interrupt|interrupts|interrupted|retort|retorts|retorted|snap|snaps|snapped|murmur|murmurs|murmured)\b/gi;
+const SPEECH_VERBS=/\b(?:say|says|said|reply|replies|replied|ask|asks|asked|answer|answers|answered|shout|shouts|shouted|whisper|whispers|whispered|call|calls|called|cry|cries|cried|add|adds|added|continue|continues|continued|interrupt|interrupts|interrupted|retort|retorts|retorted|snap|snaps|snapped|murmur|murmurs|murmured|yell|yells|yelled|scream|screams|screamed|interject|interjects|interjected|speak|speaks|spoke|exclaim|exclaims|exclaimed|mutter|mutters|muttered|breathe|breathes|breathed|hiss|hisses|hissed|growl|growls|growled|bark|barks|barked|declare|declares|declared|chant|chants|chanted|sing|sings|sang)\b/gi;
 function injectedCastRows(transcript, plan) {
   const dialogue=speechSourceUnits(transcript).filter(unit=>unit.kind==='dialogue'),assigned=new Map();
   const words=text=>String(text || '').normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu,' ').trim().split(/\s+/).filter(Boolean);
@@ -2286,6 +2287,7 @@ async function planWithJev({ transcript, config, apiKey, endpoint, context = '',
   const canSearchCommunity=(actor,npc)=>Boolean(config.communityRoutes?.[actor.route || config.defaultRoute || ''] && (!npc || !config.npcPolicy || config.npcPolicy.mode==='llm'));
   const catalogueFor=(actor,npc)=>config.voices.filter(voice=>(voice.route || '')===(actor.route || config.defaultRoute || '') && (!npc || config.npcPolicy?.mode!=='preferred' || config.npcPolicy.voices.includes(voice.id)));
   const catalogueVoice=(actor,npc)=>{
+    if(npc && config.npcPolicy?.mode==='skip')return '';
     const route=actor.route || config.defaultRoute || '',identity=JSON.stringify([normalizeName(actor.speaker),route]);
     if(catalogueVoices.has(identity))return catalogueVoices.get(identity);
     if(config.communityRoutes?.[route]==='community' && canSearchCommunity(actor,npc))return '';
@@ -2414,7 +2416,7 @@ async function planWithJev({ transcript, config, apiKey, endpoint, context = '',
     const original=allCast.find(actor=>[actor.speaker,...(actor.aliases || [])].some(alias=>normalizeName(alias)===normalizeName(name)));
     const npc=!config.fixed.includes(original),actor=npc?npcCastActor(original || {speaker:name,voice:'',gender:'auto'},config):original;
     // Quotes nobody says aloud are read by the narrator, who has no story gender: ordinary narration voice choice.
-    if(normalizeName(actor.speaker)==='narrator')continue;
+    if(normalizeName(actor.speaker)==='narrator' || actor.excluded || npc && config.npcPolicy?.mode==='skip')continue;
     const route=actor.route || config.defaultRoute || '';
     const catalogue=catalogueFor(actor,npc);
     if(actor.voice || ['female','male','neutral'].includes(actor.gender) || config.communityRoutes?.[route]==='community' && canSearchCommunity(actor,npc) || !catalogue.some(voice=>voice.gender))continue;
@@ -2572,8 +2574,17 @@ async function castCatalogueVoices(raw, input, userId, signal, progress) {
   }]));
   progress?.({ stage: 'Choosing voices for new characters' });
   let answers;
-  try { answers = await decide({ characters: list.map(pick => pick.speaker) }, questions, input, userId, signal, { optional: true }); }
+  signal?.throwIfAborted();
+  const decision=new AbortController(),stop=()=>decision.abort();
+  const stopped=new Promise(resolve=>decision.signal.addEventListener('abort',()=>resolve(null),{once:true}));
+  signal?.addEventListener('abort',stop,{once:true});
+  const timer=setTimeout(stop,5000);
+  try {
+    answers=await Promise.race([decide({characters:list.map(pick=>pick.speaker)},questions,input,userId,decision.signal,{optional:true}),stopped]);
+    signal?.throwIfAborted();
+  }
   catch (error) { if (signal?.aborted) throw error; return; }
+  finally { clearTimeout(timer);signal?.removeEventListener('abort',stop); }
   const used = new Set(entries.map(entry => entry?.voice).filter(Boolean));
   for (const [index, pick] of list.entries()) {
     const choice = pick.candidates[Number(/^v(\d+)$/.exec(answers?.[`npc_voice_${index}`]?.choice || '')?.[1])];
@@ -2859,15 +2870,17 @@ async function castCommunityVoices(raw, config, chosen, cast, prefetch) {
 // "auto" appends the instruction through the interceptor; "macro" leaves it to
 // {{choirPrompt}} in the user's preset, so it is never sent twice.
 const injectContexts = new Map(), injectUsers = new Map();
+const injectContextKey=(userId,chatId)=>JSON.stringify([userId || '',chatId]);
 const injectFile = chatId => `inject/${encodeURIComponent(chatId)}.json`;
 // A reply cut off mid-note (stopped or truncated) leaves an unclosed block; it goes too.
 const stripInjectedBlocks = text => stripInjectedPlan(text);
 async function loadInjectContext(userId, chatId) {
   if (!chatId) return null;
-  if (injectContexts.has(chatId)) return injectContexts.get(chatId);
+  const key=injectContextKey(userId,chatId);
+  if (injectContexts.has(key)) return injectContexts.get(key);
   let info = null;
-  try { info = await spindle.userStorage?.getJson(injectFile(chatId), { fallback: null, ...(userId ? { userId } : {}) }); } catch {}
-  injectContexts.set(chatId, info);
+  try { info = await spindle.userStorage?.getJson(injectFile(chatId), { fallback: null, ...(userId ? { userId } : {}) }); } catch { return null; }
+  injectContexts.set(key, info);
   return info;
 }
 const injectionWanted = (info, delivery, generationType) => info?.delivery === delivery && (generationType === undefined || ['normal', 'regenerate', 'swipe'].includes(generationType));
@@ -2891,8 +2904,8 @@ if (typeof spindle !== 'undefined' && typeof spindle?.registerMacro === 'functio
     returnType: 'string',
     handler: async context => {
       const chatId = String(context?.env?.chat?.id || '');
-      const info = await loadInjectContext(injectUsers.get(chatId), chatId);
-      return injectionWanted(info, 'macro') ? injectionPrompt(info) : '';
+      const info = await loadInjectContext(context?.env?.extra?.userId || injectUsers.get(chatId), chatId);
+      return injectionWanted(info, 'macro', context?.env?.system?.lastGenerationType) ? injectionPrompt(info) : '';
     }
   });
 }
@@ -2926,7 +2939,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
       const info = { delivery: ['auto', 'macro'].includes(input.delivery) ? input.delivery : 'off', cast, sfx: input.sfx === true, ambience: input.ambience === true };
       // Chat loads report Off too; a chat that never used the feature needs no file written.
       const saved = await loadInjectContext(userId, input.chatId);
-      injectContexts.set(input.chatId, info);if (userId) injectUsers.set(input.chatId, userId);
+      injectContexts.set(injectContextKey(userId,input.chatId), info);if (userId) injectUsers.set(input.chatId, userId);
       if (info.delivery !== 'off' || (saved?.delivery ?? 'off') !== 'off')
         try { await spindle.userStorage?.setJson(injectFile(input.chatId), info, userId ? { userId } : {}); } catch {}
       send({ result: { interceptor: typeof spindle.registerInterceptor === 'function', macro: typeof spindle.registerMacro === 'function' } }); return;

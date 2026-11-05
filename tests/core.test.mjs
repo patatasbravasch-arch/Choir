@@ -6,6 +6,29 @@ import {phoneWidget} from './fixtures/phone-widget.mjs';
 import {sfxCueOffset,spaceSoundEffects,SFX_MIN_SPACING} from '../src/core.js';
 import {randomUuid,sha256Hex,ignoredTagNames,characterCardRoles,validateCardRoles,cardAnalysisRoles,reconcileCardCast} from '../src/core.js';
 import {normalizePlaybackRate,normalizeVoiceGap,speakerPlaybackRate,effectivePlaybackRate,browserPlaybackRate,PLAYBACK_RATE_LIMITS,VOICE_GAP_LIMITS,BROWSER_PLAYBACK_RATE_LIMITS} from '../src/core.js';
+import * as core from '../src/core.js';
+
+test('silent NPC attribution restores without a catalogue on its unused route',()=>{
+  const transcript='The guard said, "Wait."';
+  for(const communityRoutes of [{'native:fish':'community'},{}]){
+    const config={voices:[{id:'n',route:'native:gemini'}],fixed:[{speaker:'Narrator',voice:'n',route:'native:gemini',style:''}],npcs:[],defaultRoute:'native:fish',communityRoutes,npcPolicy:{mode:'skip'},useStyle:false};
+    const plan=validatePlan({segments:[{speaker:'Narrator',voice:'n',text:'The guard said,'},{speaker:'Gate guard',voice:'',text:'"Wait."'}]},transcript,config);
+    const savedCast={...config,npcs:plan.npcs};
+    assert.doesNotThrow(()=>validateCastConfig(savedCast));
+    const restored=restoreAttribution(attributionPlan(plan,savedCast),transcript,savedCast);
+    assert.equal(restored.segments[1].speaker,'Gate guard');assert.equal(restored.segments[1].voice,'');
+    assert.throws(()=>validateCastConfig({...savedCast,npcPolicy:{mode:'llm'},communityRoutes:{}}),/catalogue/,'voiced actors still require a valid catalogue');
+  }
+});
+
+test('an injected partial plan cannot carry a speaker through an explicit second speech attribution',()=>{
+  const note=core.readInjectedPlan('<!--choir\nQ1|Alice|calm|Wait\n-->');
+  for(const verb of ['yelled','interjected','screamed','exclaimed','spoke','muttered','breathed','hissed','growled','barked']){
+    const result=core.injectedCastRows(`"Wait," Alice said, and Bob ${verb}, "No."`,note);
+    assert.deepEqual(result,{rows:'D0|Alice|calm',covered:false},verb);
+  }
+  assert.equal(core.injectedCastRows('"Wait," Alice said. "I can explain."',note).covered,true);
+});
 
 test('playback speed and voice gap clamp and round stored values and fall back to the defaults for missing or invalid input',()=>{
   assert.deepEqual(PLAYBACK_RATE_LIMITS,{min:0.07,max:16,step:0.01,fallback:1});

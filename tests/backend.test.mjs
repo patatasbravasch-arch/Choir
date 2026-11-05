@@ -272,7 +272,7 @@ async function harness(generate, cors, provider, deadline, stream, decisions,con
   const connection={id:'llm-a',is_default:true,model:'gemini-flash-text',provider,...connectionOverrides};
   vm.runInNewContext(bundle,{spindle:{onFrontendMessage:h=>handler=h,sendToFrontend:(message,user,options)=>{sent.push({message,user,options});if(message.result || message.error)wake?.();},generate:{raw:generate,rawStream:stream},connections:{get:async()=>connection,list:async()=>[connection]},cors,decisions,...extraSpindle},
     console,Map,Set,AbortController,TextEncoder,setTimeout:deadline?(fn,ms)=>{deadline(fn,ms);return 0;}:setTimeout,clearTimeout,URL,crypto:globalThis.crypto,atob,btoa,Uint8Array,DataView});
-  return {sent,send:(action,input,id='request')=>handler({namespace:'choir',action,input,id},'user-a','session-a'),
+  return {sent,send:(action,input,id='request',userId='user-a')=>handler({namespace:'choir',action,input,id},userId,'session-a'),
     result:()=>sent.some(item=>item.message.result || item.message.error)?Promise.resolve(sent.findLast(item=>item.message.result || item.message.error)):new Promise(resolve=>{wake=()=>resolve(sent.at(-1));})};
 }
 test('planner uses user identity and routes replies only to the originating browser session',async()=>{
@@ -1463,6 +1463,56 @@ test('new characters\' voices are picked by one batched Decision among described
   plain.send('plan',{transcript,config:cast});
   const ranked=JSON.parse(JSON.stringify((await plain.result()).message.result));
   assert.equal(raw,1);assert.equal(ranked.segments.find(segment=>segment.speaker==='Nurse').voice,'f2');assert.equal(ranked.segments.find(segment=>segment.speaker==='Clerk').voice,'f3');
+});
+
+test('Jev never asks voice gender for silent NPCs or excluded fixed actors',async()=>{
+  for(const excluded of [false,true]){
+    const actor={speaker:'Gate guard',voice:'',style:'',...(excluded?{excluded:true}:{})};
+    const cast={voices:[{id:'n'},{id:'f',gender:'female'},{id:'m',gender:'male'}],fixed:[{speaker:'Narrator',voice:'n',style:''},...(excluded?[actor]:[])],npcs:excluded?[]:[actor],useStyle:false,npcPolicy:{mode:excluded?'llm':'skip'}};
+    const asked=[],h=await harness(null,null,null,null,null,{evaluate:async request=>{
+      asked.push(...Object.keys(request.questions));
+      return {answers:Object.fromEntries(Object.keys(request.questions).map(key=>[key,{choice:key.startsWith('speaker_')?'Gate guard':'unknown'}]))};
+    }});
+    h.send('planJev',{transcript:'The guard said, "Wait."',config:cast});
+    const result=(await h.result()).message;
+    assert.equal(result.error,undefined);assert.ok(!asked.some(key=>key.startsWith('voice_gender_')),JSON.stringify(asked));
+    assert.ok(result.result.segments.some(segment=>segment.speaker==='Gate guard'));
+  }
+});
+
+test('an optional NPC voice Decision has a short deadline and ignores late answers',async()=>{
+  const deadlines=[];let release,decisionSignal;
+  const cast={voices:[{id:'n'},{id:'f1',gender:'female',description:'Soft'},{id:'f2',gender:'female',description:'Warm'}],fixed:[{speaker:'Narrator',voice:'n',style:''}],npcs:[],useStyle:false};
+  const h=await harness(async()=>({content:'D0|Nurse|\nNPC|Nurse|female|warm'}),null,null,(fn,ms)=>deadlines.push({fn,ms}),null,{evaluate:async(request,options)=>{decisionSignal=options.signal;return new Promise(resolve=>release=resolve);}});
+  h.send('plan',{transcript:'"Hello."',config:cast});
+  for(let i=0;i<20 && !release;i++)await new Promise(resolve=>setTimeout(resolve,0));
+  assert.ok(release);
+  const timeout=deadlines.find(entry=>entry.ms>0 && entry.ms<=5000);
+  assert.ok(timeout,'optional voice choice must not wait for the ten-minute planner deadline');
+  timeout.fn();const result=(await h.result()).message;
+  assert.equal(result.error,undefined);assert.equal(result.result.segments[0].voice,'f2');assert.equal(decisionSignal.aborted,true);
+  release({answers:{npc_voice_0:{choice:'v1'}}});await new Promise(resolve=>setTimeout(resolve,0));
+  assert.equal(result.result.segments[0].voice,'f2','late choice cannot replace the fallback');
+});
+
+test('the preset macro loads its user before any interceptor and excludes non-reply generations',async()=>{
+  const files=new Map([['user-a:inject/chat-a.json',{delivery:'macro',cast:['Mira'],sfx:false,ambience:false}]]),reads=[];
+  let macro;
+  await harness(null,null,null,null,null,null,{}, {registerMacro:definition=>macro=definition,userStorage:{getJson:async(path,{fallback,userId})=>{reads.push(userId);return files.get(`${userId}:${path}`) || fallback;}}});
+  const env={chat:{id:'chat-a'},extra:{userId:'user-a'},system:{lastGenerationType:'normal'}};
+  assert.match(await macro.handler({env}),/Cast: Mira/);assert.deepEqual(reads,['user-a']);
+  for(const lastGenerationType of ['impersonate','quiet','continue'])assert.equal(await macro.handler({env:{...env,system:{lastGenerationType}}}),'');
+  for(const lastGenerationType of ['normal','regenerate','swipe'])assert.match(await macro.handler({env:{...env,system:{lastGenerationType}}}),/<!--choir/);
+});
+
+test('injection context caches are isolated by user even when a client supplies another chat ID',async()=>{
+  let interceptor;
+  const h=await harness(null,null,null,null,null,null,{}, {registerInterceptor:handler=>interceptor=handler,userStorage:{getJson:async(path,{fallback})=>fallback,setJson:async()=>{}}});
+  const victim={chatId:'same-chat',userId:'user-a',generationType:'normal'};
+  assert.equal((await interceptor([],victim)).messages.length,0);
+  h.send('injectContext',{chatId:'same-chat',delivery:'auto',cast:['Other user']},'attacker','user-b');await h.result();
+  assert.equal((await interceptor([],victim)).messages.length,0,'a different user cannot replace this cached context');
+  assert.match((await interceptor([],{...victim,userId:'user-b'})).messages[0].content,/Other user/);
 });
 
 test('a silent NPC on a route with no catalogue voice does not block the voiced cast or search the community library',async()=>{
