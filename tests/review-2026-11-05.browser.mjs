@@ -11,6 +11,52 @@ const header=source.slice(0,Math.min(start,source.indexOf('\ntest('))).replace(/
 const fixture=(header+source.slice(start,end)+'\nexport {harness,until,tick};').replaceAll('import.meta.url',JSON.stringify(url.href));
 const {harness,until,tick}=await import('data:text/javascript;base64,'+Buffer.from(fixture).toString('base64'));
 
+test('a speaker correction persists in its own chat while navigating during the settings save',async()=>{
+  const h=await harness();let release;
+  try{
+    Object.assign(h.store.get('chat:chat-a'),{skipMeta:false,enableSfx:false,enableAmbience:false,enableMusic:false,normalizeLoudness:false});
+    await h.reload();await h.plan();
+    const set=h.ctx.settings.set;let held=false;
+    h.ctx.settings.set=async(key,value)=>{
+      if(key==='chat:chat-a' && !held){held=true;await new Promise(resolve=>release=resolve);}
+      return set(key,value);
+    };
+    const select=h.$('preview').querySelector('select[aria-label="Speaker of block 2"]');
+    select.value='Guard';select.dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));
+    await until(()=>release);
+    h.state.active='chat-b';const navigation=h.subscriptions.get('chat.active')();await tick();
+    release();release=null;await navigation;
+    const saved=[...h.store].find(([key,value])=>key.startsWith('plan:') && value.chatId==='chat-a')?.[1];
+    assert.equal(saved?.attribution.segments[1].speaker,'Guard','the save uses its captured plan after the active chat changes');
+    h.state.active='chat-a';await h.subscriptions.get('chat.active')();
+    assert.equal(JSON.parse(h.$('planJson').value).segments[1].speaker,'Guard');
+  }finally{release?.();await h.close();}
+});
+
+test('speaker choices stay locked until a correction saves and unlock after a failed save',async()=>{
+  const h=await harness();let release;
+  try{
+    Object.assign(h.store.get('chat:chat-a'),{skipMeta:false,enableSfx:false,enableAmbience:false,enableMusic:false,normalizeLoudness:false});
+    await h.reload();await h.plan();
+    const set=h.ctx.settings.set;let held=false;
+    h.ctx.settings.set=async(key,value)=>{
+      if(key.startsWith('plan:') && !held){held=true;await new Promise(resolve=>release=resolve);}
+      return set(key,value);
+    };
+    const select=h.$('preview').querySelector('select[aria-label="Speaker of block 2"]');
+    select.value='Guard';select.dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));
+    await until(()=>release);
+    assert.ok([...h.$('preview').querySelectorAll('.et-plan-speaker')].every(select=>select.disabled));
+    release();release=null;await until(()=>h.$('status').textContent.startsWith('Block 2 is now read by Guard'));
+    assert.ok([...h.$('preview').querySelectorAll('.et-plan-speaker')].every(select=>!select.disabled));
+    h.state.failPlanSave=true;
+    const next=h.$('preview').querySelector('select[aria-label="Speaker of block 2"]');next.value='Narrator';next.dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));
+    await until(()=>/storage failed/i.test(h.$('status').textContent));
+    assert.equal(h.$('preview').querySelector('select[aria-label="Speaker of block 2"]').value,'Guard');
+    assert.ok([...h.$('preview').querySelectorAll('.et-plan-speaker')].every(select=>!select.disabled));
+  }finally{release?.();h.state.failPlanSave=false;await h.close();}
+});
+
 test('a failed injection sync retries on the next ordinary settings save',async()=>{
   const h=await harness();
   try{

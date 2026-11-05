@@ -2904,10 +2904,10 @@ export async function setup(ctx) {
     positionMixer();
     renderMessages();status(plan?'Saved speech plan restored.':id?'Ready.':'Open a chat to begin.');
   }
-  async function persistPlan(){
-    if(!planSource || !plan)return;
-    const source={...planSource}, saved={...source,attribution:attributionPlan(plan,casting(config)),warning:plan.warning || ''};
-    planAttribution=saved.attribution;
+  async function persistPlan(source=planSource,currentPlan=plan,cast=casting(config)){
+    if(!source || !currentPlan)return;
+    const saved={...source,attribution:attributionPlan(currentPlan,cast),warning:currentPlan.warning || ''};
+    if(source===planSource && currentPlan===plan)planAttribution=saved.attribution;
     await ctx.settings.set(`activeplan:${source.chatId}`,source.messageId);
     await ctx.settings.set(await planKey(source.chatId,source.messageId),saved);
   }
@@ -2990,8 +2990,10 @@ export async function setup(ctx) {
   }
   // Fixing a wrong speaker needs no JSON: the block is re-validated against the cast and saved with
   // the plan, and only its own audio is made again (cached clips are keyed by voice and text).
+  let speakerChangePending=false;
   function speakerChoice(index,current){
     const select=document.createElement('select');select.className='et-plan-speaker';
+    select.disabled=speakerChangePending;
     select.setAttribute('aria-label',`Speaker of block ${index+1}`);
     const cast=casting(config),names=new Map();
     // A unison block's speaker is a merged label ("Alice & Bob"), not someone who can read a block alone.
@@ -3000,7 +3002,10 @@ export async function setup(ctx) {
     for(const name of names.values())option(select,name,name);
     select.value=current;
     // A rejected choice puts the block's speaker back, so the dropdown never shows what was not saved.
-    select.onchange=()=>run(async()=>{try{await changeSpeaker(index,select.value);}catch(error){select.value=current;throw error;}});
+    select.onchange=()=>{
+      if(speakerChangePending){select.value=current;return;}
+      return run(async()=>{try{await changeSpeaker(index,select.value);}catch(error){select.value=current;throw error;}});
+    };
     return select;
   }
   async function changeSpeaker(index,speaker){
@@ -3012,10 +3017,14 @@ export async function setup(ctx) {
     const edited=validatePlan({segments},planSource.transcript,cast);
     // Playback follows `plan`; a save that fails puts the previous plan back, so it never plays what was not saved.
     const before={plan,attribution:planAttribution},source=planSource,targetChat=chatId,version=loadVersion;
-    const owned=()=>!disposed && planSource===source && chatId===targetChat && loadVersion===version;
-    plan={...edited,warning:plan.warning || ''};
-    try{rememberPlanCast(edited);await persistConfig(targetChat,config);await persistPlan();}
+    const editedPlan={...edited,warning:plan.warning || ''};
+    const owned=()=>!disposed && planSource===source && plan===editedPlan && chatId===targetChat && loadVersion===version;
+    plan=editedPlan;
+    speakerChangePending=true;
+    for(const select of $('preview').querySelectorAll('.et-plan-speaker'))select.disabled=true;
+    try{rememberPlanCast(edited);const selectedCast=structuredClone(casting(config));await persistConfig(targetChat,config);await persistPlan(source,editedPlan,selectedCast);}
     catch(error){if(owned()){plan=before.plan;planAttribution=before.attribution;renderCast();renderPreview();}throw error;}
+    finally{speakerChangePending=false;for(const select of $('preview').querySelectorAll('.et-plan-speaker'))select.disabled=false;}
     if(!owned())return;
     renderCast();renderPreview();status(`Block ${index+1} is now read by ${speaker}; saved with this plan.`);
   }
