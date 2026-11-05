@@ -1784,7 +1784,11 @@ export async function setup(ctx) {
     // sync is forced, so an Off chosen elsewhere replaces the backend's saved Automatic.
     if(sent===signature && !force || context.delivery==='off' && sent===undefined && !force)return;
     sentInjectContexts.set(targetChat,signature);
-    void rpc('injectContext',context,null,8000).catch(()=>{});
+    void rpc('injectContext',context,null,8000).catch(()=>{
+      // A temporary backend failure must not suppress the next settings sync.
+      // Leave a newer context alone if another request has already replaced it.
+      if(sentInjectContexts.get(targetChat)===signature)sentInjectContexts.delete(targetChat);
+    });
   }
   async function persistConfig(targetChat=chatId,value=config,inherit=false){
     syncInjectContext(targetChat,value);
@@ -1937,7 +1941,7 @@ export async function setup(ctx) {
   // Keep this body builder shared by the preview and the actual fetch. Never
   // serialize the connection object: it can contain authentication fields.
   const ttsRequestBody=(connection,{voice,text,parameters})=>JSON.stringify({connectionId:connection.id,model:connection.model,voice,text,parameters});
-  function clearTtsRequestLog(){if($('ttsInspectorView').value==='calls')plannerCallLog.length=0;ttsRequestLog.length=0;$('ttsRequests').replaceChildren();renderTtsInspector();}
+  function clearTtsRequestLog(){plannerCallLog.length=0;ttsRequestLog.length=0;$('ttsRequests').replaceChildren();renderTtsInspector();}
   function syncTtsInspector(){
     const enabled=Boolean(config?.paranoidMode);
     for(const name of ['ttsInspectorOpen','ttsInspectorFromPlan'])$(name).hidden=!enabled;

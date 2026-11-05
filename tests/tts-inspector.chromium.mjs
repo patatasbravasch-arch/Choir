@@ -50,7 +50,7 @@ try{
    const turns=prepared.find(body=>body.parameters.turns).parameters.turns;
    assert.equal(turns[0].voice,'Charon');assert.equal(turns[1].voice,'Kore');assert.equal(turns[1].style,'Slightly amused, conversational');
   }else{
-   assert.ok(prepared.some(body=>body.voice==='m' && body.text.startsWith('[Slightly amused][conversational]')));
+   assert.ok(prepared.some(body=>body.voice==='m' && body.text.startsWith('[Slightly amused, conversational]')));
    assert.ok(prepared.some(body=>body.voice==='n' && body.parameters.speech_style==='Measured narration'));
   }
   await play();const actual=await page.evaluate(()=>window.calls);

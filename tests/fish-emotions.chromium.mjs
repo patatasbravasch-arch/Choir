@@ -41,7 +41,7 @@ try{
   assert.ok(!(await page.locator('[data-choir-delivery]').allTextContents()).some(text=>text.includes('theatrical')),'show effective delivery, not the overridden dramatic base');
   if(process.env.CHOIR_EMOTION_SCREENSHOTS){await mkdir(process.env.CHOIR_EMOTION_SCREENSHOTS,{recursive:true});await page.locator('main').screenshot({path:path.join(process.env.CHOIR_EMOTION_SCREENSHOTS,`delivery-${mobile?'mobile':'desktop'}-${openRouter?'openrouter':'native'}.png`)});}
   await play();
-  let calls=await page.evaluate(()=>window.calls),fish=calls.find(call=>call.voice==='m');assert.equal(calls.length,3);assert.ok(fish);assert.match(fish.text,/^\[Slightly amused\]\[conversational\] /);
+  let calls=await page.evaluate(()=>window.calls),fish=calls.find(call=>call.voice==='m');assert.equal(calls.length,3);assert.ok(fish);assert.match(fish.text,/^\[Slightly amused, conversational\] /);
   if(!openRouter)assert.equal(fish.parameters.voice_direction,'','native direction must not duplicate the injected cues');
   assert.ok(calls.filter(call=>call.voice==='n').every(call=>call.parameters.speech_style==='Measured narration' && !call.text.includes('[Slightly amused]')),'Gemini narrator retains its own stable delivery');
   await play();assert.equal(await page.evaluate(()=>window.calls.length),3,'unchanged playback reuses the effective emotion request');

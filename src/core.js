@@ -625,7 +625,7 @@ export function validateCastConfig(config) {
   }
   if (!Array.isArray(config.npcs) || config.npcs.length > 500) throw new Error('Invalid NPC cast.');
   for (const npc of config.npcs) {
-    if(!config.voices.some(v=>(v.route || '')===(npc.route || config.defaultRoute || '')) && !(communityRoute(npc.route) && npc.voice===''))throw new Error(`Load the voice catalogue for ${npc.speaker}'s TTS connection.`);
+    if(policy?.mode!=='skip' && !config.voices.some(v=>(v.route || '')===(npc.route || config.defaultRoute || '')) && !(communityRoute(npc.route) && npc.voice===''))throw new Error(`Load the voice catalogue for ${npc.speaker}'s TTS connection.`);
     if(npc.gender !== undefined && !['auto','female','male','neutral'].includes(npc.gender))throw new Error('Invalid NPC voice gender preference.');
     const name = normalizeName(npc.speaker);
     if (!name || names.has(name) || (npc.voice !== '' && !available(npc))) throw new Error(`Invalid or conflicting NPC assignment: ${npc.speaker}`);
@@ -820,6 +820,7 @@ export function restoreAttribution(saved, transcript, config) {
     const policy=npc?config.npcPolicy:null;
     const selectedActor=npc?npcCastActor(actor || {route:policy?.route || route,voice:''},config):actor;
     const selectedRoute=selectedActor?.route || policy?.route || route;
+    if(npc && policy?.mode==='skip')return {voice:selectedActor?.voice || '',route:selectedRoute};
     if(!selectedActor?.voice && !['single','preferred'].includes(policy?.mode))throw new Error(`Speaker ${segment.speaker} needs a real automatic voice choice. Plan this reply to choose its voice.`);
     const choices=config.voices.filter(v=>(v.route || '')===selectedRoute && (policy?.mode!=='preferred' || policy.voices.includes(v.id)));
     const voice=selectedActor?.voice || choices.find(v=>!selectedActor?.gender || selectedActor.gender==='auto' || v.gender===selectedActor.gender)?.id;
@@ -2004,7 +2005,7 @@ export function stripInjectedPlan(content) {
 // to many models, two to Choir), so rows are matched by the quote's opening
 // words, never by position alone: a single miscount would shift every later
 // speaker. Without opening words, rows are used only when the counts agree.
-const SPEECH_VERBS=/\b(?:say|says|said|reply|replies|replied|ask|asks|asked|answer|answers|answered|shout|shouts|shouted|whisper|whispers|whispered|call|calls|called|cry|cries|cried|add|adds|added|continue|continues|continued|interrupt|interrupts|interrupted|retort|retorts|retorted|snap|snaps|snapped|murmur|murmurs|murmured)\b/gi;
+const SPEECH_VERBS=/\b(?:say|says|said|reply|replies|replied|ask|asks|asked|answer|answers|answered|shout|shouts|shouted|whisper|whispers|whispered|call|calls|called|cry|cries|cried|add|adds|added|continue|continues|continued|interrupt|interrupts|interrupted|retort|retorts|retorted|snap|snaps|snapped|murmur|murmurs|murmured|yell|yells|yelled|scream|screams|screamed|interject|interjects|interjected|speak|speaks|spoke|exclaim|exclaims|exclaimed|mutter|mutters|muttered|breathe|breathes|breathed|hiss|hisses|hissed|growl|growls|growled|bark|barks|barked|declare|declares|declared|chant|chants|chanted|sing|sings|sang)\b/gi;
 export function injectedCastRows(transcript, plan) {
   const dialogue=speechSourceUnits(transcript).filter(unit=>unit.kind==='dialogue'),assigned=new Map();
   const words=text=>String(text || '').normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu,' ').trim().split(/\s+/).filter(Boolean);
