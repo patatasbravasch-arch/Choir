@@ -2,6 +2,8 @@
 
 Release notes for Choir on the `lunch-test` and `staging` branches, newest first. A few lunch-test builds between staging.29 and staging.30 were numbered `1.1.6-lunch-test.N`.
 
+**Acting dial.** A new Acting setting (Settings → Reading) scales every character's acting: Very subtle, Subtle, Natural (as before), Expressive, Very expressive. It adjusts the direction each line already has, planned or base style, so it works with every planner and with replies you already planned; the next Play makes fresh audio. Narration stays steady and lines with no direction stay natural. On Fish S1, the subtle levels drop the loudest markers (shouting, screaming, sobbing…).
+
 **No more invented lines from stray punctuation.** A block containing no words (for example the extra quote mark in `""Keep your boots planted…`, or a lone dash) was sent to the speech service on its own, and Gemini made up a sentence to say. Such blocks now join the neighbouring line, so every request has words to read.
 
 **Review fixes (5 November).**

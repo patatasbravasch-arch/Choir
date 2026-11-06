@@ -5,7 +5,7 @@ import { randomUuid, sha256Hex, GEMINI_VOICES, OPENAI_VOICES, additionalVoices, 
 import { normalizeSpeedSliderMax, normalizePlaybackRate, normalizeVoiceGap, speakerPlaybackRate, effectivePlaybackRate, browserPlaybackRate, PLAYBACK_RATE_LIMITS, VOICE_GAP_LIMITS } from './core.js';
 import { speechLookaheadEnd, backendRequestKind, LIMITED_SPEECH_PEAK, softClipCurve, spaceSoundEffects, readInjectedPlan, injectedCastRows, injectedSoundCues, injectedSkipLines } from './core.js';
 import { createPlayedAudioCapture, playedAudioFilename, createWavArchive } from './played-audio.js';
-import { characterDeliveryMode, voiceDelivery, normalizeMixerColumns, normalizeMixerVolumeLimits } from './delivery.js';
+import { characterDeliveryMode, voiceDelivery, normalizeActingIntensity, normalizeMixerColumns, normalizeMixerVolumeLimits } from './delivery.js';
 import { createDrawerNavigation, DRAWER_UI_CSS } from './drawer-ui.js';
 
 const CHOIR_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 12a4.16 4.16 0 0 1-5.62 3.89 3.78 3.78 0 0 1-2.38-3.39 3.42 3.42 0 0 1 2.34-3.38l3.79-1.42a2.89 2.89 0 0 0 1.87-2.7 2 2 0 1 0-4 0v14a2 2 0 1 1-4 0"/><path d="M20 2v4"/><path d="M22 4h-4"/></svg>`;
@@ -380,6 +380,7 @@ export async function setup(ctx) {
     </div>
     <h4 class="et-subhead">Reading</h4>
     <div class="et-row">
+      <label class="et-check" style="display:inline-flex" title="Scales every character's acting directions, planned or base style. Narration stays steady; lines without a direction stay natural. Takes effect on the next Play, with no re-planning.">Acting<select data-et="actingIntensity" style="width:auto"><option value="-2">Very subtle</option><option value="-1">Subtle</option><option value="0">Natural</option><option value="1">Expressive</option><option value="2">Very expressive</option></select></label>
       <label class="et-check" style="display:inline-flex">Highlight spoken text<select data-et="readAlong" style="width:auto"><option value="off">Off</option><option value="passage">Passage</option><option value="word">Word by word</option></select></label>
       <label class="et-check" title="Scroll the chat to the passage being read. Scrolling yourself pauses this until the next Play."><input data-et="followNarration" type="checkbox"> Follow narration</label>
       <label class="et-check"><input data-et="auto" type="checkbox"> Auto-play new replies</label>
@@ -752,7 +753,7 @@ export async function setup(ctx) {
   let chatLoading=false;
   const defaults = () => ({planner:'',connection:'',decisionConnection:'',styleParam:'',apiBase:'/api/v1',chunk:1800,batchSpeech:false,concurrency:1,plannerTokens:8192,
     prefetch:1,normalizeLoudness:true,skipMeta:true,allowLlmFallback:false,injectPlan:'off',sectionButtons:false,paranoidMode:false,connectionMode:'several',enableMixer:false,singleVoices:{},
-    extraVoices:'',ignoredTags:'',useStyle:true,auto:false,autoPlan:false,showAutoPlanAction:false,muteNarrator:false,enableSfx:true,enableAmbience:true,enableMusic:false,loopMusic:false,freesoundApiKey:'',npcPolicy:{mode:'llm',route:'',voice:'',voices:[]},fishVoiceSource:'community',plannerMode:'llm',useFastClassifier:false,useJev:false,jevApiKey:'',jevEndpoint:'https://api.typesafe.ai/v1',planBatchChars:3600,planBatchUnits:24,retention:'forever',readAlong:'off',followNarration:false,casts:{},fixed:[
+    extraVoices:'',ignoredTags:'',useStyle:true,auto:false,autoPlan:false,showAutoPlanAction:false,muteNarrator:false,enableSfx:true,enableAmbience:true,enableMusic:false,loopMusic:false,freesoundApiKey:'',npcPolicy:{mode:'llm',route:'',voice:'',voices:[]},fishVoiceSource:'community',plannerMode:'llm',useFastClassifier:false,useJev:false,jevApiKey:'',jevEndpoint:'https://api.typesafe.ai/v1',planBatchChars:3600,planBatchUnits:24,retention:'forever',readAlong:'off',followNarration:false,actingIntensity:0,casts:{},fixed:[
       {speaker:'Narrator',voice:'Charon',style:'Clear, measured narration'},
       {speaker:'Persona',voice:'',style:''},
       {speaker:'Character',voice:'',style:''} ]});
@@ -1451,7 +1452,7 @@ export async function setup(ctx) {
   const settingsKey = id => `chat:${id}`;
   const GLOBAL_SETTINGS_KEY='settings:global';
   const CAPTURED_DEFAULTS_KEY='settings:captured-defaults';
-  const preferenceFields=['planner','decisionConnection','connection','connectionMode','enableMixer','styleParam','apiBase','chunk','batchSpeech','plannerTokens','retention','concurrency','prefetch','normalizeLoudness','skipMeta','allowLlmFallback','injectPlan','sectionButtons','paranoidMode','extraVoices','extraVoiceRoutes','useStyle','auto','autoPlan','showAutoPlanAction','ignoredTags','fishVoiceSource','plannerMode','useFastClassifier','useJev','jevEndpoint','enableSfx','enableAmbience','enableMusic','loopMusic','freesoundApiKey','readAlong','followNarration'];
+  const preferenceFields=['planner','decisionConnection','connection','connectionMode','enableMixer','styleParam','apiBase','chunk','batchSpeech','plannerTokens','retention','concurrency','prefetch','normalizeLoudness','skipMeta','allowLlmFallback','injectPlan','sectionButtons','paranoidMode','extraVoices','extraVoiceRoutes','useStyle','auto','autoPlan','showAutoPlanAction','ignoredTags','fishVoiceSource','plannerMode','useFastClassifier','useJev','jevEndpoint','enableSfx','enableAmbience','enableMusic','loopMusic','freesoundApiKey','readAlong','followNarration','actingIntensity'];
   const defaultVoiceFields=['voice','route','gender','style','accent','deliveryMode','excluded'];
   let capturedDefaults=null,defaultOperation=false,defaultsRevision=0;
   let closeDefaultEditor;
@@ -2598,7 +2599,7 @@ export async function setup(ctx) {
       styleParam:$('styleParam').value,apiBase:$('apiBase').value.trim(),chunk:Number($('chunk').value),
       plannerTokens:Number($('plannerTokens').value),retention:$('retention').value,batchSpeech:$('batchSpeech').checked,concurrency:Number($('concurrency').value),
       prefetch:Number($('prefetch').value),normalizeLoudness:$('normalizeLoudness').checked,skipMeta:$('skipMeta').checked,allowLlmFallback:$('allowLlmFallback').checked,injectPlan:$('injectPlan').value,sectionButtons:$('sectionButtons').checked,enableMixer:Boolean($('enableMixer')?.checked),
-      extraVoices:$('extraVoices').value,ignoredTags:$('ignoredTags').value,useStyle:$('useStyle').checked,auto:$('auto').checked,muteNarrator:Boolean(config.muteNarrator),enableSfx:$('enableSfx')?Boolean($('enableSfx').checked):(config.enableSfx!==false),enableAmbience:$('enableAmbience').checked,enableMusic:$('enableMusic').checked,loopMusic:$('loopMusic').checked,readAlong:$('readAlong').value,followNarration:$('followNarration').checked,freesoundApiKey:$('freesoundApiKey')?$('freesoundApiKey').value.trim():(config.freesoundApiKey||''),fishVoiceSource:$('fishVoiceSource').value,plannerMode:$('plannerMode')?$('plannerMode').value:resolvePlannerMode(config),useFastClassifier:$('plannerMode')?$('plannerMode').value==='heuristic':Boolean(config.useFastClassifier),useJev:$('plannerMode')?$('plannerMode').value==='jev':Boolean(config.useJev),jevApiKey:$('jevKey')?$('jevKey').value.trim():(config.jevApiKey||''),jevEndpoint:$('jevEndpoint')?$('jevEndpoint').value.trim():(config.jevEndpoint||'')},activeCharacterCard || {});
+      extraVoices:$('extraVoices').value,ignoredTags:$('ignoredTags').value,useStyle:$('useStyle').checked,auto:$('auto').checked,muteNarrator:Boolean(config.muteNarrator),enableSfx:$('enableSfx')?Boolean($('enableSfx').checked):(config.enableSfx!==false),enableAmbience:$('enableAmbience').checked,enableMusic:$('enableMusic').checked,loopMusic:$('loopMusic').checked,readAlong:$('readAlong').value,followNarration:$('followNarration').checked,actingIntensity:normalizeActingIntensity($('actingIntensity').value),freesoundApiKey:$('freesoundApiKey')?$('freesoundApiKey').value.trim():(config.freesoundApiKey||''),fishVoiceSource:$('fishVoiceSource').value,plannerMode:$('plannerMode')?$('plannerMode').value:resolvePlannerMode(config),useFastClassifier:$('plannerMode')?$('plannerMode').value==='heuristic':Boolean(config.useFastClassifier),useJev:$('plannerMode')?$('plannerMode').value==='jev':Boolean(config.useJev),jevApiKey:$('jevKey')?$('jevKey').value.trim():(config.jevApiKey||''),jevEndpoint:$('jevEndpoint')?$('jevEndpoint').value.trim():(config.jevEndpoint||'')},activeCharacterCard || {});
   }
   function casting(c=config) {
     const routeActor=actor=>c.connectionMode==='one'?{...actor,route:scope(c),voice:singleVoice(actor,c)}:actor;
@@ -2730,7 +2731,7 @@ export async function setup(ctx) {
     if($('enableSfx'))$('enableSfx').checked=config.enableSfx!==false;
     $('enableAmbience').checked=config.enableAmbience!==false;$('enableMusic').checked=config.enableMusic===true;$('loopMusic').checked=config.loopMusic===true;
     if($('enableMixer'))$('enableMixer').checked=Boolean(config.enableMixer);
-    $('readAlong').value=config.readAlong || 'off';$('followNarration').checked=Boolean(config.followNarration);
+    $('readAlong').value=config.readAlong || 'off';$('actingIntensity').value=String(normalizeActingIntensity(config.actingIntensity));$('followNarration').checked=Boolean(config.followNarration);
     if($('freesoundApiKey'))$('freesoundApiKey').value=config.freesoundApiKey||'';$('concurrency').value=config.concurrency;
     if($('plannerMode'))$('plannerMode').value=resolvePlannerMode(config);
     if($('useFastClassifier'))$('useFastClassifier').checked=Boolean(config.useFastClassifier);
@@ -3635,7 +3636,7 @@ export async function setup(ctx) {
     const family=detectProvider(route);
     const legacyMapping=actor && namePronunciation({speaker:actor.speaker,sayAsName:actor.sayAsName,pronunciation:actor.pronunciation});
     const spoken={...segment,text:respellNames(segment.text,pronunciationActors(snapshot))};
-    const delivery=voiceDelivery({segment:spoken,actor:legacyMapping?{...actor,pronunciation:''}:actor,narrator:normalizeName(segment.speaker)==='narrator',family,connection,supported,styleParam:snapshot.styleParam,useStyle:snapshot.useStyle!==false});
+    const delivery=voiceDelivery({segment:spoken,actor:legacyMapping?{...actor,pronunciation:''}:actor,narrator:normalizeName(segment.speaker)==='narrator',family,connection,supported,styleParam:snapshot.styleParam,useStyle:snapshot.useStyle!==false,intensity:snapshot.actingIntensity});
     return {segment:{...spoken,route,style:delivery.style},text:delivery.text,connection,parameters:delivery.parameters};
   }
   function unisonLevels(segment){return speechMembers(segment).map(member=>[member.speaker,mixerVolume(1,member.speaker,mixerState.channels),speakerExcluded(member.speaker)]);}
