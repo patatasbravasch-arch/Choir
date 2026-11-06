@@ -2,6 +2,8 @@
 
 Release notes for Choir on the `lunch-test` and `staging` branches, newest first. A few lunch-test builds between staging.29 and staging.30 were numbered `1.1.6-lunch-test.N`.
 
+**No more invented lines from stray punctuation.** A block containing no words (for example the extra quote mark in `""Keep your boots planted…`, or a lone dash) was sent to the speech service on its own, and Gemini made up a sentence to say. Such blocks now join the neighbouring line, so every request has words to read.
+
 **Review fixes (5 November).**
 - Silent NPCs and excluded actors no longer need a voice gender, a catalogue on an unused connection, or a voice when a saved plan is reloaded; any of these could stop planning or replay.
 - The optional "Jev NPC voices" Decision gives up after five seconds and keeps the ranked voice, instead of holding a finished plan until the ten-minute planner deadline. Cancelling still cancels.

@@ -8,6 +8,21 @@ import {randomUuid,sha256Hex,ignoredTagNames,characterCardRoles,validateCardRole
 import {normalizePlaybackRate,normalizeVoiceGap,speakerPlaybackRate,effectivePlaybackRate,browserPlaybackRate,PLAYBACK_RATE_LIMITS,VOICE_GAP_LIMITS,BROWSER_PLAYBACK_RATE_LIMITS} from '../src/core.js';
 import * as core from '../src/core.js';
 
+test('a block with no words is folded into its neighbour, so no speech request is a lone quote mark',()=>{
+  const config={voices:[{id:'n'},{id:'z'}],fixed:[{speaker:'Narrator',voice:'n',style:''},{speaker:'Zack',voice:'z',style:''}],npcs:[],useStyle:false};
+  const transcript='""Keep your boots planted, Kellin, or I\'ll put you on the rug," Zack growled.';
+  const plan=validatePlan({segments:[{speaker:'Zack',text:'"'},{speaker:'Zack',text:'"Keep your boots planted, Kellin, or I\'ll put you on the rug,"'},{speaker:'Narrator',text:'Zack growled.'}]},transcript,config);
+  assert.deepEqual(plan.segments.map(segment=>[segment.speaker,segment.text]),[['Zack','""Keep your boots planted, Kellin, or I\'ll put you on the rug,"'],['Narrator','Zack growled.']]);
+  // A trailing stray mark joins the line it closes; a lone dash between sentences joins the one before it.
+  const trailing=validatePlan({segments:[{speaker:'Zack',text:'"Stay."'},{speaker:'Narrator',text:'"'}]},'"Stay.""',config);
+  assert.deepEqual(trailing.segments.map(segment=>segment.text),['"Stay.""']);
+  const dash=validatePlan({segments:[{speaker:'Narrator',text:'He waited.'},{speaker:'Narrator',text:'—'},{speaker:'Zack',text:'"Now."'}]},'He waited. — "Now."',config);
+  assert.deepEqual(dash.segments.map(segment=>[segment.speaker,segment.text]),[['Narrator','He waited. —'],['Zack','"Now."']]);
+  assert.ok([plan,trailing,dash].every(result=>result.segments.every(segment=>/[\p{L}\p{N}]/u.test(segment.text))));
+  // The folded plan is still a valid plan of the same message.
+  assert.doesNotThrow(()=>validatePlan({segments:plan.segments.map(({speaker,text})=>({speaker,text}))},transcript,config));
+});
+
 test('silent NPC attribution restores without a catalogue on its unused route',()=>{
   const transcript='The guard said, "Wait."';
   for(const communityRoutes of [{'native:fish':'community'},{}]){
@@ -823,7 +838,7 @@ test('castReply canonicalises aliases, reads NOT_SPOKEN as narration and casts n
   assert.equal(calls.length,1);assert.ok(calls[0][1].content.includes(`${'x'.repeat(2994)}recent\n`));
   const plan=validatePlan(resolvePlanReferences(raw,transcript,castingCast()),transcript,castingCast());
   const turn=text=>plan.segments.find(segment=>segment.text===text);
-  assert.deepEqual([turn('"Hi,"').speaker,turn('"Hey."').speaker,turn('"Closed"').speaker,turn('"Halt!"').speaker,turn('"Move."').speaker,turn('"Hm."').speaker],['Mira Vale','Jay','Narrator','the gate guard','Old woman','the gate guard']);
+  assert.deepEqual([turn('"Hi,"').speaker,turn('"Hey."').speaker,turn('"Closed".').speaker,turn('"Halt!"').speaker,turn('"Move."').speaker,turn('"Hm."').speaker],['Mira Vale','Jay','Narrator','the gate guard','Old woman','the gate guard']);
   assert.equal(turn('"Hi,"').style,'cheerful');assert.equal(turn('"Hey."').style,'natural, matching the scene');
   // The guard's suggested voice is male, so it gets the first unused female voice; the old woman keeps her valid choice.
   assert.deepEqual(plan.npcs.map(npc=>[npc.speaker,npc.voice,npc.gender]),[['Guard','f2',undefined],['the gate guard','f1','female'],['Old woman','f1','female']]);

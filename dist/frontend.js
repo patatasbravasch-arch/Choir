@@ -701,6 +701,25 @@ function unisonSpeakers(transcript,unit,config) {
   return names.length>=2 && (!/\bboth\b/i.test(tag) || names.length===2)?names:[];
 }
 
+// A block with no words (a stray quote mark from `""Hello`, a lone dash) must never
+// reach a speech model: given nothing to say, Gemini invents a sentence. Each such
+// block joins the neighbour it touches, keeping the exact source text in between.
+const hasWords=text=>/[\p{L}\p{N}]/u.test(stripAudioTags(text));
+function foldWordlessSegments(segments,spans,transcript){
+  for(let index=0;index<segments.length && segments.length>1;){
+    if(hasWords(segments[index].text)){index++;continue;}
+    const before=index>0,after=index<segments.length-1;
+    const intoPrevious=before && (!after || spans[index].start===spans[index-1].end || spans[index+1].start!==spans[index].end);
+    if(intoPrevious){
+      segments[index-1].text+=transcript.slice(spans[index-1].end,spans[index].end);
+      spans[index-1].end=spans[index].end;
+    }else{
+      segments[index+1].text=transcript.slice(spans[index].start,spans[index+1].start)+segments[index+1].text;
+      spans[index+1].start=spans[index].start;
+    }
+    segments.splice(index,1);spans.splice(index,1);
+  }
+}
 function validatePlan(raw, transcript, config) {
   config=reconcileCastDuplicates(config);
   validateCastConfig(config);
@@ -743,6 +762,7 @@ function validatePlan(raw, transcript, config) {
     if(!fixedNames.has(key) && config.npcPolicy?.mode==='preferred' && !config.npcPolicy.voices.includes(actor.voice))throw new Error(`NPC ${actor.speaker} must use one of the preferred voices.`);
     return actor;
   };
+  const spans=[];
   const segments = raw.segments.map((segment, index) => {
     if (!segment || typeof segment.text !== 'string' || !segment.text.trim()) throw new Error(`Segment ${index+1} has no transcript.`);
     const text = segment.text.trim();
@@ -773,6 +793,7 @@ function validatePlan(raw, transcript, config) {
       if (!matchOk) throw new Error(`Segment ${index+1} changes or skips the original text. Copy exact consecutive substrings.`);
       cursor = tIdx;
     }
+    spans[index]={start:sourceStart,end:cursor};
     const narrated=(aliases.get(normalizeName(segment.speaker)) || normalizeName(segment.speaker))==='narrator';
     const detected=!narrated && /^["“«「『„][\s\S]*["”»」』“]$/.test(text)?unisonSpeakers(transcript,{kind:'dialogue',start:sourceStart,end:cursor},config):null;
     const supplied=segment.unison;
@@ -799,6 +820,7 @@ function validatePlan(raw, transcript, config) {
       ...(sfx ? {sfx} : {}), ...(ambience ? {ambience} : {}), ...(music ? {music} : {})};
   });
   if (transcript.slice(cursor).trim()) throw new Error('The plan omits the end of the original message.');
+  foldWordlessSegments(segments,spans,transcript);
   const fixed = new Set(config.fixed.map(v => normalizeName(v.speaker)));
   return {segments, npcs:[...cast.values()].filter(v => !fixed.has(normalizeName(v.speaker)))};
 }
