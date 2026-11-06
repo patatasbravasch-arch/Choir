@@ -95,7 +95,16 @@ export function fishS1Cues(acting) {
   return [...new Set(cues)].slice(0, 3);
 }
 
-export function voiceDelivery({segment, actor, narrator = false, family, connection = {}, supported = {}, styleParam, useStyle = true}) {
+// The cast-wide acting dial scales whatever direction a line already has (planned or
+// base style), from -2 (barely there) to +2 (big). It never invents a direction for an
+// unmarked line, and narration keeps its steady delivery.
+export const ACTING_INTENSITY_LEVELS=[[-2,'Very subtle'],[-1,'Subtle'],[0,'Natural'],[1,'Expressive'],[2,'Very expressive']];
+export const normalizeActingIntensity=value=>{const number=Number(value);return Number.isInteger(number) && number>=-2 && number<=2?number:0;};
+const INTENSITY_WORDS={'-2':'barely there, very understated','-1':'understated, restrained','1':'expressive, fully committed','2':'intense, big and theatrical'};
+const FISH_INTENSITY_WORDS={'-2':'very subtle','-1':'subtle','1':'expressive','2':'intense'};
+// Fish S1 markers have no degree; dialling down drops the loudest ones instead.
+const S1_STRONG=new Set(['shouting','screaming','hysterical','crying loudly','sobbing','laughing','angry']);
+export function voiceDelivery({segment, actor, narrator = false, family, connection = {}, supported = {}, styleParam, useStyle = true, intensity = 0}) {
   const mode = characterDeliveryMode(actor, narrator);
   const modernGemini = family==='gemini' && /(?:^|\/)gemini-3\.8-flash(?:-lite)?-tts(?:$|[-:])/i.test(connection.model || '');
   const s1=family==='fish_audio' && /(?:^|\/)s1$/.test(connection.model || '');
@@ -113,8 +122,11 @@ export function voiceDelivery({segment, actor, narrator = false, family, connect
   // Explicit inline delivery belongs to the preset. Do not stack generated
   // acting on it; persistent accent and pronunciation still travel separately.
   const rawActing = useStyle && mode !== 'off' && !inline ? mode === 'base' ? base || (narrator && !modernGemini ? 'Steady, neutral narration' : '') : turn || base : '';
+  const level=narrator?0:normalizeActingIntensity(intensity);
   const cues=fishS2?fishStyleCues(rawActing):[];
-  const acting=fishS2?cues.join('. '):family==='gemini'?conciseDeliveryStyle(rawActing):deliveryText(rawActing);
+  if(level && cues.length)cues[0]=`${FISH_INTENSITY_WORDS[level]}, ${cues[0]}`;
+  const scaled=level && rawActing && !fishS2?`${INTENSITY_WORDS[level]}: ${rawActing}`:rawActing;
+  const acting=fishS2?cues.join('. '):family==='gemini'?conciseDeliveryStyle(scaled):deliveryText(scaled);
   const parameters = {};
   const supports = key => supported[key] && (!supported[key].models || supported[key].models.includes(connection.model));
   if (actor?.accent && supports('accent')) {
@@ -140,7 +152,7 @@ export function voiceDelivery({segment, actor, narrator = false, family, connect
     return event ? fishS2 ? `[${event==='short pause'?'break':event==='long pause'?'long-break':event}]` : '' : tag;
   });
   if (family === 'fish_audio' && (!parameter || !s1) && instructions) {
-    const prefix = s1 ? fishS1Cues(acting).map(cue=>`(${cue})`).join('') : [...cues,...[actor?.pronunciation,actor?.accent && !supports('accent')?`Accent: ${actor.accent}`:''].filter(Boolean).map(deliveryText)].map(cue=>`[${cue}]`).join('');
+    const prefix = s1 ? fishS1Cues(acting).filter(cue=>level>=0 || !S1_STRONG.has(cue)).slice(0,level<=-2?1:3).map(cue=>`(${cue})`).join('') : [...cues,...[actor?.pronunciation,actor?.accent && !supports('accent')?`Accent: ${actor.accent}`:''].filter(Boolean).map(deliveryText)].map(cue=>`[${cue}]`).join('');
     text = prefix ? `${prefix} ${text}` : text;
   }
   // Older Google relays accept the direction as a natural-language prompt.

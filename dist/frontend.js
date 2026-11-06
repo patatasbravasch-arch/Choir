@@ -701,6 +701,25 @@ function unisonSpeakers(transcript,unit,config) {
   return names.length>=2 && (!/\bboth\b/i.test(tag) || names.length===2)?names:[];
 }
 
+// A block with no words (a stray quote mark from `""Hello`, a lone dash) must never
+// reach a speech model: given nothing to say, Gemini invents a sentence. Each such
+// block joins the neighbour it touches, keeping the exact source text in between.
+const hasWords=text=>/[\p{L}\p{N}]/u.test(stripAudioTags(text));
+function foldWordlessSegments(segments,spans,transcript){
+  for(let index=0;index<segments.length && segments.length>1;){
+    if(hasWords(segments[index].text)){index++;continue;}
+    const before=index>0,after=index<segments.length-1;
+    const intoPrevious=before && (!after || spans[index].start===spans[index-1].end || spans[index+1].start!==spans[index].end);
+    if(intoPrevious){
+      segments[index-1].text+=transcript.slice(spans[index-1].end,spans[index].end);
+      spans[index-1].end=spans[index].end;
+    }else{
+      segments[index+1].text=transcript.slice(spans[index].start,spans[index+1].start)+segments[index+1].text;
+      spans[index+1].start=spans[index].start;
+    }
+    segments.splice(index,1);spans.splice(index,1);
+  }
+}
 function validatePlan(raw, transcript, config) {
   config=reconcileCastDuplicates(config);
   validateCastConfig(config);
@@ -743,6 +762,7 @@ function validatePlan(raw, transcript, config) {
     if(!fixedNames.has(key) && config.npcPolicy?.mode==='preferred' && !config.npcPolicy.voices.includes(actor.voice))throw new Error(`NPC ${actor.speaker} must use one of the preferred voices.`);
     return actor;
   };
+  const spans=[];
   const segments = raw.segments.map((segment, index) => {
     if (!segment || typeof segment.text !== 'string' || !segment.text.trim()) throw new Error(`Segment ${index+1} has no transcript.`);
     const text = segment.text.trim();
@@ -773,6 +793,7 @@ function validatePlan(raw, transcript, config) {
       if (!matchOk) throw new Error(`Segment ${index+1} changes or skips the original text. Copy exact consecutive substrings.`);
       cursor = tIdx;
     }
+    spans[index]={start:sourceStart,end:cursor};
     const narrated=(aliases.get(normalizeName(segment.speaker)) || normalizeName(segment.speaker))==='narrator';
     const detected=!narrated && /^["“«「『„][\s\S]*["”»」』“]$/.test(text)?unisonSpeakers(transcript,{kind:'dialogue',start:sourceStart,end:cursor},config):null;
     const supplied=segment.unison;
@@ -799,6 +820,7 @@ function validatePlan(raw, transcript, config) {
       ...(sfx ? {sfx} : {}), ...(ambience ? {ambience} : {}), ...(music ? {music} : {})};
   });
   if (transcript.slice(cursor).trim()) throw new Error('The plan omits the end of the original message.');
+  foldWordlessSegments(segments,spans,transcript);
   const fixed = new Set(config.fixed.map(v => normalizeName(v.speaker)));
   return {segments, npcs:[...cast.values()].filter(v => !fixed.has(normalizeName(v.speaker)))};
 }
@@ -3380,7 +3402,16 @@ function fishS1Cues(acting) {
   return [...new Set(cues)].slice(0, 3);
 }
 
-function voiceDelivery({segment, actor, narrator = false, family, connection = {}, supported = {}, styleParam, useStyle = true}) {
+// The cast-wide acting dial scales whatever direction a line already has (planned or
+// base style), from -2 (barely there) to +2 (big). It never invents a direction for an
+// unmarked line, and narration keeps its steady delivery.
+const ACTING_INTENSITY_LEVELS=[[-2,'Very subtle'],[-1,'Subtle'],[0,'Natural'],[1,'Expressive'],[2,'Very expressive']];
+const normalizeActingIntensity=value=>{const number=Number(value);return Number.isInteger(number) && number>=-2 && number<=2?number:0;};
+const INTENSITY_WORDS={'-2':'barely there, very understated','-1':'understated, restrained','1':'expressive, fully committed','2':'intense, big and theatrical'};
+const FISH_INTENSITY_WORDS={'-2':'very subtle','-1':'subtle','1':'expressive','2':'intense'};
+// Fish S1 markers have no degree; dialling down drops the loudest ones instead.
+const S1_STRONG=new Set(['shouting','screaming','hysterical','crying loudly','sobbing','laughing','angry']);
+function voiceDelivery({segment, actor, narrator = false, family, connection = {}, supported = {}, styleParam, useStyle = true, intensity = 0}) {
   const mode = characterDeliveryMode(actor, narrator);
   const modernGemini = family==='gemini' && /(?:^|\/)gemini-3\.8-flash(?:-lite)?-tts(?:$|[-:])/i.test(connection.model || '');
   const s1=family==='fish_audio' && /(?:^|\/)s1$/.test(connection.model || '');
@@ -3398,8 +3429,11 @@ function voiceDelivery({segment, actor, narrator = false, family, connection = {
   // Explicit inline delivery belongs to the preset. Do not stack generated
   // acting on it; persistent accent and pronunciation still travel separately.
   const rawActing = useStyle && mode !== 'off' && !inline ? mode === 'base' ? base || (narrator && !modernGemini ? 'Steady, neutral narration' : '') : turn || base : '';
+  const level=narrator?0:normalizeActingIntensity(intensity);
   const cues=fishS2?fishStyleCues(rawActing):[];
-  const acting=fishS2?cues.join('. '):family==='gemini'?conciseDeliveryStyle(rawActing):deliveryText(rawActing);
+  if(level && cues.length)cues[0]=`${FISH_INTENSITY_WORDS[level]}, ${cues[0]}`;
+  const scaled=level && rawActing && !fishS2?`${INTENSITY_WORDS[level]}: ${rawActing}`:rawActing;
+  const acting=fishS2?cues.join('. '):family==='gemini'?conciseDeliveryStyle(scaled):deliveryText(scaled);
   const parameters = {};
   const supports = key => supported[key] && (!supported[key].models || supported[key].models.includes(connection.model));
   if (actor?.accent && supports('accent')) {
@@ -3425,7 +3459,7 @@ function voiceDelivery({segment, actor, narrator = false, family, connection = {
     return event ? fishS2 ? `[${event==='short pause'?'break':event==='long pause'?'long-break':event}]` : '' : tag;
   });
   if (family === 'fish_audio' && (!parameter || !s1) && instructions) {
-    const prefix = s1 ? fishS1Cues(acting).map(cue=>`(${cue})`).join('') : [...cues,...[actor?.pronunciation,actor?.accent && !supports('accent')?`Accent: ${actor.accent}`:''].filter(Boolean).map(deliveryText)].map(cue=>`[${cue}]`).join('');
+    const prefix = s1 ? fishS1Cues(acting).filter(cue=>level>=0 || !S1_STRONG.has(cue)).slice(0,level<=-2?1:3).map(cue=>`(${cue})`).join('') : [...cues,...[actor?.pronunciation,actor?.accent && !supports('accent')?`Accent: ${actor.accent}`:''].filter(Boolean).map(deliveryText)].map(cue=>`[${cue}]`).join('');
     text = prefix ? `${prefix} ${text}` : text;
   }
   // Older Google relays accept the direction as a natural-language prompt.
@@ -3820,6 +3854,7 @@ export async function setup(ctx) {
     </div>
     <h4 class="et-subhead">Reading</h4>
     <div class="et-row">
+      <label class="et-check" style="display:inline-flex" title="Scales every character's acting directions, planned or base style. Narration stays steady; lines without a direction stay natural. Takes effect on the next Play, with no re-planning.">Acting<select data-et="actingIntensity" style="width:auto"><option value="-2">Very subtle</option><option value="-1">Subtle</option><option value="0">Natural</option><option value="1">Expressive</option><option value="2">Very expressive</option></select></label>
       <label class="et-check" style="display:inline-flex">Highlight spoken text<select data-et="readAlong" style="width:auto"><option value="off">Off</option><option value="passage">Passage</option><option value="word">Word by word</option></select></label>
       <label class="et-check" title="Scroll the chat to the passage being read. Scrolling yourself pauses this until the next Play."><input data-et="followNarration" type="checkbox"> Follow narration</label>
       <label class="et-check"><input data-et="auto" type="checkbox"> Auto-play new replies</label>
@@ -4192,7 +4227,7 @@ export async function setup(ctx) {
   let chatLoading=false;
   const defaults = () => ({planner:'',connection:'',decisionConnection:'',styleParam:'',apiBase:'/api/v1',chunk:1800,batchSpeech:false,concurrency:1,plannerTokens:8192,
     prefetch:1,normalizeLoudness:true,skipMeta:true,allowLlmFallback:false,injectPlan:'off',sectionButtons:false,paranoidMode:false,connectionMode:'several',enableMixer:false,singleVoices:{},
-    extraVoices:'',ignoredTags:'',useStyle:true,auto:false,autoPlan:false,showAutoPlanAction:false,muteNarrator:false,enableSfx:true,enableAmbience:true,enableMusic:false,loopMusic:false,freesoundApiKey:'',npcPolicy:{mode:'llm',route:'',voice:'',voices:[]},fishVoiceSource:'community',plannerMode:'llm',useFastClassifier:false,useJev:false,jevApiKey:'',jevEndpoint:'https://api.typesafe.ai/v1',planBatchChars:3600,planBatchUnits:24,retention:'forever',readAlong:'off',followNarration:false,casts:{},fixed:[
+    extraVoices:'',ignoredTags:'',useStyle:true,auto:false,autoPlan:false,showAutoPlanAction:false,muteNarrator:false,enableSfx:true,enableAmbience:true,enableMusic:false,loopMusic:false,freesoundApiKey:'',npcPolicy:{mode:'llm',route:'',voice:'',voices:[]},fishVoiceSource:'community',plannerMode:'llm',useFastClassifier:false,useJev:false,jevApiKey:'',jevEndpoint:'https://api.typesafe.ai/v1',planBatchChars:3600,planBatchUnits:24,retention:'forever',readAlong:'off',followNarration:false,actingIntensity:0,casts:{},fixed:[
       {speaker:'Narrator',voice:'Charon',style:'Clear, measured narration'},
       {speaker:'Persona',voice:'',style:''},
       {speaker:'Character',voice:'',style:''} ]});
@@ -4891,7 +4926,7 @@ export async function setup(ctx) {
   const settingsKey = id => `chat:${id}`;
   const GLOBAL_SETTINGS_KEY='settings:global';
   const CAPTURED_DEFAULTS_KEY='settings:captured-defaults';
-  const preferenceFields=['planner','decisionConnection','connection','connectionMode','enableMixer','styleParam','apiBase','chunk','batchSpeech','plannerTokens','retention','concurrency','prefetch','normalizeLoudness','skipMeta','allowLlmFallback','injectPlan','sectionButtons','paranoidMode','extraVoices','extraVoiceRoutes','useStyle','auto','autoPlan','showAutoPlanAction','ignoredTags','fishVoiceSource','plannerMode','useFastClassifier','useJev','jevEndpoint','enableSfx','enableAmbience','enableMusic','loopMusic','freesoundApiKey','readAlong','followNarration'];
+  const preferenceFields=['planner','decisionConnection','connection','connectionMode','enableMixer','styleParam','apiBase','chunk','batchSpeech','plannerTokens','retention','concurrency','prefetch','normalizeLoudness','skipMeta','allowLlmFallback','injectPlan','sectionButtons','paranoidMode','extraVoices','extraVoiceRoutes','useStyle','auto','autoPlan','showAutoPlanAction','ignoredTags','fishVoiceSource','plannerMode','useFastClassifier','useJev','jevEndpoint','enableSfx','enableAmbience','enableMusic','loopMusic','freesoundApiKey','readAlong','followNarration','actingIntensity'];
   const defaultVoiceFields=['voice','route','gender','style','accent','deliveryMode','excluded'];
   let capturedDefaults=null,defaultOperation=false,defaultsRevision=0;
   let closeDefaultEditor;
@@ -6038,7 +6073,7 @@ export async function setup(ctx) {
       styleParam:$('styleParam').value,apiBase:$('apiBase').value.trim(),chunk:Number($('chunk').value),
       plannerTokens:Number($('plannerTokens').value),retention:$('retention').value,batchSpeech:$('batchSpeech').checked,concurrency:Number($('concurrency').value),
       prefetch:Number($('prefetch').value),normalizeLoudness:$('normalizeLoudness').checked,skipMeta:$('skipMeta').checked,allowLlmFallback:$('allowLlmFallback').checked,injectPlan:$('injectPlan').value,sectionButtons:$('sectionButtons').checked,enableMixer:Boolean($('enableMixer')?.checked),
-      extraVoices:$('extraVoices').value,ignoredTags:$('ignoredTags').value,useStyle:$('useStyle').checked,auto:$('auto').checked,muteNarrator:Boolean(config.muteNarrator),enableSfx:$('enableSfx')?Boolean($('enableSfx').checked):(config.enableSfx!==false),enableAmbience:$('enableAmbience').checked,enableMusic:$('enableMusic').checked,loopMusic:$('loopMusic').checked,readAlong:$('readAlong').value,followNarration:$('followNarration').checked,freesoundApiKey:$('freesoundApiKey')?$('freesoundApiKey').value.trim():(config.freesoundApiKey||''),fishVoiceSource:$('fishVoiceSource').value,plannerMode:$('plannerMode')?$('plannerMode').value:resolvePlannerMode(config),useFastClassifier:$('plannerMode')?$('plannerMode').value==='heuristic':Boolean(config.useFastClassifier),useJev:$('plannerMode')?$('plannerMode').value==='jev':Boolean(config.useJev),jevApiKey:$('jevKey')?$('jevKey').value.trim():(config.jevApiKey||''),jevEndpoint:$('jevEndpoint')?$('jevEndpoint').value.trim():(config.jevEndpoint||'')},activeCharacterCard || {});
+      extraVoices:$('extraVoices').value,ignoredTags:$('ignoredTags').value,useStyle:$('useStyle').checked,auto:$('auto').checked,muteNarrator:Boolean(config.muteNarrator),enableSfx:$('enableSfx')?Boolean($('enableSfx').checked):(config.enableSfx!==false),enableAmbience:$('enableAmbience').checked,enableMusic:$('enableMusic').checked,loopMusic:$('loopMusic').checked,readAlong:$('readAlong').value,followNarration:$('followNarration').checked,actingIntensity:normalizeActingIntensity($('actingIntensity').value),freesoundApiKey:$('freesoundApiKey')?$('freesoundApiKey').value.trim():(config.freesoundApiKey||''),fishVoiceSource:$('fishVoiceSource').value,plannerMode:$('plannerMode')?$('plannerMode').value:resolvePlannerMode(config),useFastClassifier:$('plannerMode')?$('plannerMode').value==='heuristic':Boolean(config.useFastClassifier),useJev:$('plannerMode')?$('plannerMode').value==='jev':Boolean(config.useJev),jevApiKey:$('jevKey')?$('jevKey').value.trim():(config.jevApiKey||''),jevEndpoint:$('jevEndpoint')?$('jevEndpoint').value.trim():(config.jevEndpoint||'')},activeCharacterCard || {});
   }
   function casting(c=config) {
     const routeActor=actor=>c.connectionMode==='one'?{...actor,route:scope(c),voice:singleVoice(actor,c)}:actor;
@@ -6170,7 +6205,7 @@ export async function setup(ctx) {
     if($('enableSfx'))$('enableSfx').checked=config.enableSfx!==false;
     $('enableAmbience').checked=config.enableAmbience!==false;$('enableMusic').checked=config.enableMusic===true;$('loopMusic').checked=config.loopMusic===true;
     if($('enableMixer'))$('enableMixer').checked=Boolean(config.enableMixer);
-    $('readAlong').value=config.readAlong || 'off';$('followNarration').checked=Boolean(config.followNarration);
+    $('readAlong').value=config.readAlong || 'off';$('actingIntensity').value=String(normalizeActingIntensity(config.actingIntensity));$('followNarration').checked=Boolean(config.followNarration);
     if($('freesoundApiKey'))$('freesoundApiKey').value=config.freesoundApiKey||'';$('concurrency').value=config.concurrency;
     if($('plannerMode'))$('plannerMode').value=resolvePlannerMode(config);
     if($('useFastClassifier'))$('useFastClassifier').checked=Boolean(config.useFastClassifier);
@@ -7117,7 +7152,7 @@ export async function setup(ctx) {
     const family=detectProvider(route);
     const legacyMapping=actor && namePronunciation({speaker:actor.speaker,sayAsName:actor.sayAsName,pronunciation:actor.pronunciation});
     const spoken={...segment,text:respellNames(segment.text,pronunciationActors(snapshot))};
-    const delivery=voiceDelivery({segment:spoken,actor:legacyMapping?{...actor,pronunciation:''}:actor,narrator:normalizeName(segment.speaker)==='narrator',family,connection,supported,styleParam:snapshot.styleParam,useStyle:snapshot.useStyle!==false});
+    const delivery=voiceDelivery({segment:spoken,actor:legacyMapping?{...actor,pronunciation:''}:actor,narrator:normalizeName(segment.speaker)==='narrator',family,connection,supported,styleParam:snapshot.styleParam,useStyle:snapshot.useStyle!==false,intensity:snapshot.actingIntensity});
     return {segment:{...spoken,route,style:delivery.style},text:delivery.text,connection,parameters:delivery.parameters};
   }
   function unisonLevels(segment){return speechMembers(segment).map(member=>[member.speaker,mixerVolume(1,member.speaker,mixerState.channels),speakerExcluded(member.speaker)]);}

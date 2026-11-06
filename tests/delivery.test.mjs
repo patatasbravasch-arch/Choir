@@ -218,3 +218,22 @@ test('Ignore style sends no acting to a generic provider but keeps pronunciation
  const ignored=generic('none');assert.ok(!/Warm|Calm/.test(ignored.parameters.instructions || ''));assert.match(ignored.parameters.instructions,/MEE-rah/);assert.match(ignored.parameters.instructions,/Accent: Irish/);
  assert.match(generic('').parameters.instructions,/Warm/);
 });
+
+test('the acting dial scales each character\'s direction down or up, never narration or unmarked lines',()=>{
+  const line={text:'"Keep your boots planted."',style:'deep, gravelly warning',voice:'v'},zack={speaker:'Zack',style:''};
+  const gemini=intensity=>voiceDelivery({segment:line,actor:zack,family:'gemini',connection:{provider:'google_tts',model:'gemini-3.8-flash-tts'},supported:{speech_style:{}},intensity}).parameters.speech_style;
+  assert.equal(gemini(0),'deep, gravelly warning');
+  assert.equal(gemini(-2),'barely there, very understated: deep, gravelly warning');
+  assert.equal(gemini(-1),'understated, restrained: deep, gravelly warning');
+  assert.equal(gemini(1),'expressive, fully committed: deep, gravelly warning');
+  assert.equal(gemini(2),'intense, big and theatrical: deep, gravelly warning');
+  assert.equal(gemini('7'),'deep, gravelly warning','out-of-range values fall back to natural');
+  const fish=intensity=>voiceDelivery({segment:line,actor:zack,family:'fish_audio',connection:{model:'s2.1-pro'},intensity}).text;
+  assert.equal(fish(-1),'[subtle, deep, gravelly warning] "Keep your boots planted."');
+  assert.equal(fish(2),'[intense, deep, gravelly warning] "Keep your boots planted."');
+  const s1=intensity=>voiceDelivery({segment:{...line,style:'shouting, angry'},actor:zack,family:'fish_audio',connection:{model:'s1'},intensity}).text;
+  assert.match(s1(0),/\(shouting\)/);assert.doesNotMatch(s1(-1),/shouting|angry/);
+  // Narration and lines without any direction are untouched.
+  assert.equal(voiceDelivery({segment:{...line,style:'Measured narration'},actor:{speaker:'Narrator',style:'Measured narration'},narrator:true,family:'gemini',connection:{provider:'google_tts',model:'gemini-3.8-flash-tts'},supported:{speech_style:{}},intensity:2}).parameters.speech_style,'Measured narration');
+  assert.equal(voiceDelivery({segment:{...line,style:''},actor:zack,family:'gemini',connection:{provider:'google_tts',model:'gemini-3.8-flash-tts'},supported:{speech_style:{}},intensity:-2}).parameters.speech_style,'');
+});

@@ -91,3 +91,19 @@ test('clearing or switching chats clears planner logs from every inspector view'
     assert.doesNotMatch(h.$('ttsRequests').textContent,/Private Chat A/);assert.equal(h.$('ttsInspectorView').options[2].textContent,'All calls (0)');
   }finally{await h.close();}
 });
+
+test('the Acting dial is saved per chat and scales the directions sent on the next Play',async()=>{
+  const h=await harness();
+  try{
+    Object.assign(h.store.get('chat:chat-a'),{skipMeta:false,enableSfx:false,enableAmbience:false,enableMusic:false,normalizeLoudness:false});
+    await h.reload();await h.plan();await h.play();
+    const directed=()=>h.synthesis.flatMap(input=>input.parameters.turns || [input]).map(input=>input.parameters?.instructions ?? input.parameters?.speech_style ?? input.style).filter(Boolean);
+    const natural=directed();assert.ok(natural.length,'the fixture plans at least one directed line');
+    assert.ok(natural.every(style=>!/understated/.test(style)));
+    h.$('actingIntensity').value='-1';h.$('actingIntensity').dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));
+    await until(()=>h.store.get('chat:chat-a').actingIntensity===-1);
+    const before=h.synthesis.length;await h.play();
+    assert.ok(h.synthesis.length>before,'a new level makes fresh audio');
+    assert.ok(h.synthesis.slice(before).some(input=>/understated, restrained/.test(JSON.stringify(input.parameters))));
+  }finally{await h.close();}
+});
