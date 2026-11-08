@@ -386,7 +386,7 @@ export async function setup(ctx) {
       <label class="et-check" title="Scroll the chat to the passage being read. Scrolling yourself pauses this until the next Play."><input data-et="followNarration" type="checkbox"> Follow narration</label>
       <label class="et-check"><input data-et="auto" type="checkbox"> Auto-play new replies</label>
       <label class="et-check" hidden><input data-et="useStyle" type="checkbox" checked> Delivery styles</label>
-      <label class="et-check" title="Inspect final Choir TTS request bodies after planning. Keeps the last 20 attempted calls in memory for this chat; no credentials or saved debug logs."><input data-et="paranoidMode" type="checkbox"> Paranoid mode · inspect TTS requests</label>
+      <label class="et-check" title="Inspect final Choir TTS request bodies after planning. Keeps the last 50 attempted calls in memory for this chat; no credentials or saved debug logs."><input data-et="paranoidMode" type="checkbox"> Paranoid mode · inspect TTS requests</label>
       <label class="et-check" hidden><input data-et="useFastClassifier" type="checkbox"> Fast Attribution (0ms instant for narration & 1-on-1 dialogue)</label>
     </div>
     </section><section data-choir-page="settings"><details>
@@ -1775,7 +1775,8 @@ export async function setup(ctx) {
   function syncInjectContext(targetChat=chatId,value=config,force=false){
     if(!targetChat || !value?.fixed)return;
     const placeholders=new Set(['narrator','persona','{{user}}','character','{{char}}']);
-    const cast=[...new Set([...value.fixed,...(value.npcs || [])].map(actor=>String(actor.speaker || '').trim())
+    // Known NPCs live in the active connection's cast, so the model reuses their names.
+    const cast=[...new Set([...value.fixed,...(value.casts?.[scope(value)] || value.npcs || [])].map(actor=>String(actor.speaker || '').trim())
       .filter(name=>name && !placeholders.has(normalizeName(name))).concat(activePersonaName?[activePersonaName]:[]))];
     const key=String(value.freesoundApiKey || '').trim();
     const context={chatId:targetChat,delivery:resolvePlannerMode(value)!=='heuristic'?injectDelivery(value):'off',cast,
@@ -1886,13 +1887,13 @@ export async function setup(ctx) {
   root.addEventListener('input',autoSaveEvent);
   for(const name of autosaveFields)$(name)?.addEventListener('change',autoSaveEvent);
   $('followNarration').addEventListener('change',syncNarrationFollow);
-  root.addEventListener('change',event=>{if(event.target.hasAttribute('data-choir-persist'))autoSaveEvent(event);});
+  const persistChange=event=>{if(event.target.hasAttribute('data-choir-persist'))autoSaveEvent(event);};root.addEventListener('change',persistChange);
   const docRoot=root?.ownerDocument || (typeof document!=='undefined'?document:null);
   const viewRoot=docRoot?.defaultView || (typeof window!=='undefined'?window:null);
   const saveOnLeave=()=>{void flushSettings().catch(()=>{});void persistMixer(false);};
   viewRoot?.addEventListener('pagehide',saveOnLeave);
   const saveOnHidden=()=>{if(docRoot?.visibilityState==='hidden')saveOnLeave();};docRoot?.addEventListener('visibilitychange',saveOnHidden);
-  unsubs.push(()=>{root.removeEventListener('input',autoSaveEvent);root.removeEventListener('change',autoSaveEvent);viewRoot?.removeEventListener('pagehide',saveOnLeave);docRoot?.removeEventListener('visibilitychange',saveOnHidden);clearTimeout(autosaveTimer);});
+  unsubs.push(()=>{root.removeEventListener('input',autoSaveEvent);root.removeEventListener('change',persistChange);viewRoot?.removeEventListener('pagehide',saveOnLeave);docRoot?.removeEventListener('visibilitychange',saveOnHidden);clearTimeout(autosaveTimer);});
 
   function rpc(action,input,signal,timeoutMs=185000,onProgress) {
     if (signal?.aborted) return Promise.reject(abortError());
@@ -2736,7 +2737,9 @@ export async function setup(ctx) {
     if($('freesoundApiKey'))$('freesoundApiKey').value=config.freesoundApiKey||'';$('concurrency').value=config.concurrency;
     if($('plannerMode'))$('plannerMode').value=resolvePlannerMode(config);
     if($('useFastClassifier'))$('useFastClassifier').checked=Boolean(config.useFastClassifier);
-    if($('jevKey'))$('jevKey').value=config.jevApiKey||'';
+    // The Jev key lives only in this session's field and is never saved with a chat, so a
+    // chat loaded without one must not erase the key the user entered.
+    if($('jevKey') && config.jevApiKey)$('jevKey').value=config.jevApiKey;
     if($('jevEndpoint'))$('jevEndpoint').value=config.jevEndpoint||'';
     for(const name of ['allowLlmFallback','normalizeLoudness','skipMeta','sectionButtons'])$(name).checked=Boolean(config[name]);
     $('injectPlan').value=injectDelivery(config);
@@ -3289,7 +3292,7 @@ export async function setup(ctx) {
     const content=contentOverride ?? ctx.messages.getContent(messageId);
     if(content==null)throw new Error('Message is no longer available.');
     let transcript=filteredTranscript(content);
-    if(!transcript)throw new Error('This message contains no speakable text.');
+    if(!/[\p{L}\p{N}]/u.test(transcript))throw new Error('This message contains no speakable text.');
     let snapshot=structuredClone(casting(config)),context='';
     const ctrl=new AbortController();controller=ctrl;
     planningSource={messageId,chatId:targetChat,content,token};messagePlaybackId=messageId;
@@ -4730,26 +4733,6 @@ export async function setup(ctx) {
     preview.hidden=false;
   };
   $('add').onclick=()=>{const names=new Set([...castRows,...npcRows].filter(entry=>root.contains(entry.row)).map(entry=>normalizeName(entry.read().speaker)));let index=1;while(names.has(normalizeName(`Character ${index}`)))index++;castRows.push(makeRow({speaker:`Character ${index}`,voice:'',style:''},$('fixed'),false,true));scheduleSettingsSave();renderMixer();};
-        const doSearchVoices = () => {
-    const query = $('voiceSearchQuery')?.value?.trim() || '';
-    openVoiceLibraryModal({
-      defaultQuery: query || 'narrator',
-      onSelect: async (item) => {
-        const fishRoute=[scope(config),...casting(config).fixed.map(actor=>actor.route),...casting(config).npcs.map(actor=>actor.route)].find(route=>route && detectProvider(route)==='fish_audio');
-        if(!fishRoute)throw new Error('Select a Fish Audio connection before adding community voices.');
-        rememberExtraVoiceRoute(item.id,fishRoute);
-        const entry = `${item.id} | ${item.name}${item.description ? ` · ${item.description}` : ''}`;
-        const existing = $('extraVoices').value.trim();
-        $('extraVoices').value = existing ? `${existing}\n${entry}` : entry;
-        config = capture();
-        if (chatId) await persistConfig(chatId,config);
-        loadVersion++; await loadVoices();
-        status(`Added "${item.name}" to voice catalogue.`);
-      }
-    });
-  };
-  $('searchVoicesBtn')?.addEventListener('click', doSearchVoices);
-  $('voiceSearchQuery')?.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); doSearchVoices(); } });
   $('load').onclick=()=>chatLoading?loadChat(true):run(async()=>{await flushSettings();config=capture();loadVersion++;await loadProviders();await persistConfig(chatId,config,true);saveState('Settings saved');clearPlan();status('Connections and voices reloaded.');});
   $('plannerMode')?.addEventListener('change',updatePlannerVisibility);
   $('allowLlmFallback').onchange=updatePlannerVisibility;
@@ -5010,7 +4993,17 @@ export async function setup(ctx) {
       // Every place in the plan that covers the paragraph, in story order.
       const matches = [];
       for (let first = 0; first < spoken.length; first++) {
-        if (norm(plan.segments[spoken[first]].text).includes(target)) {matches.push([...leadingSounds(spoken[first]), {...plan.segments[spoken[first]], text: cleanPara}]);continue;}
+        if (norm(plan.segments[spoken[first]].text).includes(target)) {
+          // A block that spans several paragraphs carries every paragraph's sounds; this
+          // paragraph keeps only those whose words it contains. A cue whose trigger is
+          // elsewhere would otherwise play at this paragraph's first word.
+          const block = plan.segments[spoken[first]], opens = norm(block.text).startsWith(target), own = {...block, text: cleanPara};
+          for (const key of ['sfx', 'ambience', 'music']) if (Array.isArray(block[key])) {
+            const kept = block[key].filter(cue => cue.trigger ? target.includes(norm(cue.trigger)) : opens);
+            if (kept.length) own[key] = kept; else delete own[key];
+          }
+          matches.push([...(opens ? leadingSounds(spoken[first]) : []), own]);continue;
+        }
         let joined = '';
         for (let last = first; last < spoken.length; last++) {
           joined = norm(`${joined} ${plan.segments[spoken[last]].text}`);
@@ -5077,7 +5070,8 @@ export async function setup(ctx) {
   const bridge = {
     version: 1,
     isAvailable: () => !disposed,
-    getConfig: () => structuredClone(config),
+    // Other extensions read the setup, never its credentials.
+    getConfig: () => {const {freesoundApiKey,jevApiKey,...shared}=structuredClone(config);return shared;},
     isNarratorMuted: () => speakerExcluded('Narrator'),
     setNarratorMuted: (muted) => {
       if (config) config.muteNarrator = Boolean(muted);

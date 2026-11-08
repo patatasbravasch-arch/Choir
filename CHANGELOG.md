@@ -2,6 +2,15 @@
 
 Release notes for Choir on the `lunch-test` and `staging` branches, newest first. A few lunch-test builds between staging.29 and staging.30 were numbered `1.1.6-lunch-test.N`.
 
+**Audit fixes (8 November).** Five reviewers checked the whole extension; these were confirmed and fixed:
+- Sound effects in Cue: a plan block spanning several paragraphs no longer plays the later paragraphs' effects at the start of each one.
+- Dialogue detection: a doubled opening quote (`""Hello,`) stays the character's line; German/Danish `»…«` is dialogue; an unclosed curly quote stops at its paragraph; a reply cut off mid-quote keeps that speech as dialogue; `&nbsp;`, `&mdash;` and numeric entities such as `&#8220;` are decoded. A message with no words at all is not sent to speech.
+- Unison: "While Anna and Ben laughed together, Cara said…" is Cara alone; "muttered", "hissed" and the other speech verbs now count.
+- Plan inside the reply: a short SKIP row (a stat-block name) no longer drops story lines starting with that word; known NPCs are listed for the model, not only the leads.
+- Jev: one unnamed speaker gets a free voice instead of a paid gender question that always failed the plan.
+- Planner: a provider outage, timeout or token-limit error fails once instead of resending the reply in many parallel chunks.
+- The Decision connection test no longer reports READY when nothing was chosen. The session-only Jev key survives chat switches. `getConfig()` for other extensions no longer includes API keys. Paranoid mode says 50 calls, as kept. Dead voice-search code removed.
+
 **No more random sound effects.** When Freesound had nothing for a planned effect such as "hand pull cloth rustle", Choir dropped words until something matched, often ending on a single word like "hand" or "page" and playing any clap, slap or rustle. Shorter searches now keep the sound itself ("cloth rustle" before "hand pull"), never go below two words, and skip pairs hanging on a filler word ("pick up", "walking away"). With no match the effect is skipped, as before, and speech continues.
 
 **Acting dial.** A new Acting setting (Settings → Reading) scales every character's acting: Very subtle, Subtle, Natural (as before), Expressive, Very expressive. It adjusts the direction each line already has, planned or base style, so it works with every planner and with replies you already planned; the next Play makes fresh audio. Narration stays steady and lines with no direction stay natural. On Fish S1, the subtle levels drop the loudest markers (shouting, screaming, sobbing…).

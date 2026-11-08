@@ -314,6 +314,10 @@ export async function planWithJev({ transcript, config, apiKey, endpoint, contex
   // Quotes Jev answered as Nobody are citations read by the narrator, never re-read as unison.
   const collectiveOf = u => normalizeName(dialogueSpeakerMap.get(u.id)) === normalizeName(narrator?.speaker || 'Narrator') ? null : unisonSpeakers(transcript, u, config);
   for(const u of dialogueUnits)for(const name of collectiveOf(u) || [dialogueSpeakerMap.get(u.id)]){
+    // "Unknown speaker" is Choir's placeholder for the one unnamed voice allowed above. No
+    // story or profile describes it, so asking its gender can only answer "unknown" and
+    // fail the plan after the speaker Decisions were paid; it takes a free voice instead.
+    if(name==='Unknown speaker' && !allCast.some(actor=>normalizeName(actor.speaker)===normalizeName(name)))continue;
     const original=allCast.find(actor=>[actor.speaker,...(actor.aliases || [])].some(alias=>normalizeName(alias)===normalizeName(name)));
     const npc=!config.fixed.includes(original),actor=npc?npcCastActor(original || {speaker:name,voice:'',gender:'auto'},config):original;
     // Quotes nobody says aloud are read by the narrator, who has no story gender: ordinary narration voice choice.
@@ -450,7 +454,7 @@ async function generateRaw({ choirPurpose: purpose = 'LLM call', ...request }) {
 // Splitting a reply into parts helps when a provider blocks its content. Bad
 // credentials, rate limits, unknown models and unsupported settings fail every
 // part the same way, so the planner reports them at once.
-export const fatalProviderError = error => /\((?:401|402|403|404|429)\)|\b(?:401|402|403|404|429)\b.*\b(?:unauthori[sz]ed|forbidden|not found|too many)|api key|unauthori[sz]ed|authenticat|rate.?limit|quota|insufficient|billing|does not exist|model_not_found|unknown model|unsupported (?:value|parameter)|not supported with this model/i.test(error?.message || '');
+export const fatalProviderError = error => /\((?:401|402|403|404|429)\)|\b(?:401|402|403|404|429)\b.*\b(?:unauthori[sz]ed|forbidden|not found|too many)|api key|unauthori[sz]ed|authenticat|rate.?limit|quota|insufficient|billing|does not exist|model_not_found|unknown model|unsupported (?:value|parameter)|not supported with this model|\((?:5\d\d)\)|\b(?:500|502|503|504|529)\b|overloaded|service unavailable|bad gateway|internal (?:server )?error|timed? ?out|timeout|fetch failed|network ?error|econn|socket hang up|max_tokens/i.test(error?.message || '');
 
 const FISH_LANGUAGES = { en: 'English', zh: 'Chinese', ja: 'Japanese', ko: 'Korean', es: 'Spanish', pt: 'Portuguese', fr: 'French', de: 'German', it: 'Italian', ru: 'Russian', ar: 'Arabic', nl: 'Dutch', pl: 'Polish' };
 
@@ -888,7 +892,10 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
             }
           }, { signal: controller.signal });
           const duration = Date.now() - start;
-          send({result:{provider:evalRes.provider || 'TypeSafe AI',model:evalRes.model || 'Jev System 1',response:`READY · Classified in ${duration}ms (choice: ${evalRes.answers?.speaker?.choice || 'Alice'})`}});
+          const choice=evalRes.answers?.speaker?.choice;
+          // A connection that answers nothing is not ready, whatever it reports.
+          if(!['Alice','Bob'].includes(choice))throw new Error('The Decision connection answered, but chose neither listed speaker. Check its model and settings.');
+          send({result:{provider:evalRes.provider || 'TypeSafe AI',model:evalRes.model || 'Jev System 1',response:`READY · Classified in ${duration}ms (choice: ${choice})`}});
           return;
         }
         const apiKey = input.apiKey || input.jevApiKey;

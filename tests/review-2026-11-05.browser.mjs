@@ -107,3 +107,39 @@ test('the Acting dial is saved per chat and scales the directions sent on the ne
     assert.ok(h.synthesis.slice(before).some(input=>/understated, restrained/.test(JSON.stringify(input.parameters))));
   }finally{await h.close();}
 });
+
+test('audit: paragraph playback keeps only the sound cues whose words are in that paragraph',async()=>{
+  const h=await harness();
+  try{
+    Object.assign(h.store.get('chat:chat-a'),{skipMeta:false,enableSfx:true,enableAmbience:false,enableMusic:false,normalizeLoudness:false,freesoundApiKey:'k'});
+    h.message.content='The hall was quiet.\n\nThen the door slammed behind them.';await h.reload();await h.plan();
+    const json=JSON.parse(h.$('planJson').value),text=h.message.content;
+    h.$('planJson').value=JSON.stringify({segments:[{speaker:'Narrator',voice:json.segments[0].voice,text,sfx:[{query:'door slam',trigger:'the door slammed'}]}]});
+    h.$('apply').click();await until(()=>/Edited plan validated/.test(h.$('status').textContent));
+    const bridge=globalThis.__CHOIR_API__,sounds=paragraph=>bridge.planParagraph(paragraph,{messageId:h.message.id}).segments.filter(segment=>segment.kind==='sfx').length;
+    assert.equal(sounds('The hall was quiet.'),0,'the door slam belongs to the next paragraph');
+    assert.equal(sounds('Then the door slammed behind them.'),1);
+  }finally{await h.close();}
+});
+
+test('audit: the session-only Jev key survives a chat switch, and getConfig never exposes keys',async()=>{
+  const h=await harness();
+  try{
+    h.$('jevKey').value='session-key';
+    h.state.active='chat-b';await h.subscriptions.get('chat.active')();h.state.active='chat-a';await h.subscriptions.get('chat.active')();
+    assert.equal(h.$('jevKey').value,'session-key');
+    h.$('freesoundApiKey').value='fs-key';h.$('freesoundApiKey').dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));
+    await until(()=>h.store.get('settings:global')?.freesoundApiKey==='fs-key');
+    const shared=globalThis.__CHOIR_API__.getConfig();
+    assert.equal(shared.freesoundApiKey,undefined);assert.equal(shared.jevApiKey,undefined);assert.ok(Array.isArray(shared.fixed));
+  }finally{await h.close();}
+});
+
+test('audit: plan-inside-the-reply lists known NPCs, not only the leads',async()=>{
+  const h=await harness();
+  try{
+    h.$('injectPlan').value='auto';h.$('injectPlan').dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));
+    await until(()=>h.injectContexts.some(request=>request.input.delivery==='auto'));
+    assert.ok(h.injectContexts.at(-1).input.cast.includes('Guard'),JSON.stringify(h.injectContexts.at(-1).input.cast));
+  }finally{await h.close();}
+});

@@ -372,16 +372,20 @@ function validateCardRoles(roles) {
 
 // Evidence must still occur in one card field. Normalize presentation only;
 // paraphrases and invented excerpts are not evidence for a new lead.
+// One decoder for every text Choir reads: named basics plus any numeric entity (&#8220;, &#x201C;).
+// A single pass, so "&amp;lt;" stays "&lt;" as written.
+const HTML_ENTITY=/&(quot|apos|nbsp|amp|lt|gt|mdash|ndash|hellip|lsquo|rsquo|ldquo|rdquo|laquo|raquo|#\d+|#x[a-f0-9]+);/gi;
+function decodeEntity(entity,name){
+  const known={quot:'"',apos:"'",nbsp:' ',amp:'&',lt:'<',gt:'>',mdash:'—',ndash:'–',hellip:'…',lsquo:'‘',rsquo:'’',ldquo:'“',rdquo:'”',laquo:'«',raquo:'»'},key=name.toLowerCase();
+  if(Object.hasOwn(known,key))return known[key];
+  const point=key.startsWith('#x')?parseInt(key.slice(2),16):Number(key.slice(1));
+  return Number.isInteger(point) && point>0 && point<=0x10ffff?String.fromCodePoint(point):entity;
+}
 function cardAnalysisRoles(rawRoles,card={}) {
   const candidates=validateCardRoles(rawRoles);
   const normalize=value=>String(value || '')
     .replace(/<\/?(?:p|div|li|h[1-6]|br|section|article|blockquote)\b[^>]*>/gi,' ').replace(/<[^>]*>/g,'')
-    .replace(/&(quot|apos|nbsp|amp|lt|gt|#\d+|#x[a-f0-9]+);/gi,(entity,name)=>{
-      const known={quot:'"',apos:"'",nbsp:' ',amp:'&',lt:'<',gt:'>'},key=name.toLowerCase();
-      if(Object.hasOwn(known,key))return known[key];
-      const point=key.startsWith('#x')?parseInt(key.slice(2),16):Number(key.slice(1));
-      return Number.isInteger(point) && point>0 && point<=0x10ffff?String.fromCodePoint(point):entity;
-    })
+    .replace(HTML_ENTITY,decodeEntity)
     .normalize('NFKC').replace(/[\u2018\u2019]/g,"'").replace(/[\u201c\u201d]/g,'"')
     .replace(/(\*{1,3}|_{1,3}|`{1,3})([^\n]*?)\1/g,'$2').replace(/\s+/gu,' ').trim().toLowerCase();
   const sources=['name','description','personality','scenario','first_mes'].map(field=>normalize(card[field]));
@@ -557,8 +561,7 @@ function transcriptFromMessage(value, ignoredTags=[]) {
     .replace(/^[ \t]*(?:#{1,6}[ \t]*)?(?:Chapter|Act|Episode|Scene|Part|Book|Volume)[ \t]+(?:\d+|[IVXLCDM]+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)(?:[ \t]*[:\-.—–][^\n]*)?[ \t]*$/gim, '')
     .replace(/^[ \t]*#{1,6}[ \t]+/gm, '')
     .replace(/\*|`/g, '')
-    .replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'")
-    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
+    .replace(HTML_ENTITY, decodeEntity).replace(/ /g, ' ')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
@@ -665,7 +668,7 @@ function unisonSpeakers(transcript,unit,config) {
   if(unit.kind!=='dialogue')return null;
   const following=transcript.slice(unit.end).split(/[.!?\n"“”«»「」『』„]/)[0];
   const preceding=transcript.slice(Math.max(0,unit.start-400),unit.start).split(/["“”«»「」『』„]/).at(-1);
-  const verbs=/\b(?:say|says|said|reply|replies|replied|ask|asks|asked|shout|shouts|shouted|yell|yells|yelled|scream|screams|screamed|whisper|whispers|whispered|call|calls|called|speak|speaks|spoke|answer|answers|answered|cry|cries|cried|exclaim|exclaims|exclaimed|chant|chants|chanted|sing|sings|sang|murmur|murmurs|murmured|declare|declares|declared)\b/i;
+  const verbs=new RegExp(SPEECH_VERBS.source,'i');
   const collective=/\b(?:in (?:perfect |complete )?unison|together|simultaneously)\b/i;
   const tag=[following,preceding.split(/[.!?\n]/).at(-1)].find(text=>text.length<=250 && verbs.test(text) && collective.test(text));
   if(!tag)return null;
@@ -683,6 +686,10 @@ function unisonSpeakers(transcript,unit,config) {
   };
   const subject=tag.slice(0,verbs.exec(tag).index);
   const resolveGroup=group=>{const names=[...new Set(group)];return names.length>=2 && (!/\bboth\b/i.test(subject) || names.length===2)?names:[];};
+  // A single person named in the verb's own clause speaks alone: in "While Anna and Ben
+  // laughed together, Cara said", the pair belongs to another clause.
+  const ownClause=subject.split(/[,;:]/).at(-1);
+  if(mentions(ownClause).length && !groupIn(ownClause))return [];
   const explicit=groupIn(subject);
   if(explicit)return resolveGroup(explicit);
   if(!/\b(?:they|both|all)\b/i.test(subject))return [];
@@ -724,7 +731,6 @@ function validatePlan(raw, transcript, config) {
   config=reconcileCastDuplicates(config);
   validateCastConfig(config);
   if (!raw || !Array.isArray(raw.segments) || !raw.segments.length) throw new Error('Expected at least one speech segment.');
-  const voices = new Set(config.voices.map(v => v.id));
   const cast = new Map([...config.fixed, ...config.npcs.map(actor=>npcCastActor(actor,config))].map(v => [normalizeName(v.speaker), {...v}]));
   const fixedNames=new Set(config.fixed.map(actor=>normalizeName(actor.speaker)));
   const aliases = new Map([...config.fixed, ...config.npcs].flatMap(actor=>(actor.aliases || []).map(alias=>[normalizeName(alias),normalizeName(actor.speaker)])));
@@ -1114,12 +1120,14 @@ function speechSourceUnits(transcript) {
   let open=false;
   const masked=transcript.replace(/\n[ \t]*\n|"/g,(mark,at)=>{
     if(mark!=='"'){open=false;return mark;}
+    // A doubled opening mark (""Hello," she said) opens once: the extra one is ignored.
+    if(!open && transcript[at+1]==='"' && /[^\s"]/u.test(transcript[at+2] || '') && (at===0 || /\s/.test(transcript[at-1])))return '';
     if(afterDigit(at) && (!open || feet(at) || !closesQuote(at)))return '';
     open=!open;return mark;
   });
   // Other languages' paired marks: French/Russian «…», Japanese/Chinese 「…」 and 『…』, German/Polish „…“ or „…”.
   // Each closes at its own partner and never across a blank line.
-  for(const match of masked.matchAll(/"[^"\n]*(?:\n(?![ \t]*\n)[^"\n]*)*(?:"|(?=\n[ \t]*\n))|“[^”]*”|«(?:[^»\n]|\n(?![ \t]*\n))*»|「(?:[^」\n]|\n(?![ \t]*\n))*」|『(?:[^』\n]|\n(?![ \t]*\n))*』|„(?:[^“”\n]|\n(?![ \t]*\n))*[“”]/g)) {
+  for(const match of masked.matchAll(/"[^"\n]*(?:\n(?![ \t]*\n)[^"\n]*)*(?:"|(?=\n[ \t]*\n)|$)|“(?:[^”\n]|\n(?![ \t]*\n))*(?:”|(?=\n[ \t]*\n)|$)|»(?:[^«\n]|\n(?![ \t]*\n))*«|«(?:[^»\n]|\n(?![ \t]*\n))*»|「(?:[^」\n]|\n(?![ \t]*\n))*」|『(?:[^』\n]|\n(?![ \t]*\n))*』|„(?:[^“”\n]|\n(?![ \t]*\n))*[“”]/g)) {
     narration(transcript.slice(cursor,match.index));add(transcript.slice(match.index,match.index+match[0].length),'dialogue');cursor=match.index+match[0].length;
   }
   narration(transcript.slice(cursor));return units;
@@ -1807,7 +1815,7 @@ function spaceSoundEffects(points,{start=0,last=-Infinity}={}) {
 function sfxCueOffset(text, trigger) {
   let target=Math.max(0,cueOffset(text,trigger));
   if(!target)return 0;
-  const quotations=[...text.matchAll(/"[^"]*(?:"|$)|“[^”]*(?:”|$)/g)];
+  const quotations=[...text.matchAll(/"[^"]*(?:"|$)|“[^”]*(?:”|$)|«[^»]*(?:»|$)|»[^«]*(?:«|$)|「[^」]*(?:」|$)|『[^』]*(?:』|$)|„[^“”]*(?:[“”]|$)/g)];
   const utterance=quotations.find(quote=>target>=quote.index && target<quote.index+quote[0].length);
   if(utterance)target=utterance.index;
   if(/^(?:and|but|or|then|as|when|while|before|after|once|until|unless|because|although|though|since)\s+\S+/i.test(text.slice(target)) && !/[\p{L}\p{N}]/u.test(text[target-1]))return target;
@@ -2109,7 +2117,9 @@ function injectedSoundCues(segments, plan) {
 function injectedSkipLines(lines, plan) {
   const words=text=>String(text || '').normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu,' ').trim().split(/\s+/).filter(Boolean);
   const starts=(plan?.skip || []).map(words).filter(start=>start.length);
-  return lines.flatMap((line,index)=>{const own=words(line);return starts.some(start=>start.every((word,at)=>own[at]===word))?[index]:[];});
+  // Rows copy a line's first 4 words, so a shorter row names a whole short line:
+  // "SKIP|Anna" (a stat-block name) must not drop "Anna walked into the tavern."
+  return lines.flatMap((line,index)=>{const own=words(line);return starts.some(start=>start.every((word,at)=>own[at]===word) && (start.length>=4 || own.length===start.length))?[index]:[];});
 }
 
 function injectionPrompt({cast=[], sfx=false, ambience=false}={}) {
@@ -2451,6 +2461,10 @@ async function planWithJev({ transcript, config, apiKey, endpoint, context = '',
   // Quotes Jev answered as Nobody are citations read by the narrator, never re-read as unison.
   const collectiveOf = u => normalizeName(dialogueSpeakerMap.get(u.id)) === normalizeName(narrator?.speaker || 'Narrator') ? null : unisonSpeakers(transcript, u, config);
   for(const u of dialogueUnits)for(const name of collectiveOf(u) || [dialogueSpeakerMap.get(u.id)]){
+    // "Unknown speaker" is Choir's placeholder for the one unnamed voice allowed above. No
+    // story or profile describes it, so asking its gender can only answer "unknown" and
+    // fail the plan after the speaker Decisions were paid; it takes a free voice instead.
+    if(name==='Unknown speaker' && !allCast.some(actor=>normalizeName(actor.speaker)===normalizeName(name)))continue;
     const original=allCast.find(actor=>[actor.speaker,...(actor.aliases || [])].some(alias=>normalizeName(alias)===normalizeName(name)));
     const npc=!config.fixed.includes(original),actor=npc?npcCastActor(original || {speaker:name,voice:'',gender:'auto'},config):original;
     // Quotes nobody says aloud are read by the narrator, who has no story gender: ordinary narration voice choice.
@@ -2587,7 +2601,7 @@ async function generateRaw({ choirPurpose: purpose = 'LLM call', ...request }) {
 // Splitting a reply into parts helps when a provider blocks its content. Bad
 // credentials, rate limits, unknown models and unsupported settings fail every
 // part the same way, so the planner reports them at once.
-const fatalProviderError = error => /\((?:401|402|403|404|429)\)|\b(?:401|402|403|404|429)\b.*\b(?:unauthori[sz]ed|forbidden|not found|too many)|api key|unauthori[sz]ed|authenticat|rate.?limit|quota|insufficient|billing|does not exist|model_not_found|unknown model|unsupported (?:value|parameter)|not supported with this model/i.test(error?.message || '');
+const fatalProviderError = error => /\((?:401|402|403|404|429)\)|\b(?:401|402|403|404|429)\b.*\b(?:unauthori[sz]ed|forbidden|not found|too many)|api key|unauthori[sz]ed|authenticat|rate.?limit|quota|insufficient|billing|does not exist|model_not_found|unknown model|unsupported (?:value|parameter)|not supported with this model|\((?:5\d\d)\)|\b(?:500|502|503|504|529)\b|overloaded|service unavailable|bad gateway|internal (?:server )?error|timed? ?out|timeout|fetch failed|network ?error|econn|socket hang up|max_tokens/i.test(error?.message || '');
 
 const FISH_LANGUAGES = { en: 'English', zh: 'Chinese', ja: 'Japanese', ko: 'Korean', es: 'Spanish', pt: 'Portuguese', fr: 'French', de: 'German', it: 'Italian', ru: 'Russian', ar: 'Arabic', nl: 'Dutch', pl: 'Polish' };
 
@@ -3025,7 +3039,10 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
             }
           }, { signal: controller.signal });
           const duration = Date.now() - start;
-          send({result:{provider:evalRes.provider || 'TypeSafe AI',model:evalRes.model || 'Jev System 1',response:`READY · Classified in ${duration}ms (choice: ${evalRes.answers?.speaker?.choice || 'Alice'})`}});
+          const choice=evalRes.answers?.speaker?.choice;
+          // A connection that answers nothing is not ready, whatever it reports.
+          if(!['Alice','Bob'].includes(choice))throw new Error('The Decision connection answered, but chose neither listed speaker. Check its model and settings.');
+          send({result:{provider:evalRes.provider || 'TypeSafe AI',model:evalRes.model || 'Jev System 1',response:`READY · Classified in ${duration}ms (choice: ${choice})`}});
           return;
         }
         const apiKey = input.apiKey || input.jevApiKey;
