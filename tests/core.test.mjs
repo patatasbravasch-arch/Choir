@@ -8,6 +8,17 @@ import {randomUuid,sha256Hex,ignoredTagNames,characterCardRoles,validateCardRole
 import {normalizePlaybackRate,normalizeVoiceGap,speakerPlaybackRate,effectivePlaybackRate,browserPlaybackRate,PLAYBACK_RATE_LIMITS,VOICE_GAP_LIMITS,BROWSER_PLAYBACK_RATE_LIMITS} from '../src/core.js';
 import * as core from '../src/core.js';
 
+test('a Freesound query without a match is retried shorter, keeping the sound, never down to one generic word',()=>{
+  // Real planned queries from a test chat.
+  assert.deepEqual(core.soundQueryFallbacks('hand pull cloth rustle'),['hand pull cloth rustle','pull cloth rustle','hand pull cloth','cloth rustle','hand pull']);
+  assert.deepEqual(core.soundQueryFallbacks('paper cup pick up'),['paper cup pick up','paper cup pick','paper cup']);
+  assert.deepEqual(core.soundQueryFallbacks('footsteps walking away'),['footsteps walking away','footsteps walking']);
+  assert.deepEqual(core.soundQueryFallbacks('heavy metal bolt'),['heavy metal bolt','metal bolt','heavy metal']);
+  for(const query of ['door slam','rain','  ',''])assert.deepEqual(core.soundQueryFallbacks(query),query.trim()?[query]:[]);
+  for(const query of ['hand pull cloth rustle','handshake grip cloth','crowd murmuring room tone','paper cup pick up'])
+    assert.ok(core.soundQueryFallbacks(query).every(candidate=>candidate.split(' ').length>=2),query);
+});
+
 test('a block with no words is folded into its neighbour, so no speech request is a lone quote mark',()=>{
   const config={voices:[{id:'n'},{id:'z'}],fixed:[{speaker:'Narrator',voice:'n',style:''},{speaker:'Zack',voice:'z',style:''}],npcs:[],useStyle:false};
   const transcript='""Keep your boots planted, Kellin, or I\'ll put you on the rug," Zack growled.';

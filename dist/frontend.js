@@ -1923,6 +1923,22 @@ function rankMusic(pieces, {feels=[], genres=[], keywords=[]}={}, n=10) {
 
 const AMBIENCE_LIMIT = 3, MUSIC_LIMIT = 3;
 
+// Freesound requires every search word to match, so a query without results is retried
+// shorter. It never shrinks to one generic word ("hand pull cloth rustle" → "hand" plays
+// any clap or slap), or to a pair hanging on a particle ("pick up", "walking away"): no
+// sound is better than a random one. Sound files are named source then sound ("cloth
+// rustle", "door slam"), so shorter searches keep the trailing words first.
+const QUERY_PARTICLES=new Set(['a','an','the','of','on','in','at','to','into','onto','up','down','out','off','away','back','over','with','by','from','for','and']);
+function soundQueryFallbacks(query){
+  const words=String(query || '').trim().split(/\s+/).filter(Boolean);
+  if(words.length<3)return words.length?[words.join(' ')]:[];
+  const candidates=[words.join(' ')];
+  for(let size=words.length-1;size>=2;size--)
+    for(const part of [words.slice(-size),words.slice(0,size)])
+      if(!QUERY_PARTICLES.has(part[0].toLowerCase()) && !QUERY_PARTICLES.has(part.at(-1).toLowerCase()))candidates.push(part.join(' '));
+  return [...new Set(candidates)];
+}
+
 function soundCueLimit(segments) {
   const characters = segments.reduce((total, segment) => total + String(segment.text || '').length, 0);
   return Math.min(12, Math.max(2, Math.ceil(characters / 400)));
@@ -8354,9 +8370,10 @@ export async function setup(ctx) {
     const apiKey = snapshot.freesoundApiKey || $('freesoundApiKey')?.value?.trim() || '';
     if(!apiKey)throw new Error('Configure a Freesound API key in Playback → Soundscape');
     let previewUrl;
-    // Freesound requires every search word to match, so drop trailing words until one matches.
-    for(let words=query.split(' ');!previewUrl && words.length;words=words.slice(0,-1)){
-      const result=await rpc('freesound',{query:words.join(' '),filter,apiKey,kind:seg.kind,moment:seg.moment,
+    // Freesound requires every search word to match: retry shorter, but never with one generic word.
+    for(const words of soundQueryFallbacks(query)){
+      if(previewUrl)break;
+      const result=await rpc('freesound',{query:words,filter,apiKey,kind:seg.kind,moment:seg.moment,
         decisionConnection:snapshot.decisionConnection,jevApiKey:snapshot.jevApiKey,jevEndpoint:snapshot.jevEndpoint},signal,10000);
       signal.throwIfAborted();
       previewUrl=result?.results?.find(sound=>sound.previewUrl)?.previewUrl;

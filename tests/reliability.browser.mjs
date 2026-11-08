@@ -1889,7 +1889,7 @@ test('Cue keeps a bed across paragraphs until a stop entry, stop() or cancellati
   await until(()=>beds(h).length===3 && !beds(h)[2].paused);ctrl.abort();await assert.rejects(pending,{name:'AbortError'});assert.ok(h.audios.every(audio=>audio.paused));
   h.state.blockAudio=false;h.state.noFoleyResults=true;assert.equal((await bridge.playParagraph({text:'The tavern was full.'})).played,1);
   await until(()=>/SFX skipped: No Freesound result for "tavern crowd"/.test(h.$('sfxStatus').textContent));assert.equal(beds(h).length,3);
-  assert.deepEqual(h.requests.filter(request=>request.action==='freesound').map(request=>request.input.query).slice(-2),['tavern crowd','tavern']);
+  assert.deepEqual(h.requests.filter(request=>request.action==='freesound').map(request=>request.input.query).slice(-2),['rain','tavern crowd'],'no single-word "tavern" retry');
  }finally{await h.close();}
 });
 
@@ -1923,10 +1923,11 @@ test('one sound request serves both toggles and none is made with both off',asyn
  }finally{await h.close();}
 });
 
-test('Freesound searches drop trailing words until a sound matches',async()=>{
+test('a Freesound search with no match is skipped rather than shrunk to one generic word',async()=>{
  const h=await harness();try{
   await configureFoley(h);h.state.foleyWords=1;h.message.content='The page snapped under her thumb.';await h.plan();await h.play();
-  assert.equal(await playedFoley(h),1);assert.deepEqual(h.requests.filter(request=>request.action==='freesound').map(request=>request.input.query),['page turn','page']);
+  assert.equal(await playedFoley(h),0,'no random "page" sound');assert.deepEqual(h.requests.filter(request=>request.action==='freesound').map(request=>request.input.query),['page turn']);
+  assert.match(h.$('status').textContent+h.$('sfxStatus').textContent,/No Freesound result|SFX skipped/);
  }finally{await h.close();}
 });
 

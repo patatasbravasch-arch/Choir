@@ -3,7 +3,7 @@ import { createSetupWizard, saveSetupSettings, ONBOARDING_KEY } from './setup.js
 import { ABYSSAL_THEME_CSS } from './abyssal-theme.js';
 import { randomUuid, sha256Hex, GEMINI_VOICES, OPENAI_VOICES, additionalVoices, apiErrorMessage, MAX_SPEECH_CHARS, MAX_CHANNEL_VOLUME, speechProviderFamily, speechRequestLimits, normalizeName, normalizeVoiceCatalogue, characterCardRoles, validateCardRoles, reconcileCardCast, unisonSpeakers, speechSourceUnits, mixUnisonAudio, speechDownloadWav, transcriptFromMessage, readableText, readAlongIndex, locatePassages, spokenLength, validateCastConfig, validatePlan, npcCastActor, parsePlanJson, speechBatches, groupedSpeechBatches, audioBytes, fastClassifyPlan, resolvePlannerMode, attributionPlan, restoreAttribution, passageKey, mixerVolume, loudnessGain, castExport, castImport, applySoundCues, cueOffset, sfxCueOffset, transcriptLines, withoutLines } from './core.js';
 import { normalizeSpeedSliderMax, normalizePlaybackRate, normalizeVoiceGap, speakerPlaybackRate, effectivePlaybackRate, browserPlaybackRate, PLAYBACK_RATE_LIMITS, VOICE_GAP_LIMITS } from './core.js';
-import { speechLookaheadEnd, backendRequestKind, LIMITED_SPEECH_PEAK, softClipCurve, spaceSoundEffects, readInjectedPlan, injectedCastRows, injectedSoundCues, injectedSkipLines } from './core.js';
+import { soundQueryFallbacks, speechLookaheadEnd, backendRequestKind, LIMITED_SPEECH_PEAK, softClipCurve, spaceSoundEffects, readInjectedPlan, injectedCastRows, injectedSoundCues, injectedSkipLines } from './core.js';
 import { createPlayedAudioCapture, playedAudioFilename, createWavArchive } from './played-audio.js';
 import { characterDeliveryMode, voiceDelivery, normalizeActingIntensity, normalizeMixerColumns, normalizeMixerVolumeLimits } from './delivery.js';
 import { createDrawerNavigation, DRAWER_UI_CSS } from './drawer-ui.js';
@@ -4881,9 +4881,10 @@ export async function setup(ctx) {
     const apiKey = snapshot.freesoundApiKey || $('freesoundApiKey')?.value?.trim() || '';
     if(!apiKey)throw new Error('Configure a Freesound API key in Playback → Soundscape');
     let previewUrl;
-    // Freesound requires every search word to match, so drop trailing words until one matches.
-    for(let words=query.split(' ');!previewUrl && words.length;words=words.slice(0,-1)){
-      const result=await rpc('freesound',{query:words.join(' '),filter,apiKey,kind:seg.kind,moment:seg.moment,
+    // Freesound requires every search word to match: retry shorter, but never with one generic word.
+    for(const words of soundQueryFallbacks(query)){
+      if(previewUrl)break;
+      const result=await rpc('freesound',{query:words,filter,apiKey,kind:seg.kind,moment:seg.moment,
         decisionConnection:snapshot.decisionConnection,jevApiKey:snapshot.jevApiKey,jevEndpoint:snapshot.jevEndpoint},signal,10000);
       signal.throwIfAborted();
       previewUrl=result?.results?.find(sound=>sound.previewUrl)?.previewUrl;
