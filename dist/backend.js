@@ -379,7 +379,7 @@ function decodeEntity(entity,name){
   const known={quot:'"',apos:"'",nbsp:' ',amp:'&',lt:'<',gt:'>',mdash:'—',ndash:'–',hellip:'…',lsquo:'‘',rsquo:'’',ldquo:'“',rdquo:'”',laquo:'«',raquo:'»'},key=name.toLowerCase();
   if(Object.hasOwn(known,key))return known[key];
   const point=key.startsWith('#x')?parseInt(key.slice(2),16):Number(key.slice(1));
-  return Number.isInteger(point) && point>0 && point<=0x10ffff?String.fromCodePoint(point):entity;
+  return Number.isInteger(point) && point>0 && point<=0x10ffff && (point<0xd800 || point>0xdfff)?String.fromCodePoint(point):entity;
 }
 function cardAnalysisRoles(rawRoles,card={}) {
   const candidates=validateCardRoles(rawRoles);
@@ -688,8 +688,10 @@ function unisonSpeakers(transcript,unit,config) {
   const resolveGroup=group=>{const names=[...new Set(group)];return names.length>=2 && (!/\bboth\b/i.test(subject) || names.length===2)?names:[];};
   // A single person named in the verb's own clause speaks alone: in "While Anna and Ben
   // laughed together, Cara said", the pair belongs to another clause.
+  // That is "no unison" (null), not an unnamed group ([]), which planners treat as an error.
+  // A last clause opening with "and"/"&" ends a list ("Anna, Ben, and Cara"), not a clause.
   const ownClause=subject.split(/[,;:]/).at(-1);
-  if(mentions(ownClause).length && !groupIn(ownClause))return [];
+  if(!/^\s*(?:(?:and|or)\b|&)/i.test(ownClause) &&mentions(ownClause).length && !groupIn(ownClause))return null;
   const explicit=groupIn(subject);
   if(explicit)return resolveGroup(explicit);
   if(!/\b(?:they|both|all)\b/i.test(subject))return [];
@@ -717,13 +719,16 @@ function foldWordlessSegments(segments,spans,transcript){
     if(hasWords(segments[index].text)){index++;continue;}
     const before=index>0,after=index<segments.length-1;
     const intoPrevious=before && (!after || spans[index].start===spans[index-1].end || spans[index+1].start!==spans[index].end);
+    // The block's own text (an audio tag included) and its sound cues travel with it.
+    const block=segments[index],target=intoPrevious?segments[index-1]:segments[index+1];
     if(intoPrevious){
-      segments[index-1].text+=transcript.slice(spans[index-1].end,spans[index].end);
+      target.text+=transcript.slice(spans[index-1].end,spans[index].start)+block.text;
       spans[index-1].end=spans[index].end;
     }else{
-      segments[index+1].text=transcript.slice(spans[index].start,spans[index+1].start)+segments[index+1].text;
+      target.text=block.text+transcript.slice(spans[index].end,spans[index+1].start)+target.text;
       spans[index+1].start=spans[index].start;
     }
+    for(const key of ['sfx','ambience','music'])if(block[key]?.length)target[key]=intoPrevious?[...(target[key] || []),...block[key]]:[...block[key],...(target[key] || [])];
     segments.splice(index,1);spans.splice(index,1);
   }
 }
@@ -1117,13 +1122,15 @@ function speechSourceUnits(transcript) {
     const {position,closed,opened}=paragraphScore(stop),next=position.get(at)+1;
     return closed[next]<=opened[next];
   };
-  let open=false;
+  let open=false,closedAt=-2;
   const masked=transcript.replace(/\n[ \t]*\n|"/g,(mark,at)=>{
     if(mark!=='"'){open=false;return mark;}
     // A doubled opening mark (""Hello," she said) opens once: the extra one is ignored.
     if(!open && transcript[at+1]==='"' && /[^\s"]/u.test(transcript[at+2] || '') && (at===0 || /\s/.test(transcript[at-1])))return '';
+    // A doubled closing mark ("Hello,"" she said) closes once.
+    if(!open && closedAt===at-1 && !/[p{L}p{N}]/u.test(transcript[at+1] || ''))return '';
     if(afterDigit(at) && (!open || feet(at) || !closesQuote(at)))return '';
-    open=!open;return mark;
+    open=!open;if(!open)closedAt=at;return mark;
   });
   // Other languages' paired marks: French/Russian «…», Japanese/Chinese 「…」 and 『…』, German/Polish „…“ or „…”.
   // Each closes at its own partner and never across a blank line.
@@ -1392,7 +1399,13 @@ function castingPrompt(units, config, context) {
     const about=Array.from(String(profile?.description || '').replace(/\s+/g,' ')).slice(0,220).join('');
     cast.push(`- ${castField(actor.speaker,mark)}${aliases.length?` (aliases: ${aliases.map(alias=>castField(alias,mark)).join(', ')})`:''}${role?` [${role}]`:''}${about?`: ${about}`:''}`);
   }
-  const unvoiced=actors.filter(actor=>!(config.npcs.includes(actor)?npcCastActor(actor,config):actor).voice).map(actor=>castField(actor.speaker,mark));
+  // NPC rows are only asked for voiceless people this reply can involve: rows for absent ones
+  // are paid output that nothing uses. A distinctive word counts ("Gate guard" → "the guard").
+  const seen=`${context || ''}\n${(units || []).map(unit=>unit.text).join('\n')}`.normalize('NFKC').toLowerCase();
+  const nameWords=name=>String(name || '').normalize('NFKC').toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(word=>word.length>2 && !['the','and','one','two'].includes(word));
+  const mentioned=actor=>[actor.speaker,...(actor.aliases || [])].some(name=>nameWords(name).some(word=>new RegExp(`(?<![\\p{L}\\p{N}])${escapePattern(word)}`,'u').test(seen)));
+  // Leads are always asked: they often speak unnamed ("Hello." from the card's character).
+  const unvoiced=actors.filter(actor=>!(config.npcs.includes(actor)?npcCastActor(actor,config):actor).voice && (config.fixed.includes(actor) || mentioned(actor))).map(actor=>castField(actor.speaker,mark));
   const system=CASTING_SYSTEM+`\n${DELIVERY_CONTEXT_RULES}`+(unvoiced.length?`\nThese cast members have no voice yet; add an NPC line for each of them too: ${unvoiced.join(', ')}.`:'')
     +(config.communityRoutes && Object.keys(config.communityRoutes).length?`\nChoose the NPC voice words from: ${FISH_VOICE_TAGS}. Then add one line: LANG|ISO 639-1 code of the story's language.`:'');
   const lines=units.map(unit=>unit.kind==='dialogue'?`D${unit.id}: ${unit.text}`:`   ${unit.text}`);
@@ -2125,7 +2138,9 @@ function injectedSkipLines(lines, plan) {
   return lines.flatMap((line,index)=>{const own=words(line);return starts.some(start=>start.every((word,at)=>own[at]===word) && (start.length>=4 || own.length===start.length))?[index]:[];});
 }
 
-function injectionPrompt({cast=[], sfx=false, ambience=false}={}) {
+// Sent with every roleplay generation, so it asks only for rows Choir will use: SKIP when
+// non-story lines are skipped, LANG when a Fish community voice may be chosen by language.
+function injectionPrompt({cast=[], sfx=false, ambience=false, skip=true, language=true}={}) {
   const mark=pipeMark(cast);
   const sounds=[
     sfx?'SFX|1 to 3 English search words naming the sound|2 to 6 exact consecutive words from your reply where it happens (at most 4, only concrete sounds that happen now: doors, steps, impacts, weather; never voices or music)':'',
@@ -2135,16 +2150,15 @@ function injectionPrompt({cast=[], sfx=false, ambience=false}={}) {
     '[Choir audio casting: write your reply exactly as usual, then append this hidden block as the very last thing, with nothing after it. Never mention it in the story.]',
     '<!--choir',
     'Q1|Speaker|delivery|first words',
-    'Q2|Speaker|delivery|first words',
     'NPC|Name|gender|age and tone',
-    'SKIP|first words',
-    'LANG|language code',
+    ...(skip?['SKIP|first words']:[]),
+    ...(language?['LANG|language code']:[]),
     ...(sounds.length?sounds:[]),
     '-->',
     'One Q row per quoted passage of dialogue in your reply, in order (Q1 is the first "…" quote); first words are the first 3 words inside its quotation marks, copied exactly. Speaker is the exact name of who says it aloud; use NOT_SPOKEN for quoted words nobody says aloud (terms, signs, written text, remembered speech). Cast: '+(cast.length?cast.map(name=>castField(name,mark)).join(', '):'none listed')+'.'+(cast.some(name=>String(name).includes('|'))?` (${mark} is part of a name; copy it exactly, never as |.)`:''),
-    'For each line of your reply that is not story to be read aloud (status or tracker lines, stat lists, headers, menus, notes to the reader), add SKIP|its first 4 words, copied exactly. Write no SKIP rows when every line is story.',
+    ...(skip?['For each line of your reply that is not story to be read aloud (status or tracker lines, stat lists, headers, menus, notes to the reader), add SKIP|its first 4 words, copied exactly. Write no SKIP rows when every line is story.']:[]),
     'For each speaker not in the cast, add one separate NPC row: NPC|Name|female, male or neutral|young, middle-aged or old and 1 to 3 tone words. Their Q rows use just the name.',
-    'LANG is the ISO 639-1 code of the language your reply is written in (en, fr, ja…).',
+    ...(language?['LANG is the ISO 639-1 code of the language your reply is written in (en, fr, ja…).']:[]),
     'delivery is 2 to 6 words of tone for that line, restrained unless the scene clearly calls for more, e.g. "warm, slightly amused" or "quiet, tense".'
   ].join('\n');
 }
@@ -2271,6 +2285,7 @@ const JEV_DELIVERY = {
   relieved: ['Softly relieved, warm', 'Tension easing, welcome reassurance or a relieved breath explicitly supported by the scene'],
   sigh: ['Soft sigh', 'An explicitly written sigh or exhalation whose mood is unclear. A sigh alone does not mean fatigue or sadness; choose relieved when the scene describes relief']
 };
+const JEV_DELIVERY_LABELS = Object.fromEntries(Object.entries(JEV_DELIVERY).map(([key,[style]])=>[key,style]));
 const JEV_DELIVERY_CHOICES = Object.fromEntries(Object.entries(JEV_DELIVERY).map(([key,[style,description]])=>[key,`${style}. ${description}`]));
 
 // Jev can only choose, so a new speaker's name must be offered: capitalised word runs that appear mid-sentence,
@@ -2299,11 +2314,12 @@ function jevSpeakerCast(config) {
     const name = String(actor.speaker || '').trim(), key = normalizeName(name);
     if (!name || key === 'narrator' || cast.has(key)) continue;
     const profile = profiles.find(p => normalizeName(p.speaker) === key);
-    const role = profile?.role === 'persona' ? "the user's own character (persona)"
-      : profile?.role === 'character' ? "a lead character defined by the character card; use this person's own profile, and distinguish other people in the same card"
+    // Short labels: every speaker question repeats them, and the profile itself is in state.characters.
+    const role = profile?.role === 'persona' ? "the user's character"
+      : profile?.role === 'character' ? "a lead from the character card"
       : config.fixed.includes(actor) ? 'a main character' : 'a supporting character';
     const names = [...new Set([profile?.name, ...(actor.aliases || [])].filter(other => other?.trim() && normalizeName(other) !== key))];
-    const about = [profile?.description, profile?.personality, profile?.scenario, profile?.firstMessage].filter(text => text?.trim()).join('\n').slice(0, 1500);
+    const about = [profile?.description, profile?.personality, profile?.scenario, profile?.firstMessage].filter(text => text?.trim()).join('\n').slice(0, 600);
     cast.set(key, { name, description: `${name}${names.length ? ` (also called ${names.join(', ')})` : ''}: ${role}.`, ...(about ? { about } : {}) });
   }
   return [...cast.values()];
@@ -2330,7 +2346,14 @@ async function planWithJev({ transcript, config, apiKey, endpoint, context = '',
   const narrator = config.fixed?.find(a => normalizeName(a.speaker) === 'narrator');
   // The persona speaks in replies too, so every named cast member is a choice. A line from someone outside the
   // cast gets its own answer instead of borrowing a listed character's voice.
-  const cast = jevSpeakerCast(config);
+  // NPCs named nowhere in this reply or the recent chat cannot be speaking it; offering them
+  // would only lengthen every speaker question.
+  const seen = `${context}\n${transcript}`.normalize('NFKC').toLowerCase();
+  // Any distinctive word counts: Choir's own NPC names ("Gate guard", "Student 1") are written
+  // as "the guard" or "a student" in the story.
+  const words = name => String(name || '').normalize('NFKC').toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(word => word.length > 2 && !['the','and','one','two'].includes(word));
+  const present = actor => [actor.speaker, ...(actor.aliases || [])].some(name => words(name).some(word => new RegExp(`(?<![\\p{L}\\p{N}])${word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'u').test(seen)));
+  const cast = jevSpeakerCast({ ...config, npcs: (config.npcs || []).filter(present) });
   const choices = cast.length ? [...cast, { name: UNLISTED_SPEAKER, description: 'A speaker who matches none of the other choices, their names or descriptions.' }, NOT_SPOKEN_CHOICE] : [];
 
   const chosen = new Map(), catalogueVoices = new Map(), used = new Set(allCast.map(actor => actor.voice).filter(Boolean));
@@ -2382,19 +2405,20 @@ async function planWithJev({ transcript, config, apiKey, endpoint, context = '',
   let classifyDelivery = null;
 
   // Each question carries its line in place: a bare quote such as "Robots?" cannot be attributed on its own.
-  const passage = u => `${transcript.slice(Math.max(0, u.start - 300), u.start)}[[${u.text}]]${transcript.slice(u.end, u.end + 300)}`;
-  const state = { transcript, ...(context ? { context } : {}), characters: cast };
+  const passage = u => `${transcript.slice(Math.max(0, u.start - 200), u.start)}[[${u.text}]]${transcript.slice(u.end, u.end + 200)}`;
+  // The whole reply is in state; earlier chat only settles who "he" or "she" is at the start.
+  const state = { transcript, ...(context ? { context: String(context).slice(-1500) } : {}), characters: cast };
   if (dialogueUnits.length > 0) {
     if (hasSpindleDecisions) {
       // Lumiverse accepts at most 256 questions per evaluation.
-      const ask = async (name, question, indices = dialogueUnits.map((_, i) => i)) => {
+      const ask = async (name, question, indices = dialogueUnits.map((_, i) => i), extraState = null) => {
         const answers = {};
         for (let start = 0; start < indices.length; start += 256) {
           const questions = Object.fromEntries(indices.slice(start, start + 256).map(i => [`${name}_${i}`, question(dialogueUnits[i])]));
           Object.assign(answers, (await evaluateDecisions({
             userId: userId || undefined,
             connection_id: decisionConnection || config.decisionConnection || undefined,
-            state,
+            state: extraState ? { ...state, ...extraState } : state,
             questions
           }, { signal })).answers);
         }
@@ -2406,9 +2430,10 @@ async function planWithJev({ transcript, config, apiKey, endpoint, context = '',
         : dialogueUnits.map(() => UNLISTED_SPEAKER);
       if (config.useStyle !== false) classifyDelivery = indices => ask('emotion', u => ({
         type: 'choice',
-        instructions: `${DELIVERY_CONTEXT_RULES}\nChoose the best delivery of the line marked [[ ]] in this passage: "${passage(u)}"`,
-        criteria: JEV_DELIVERY_CHOICES
-      }), indices);
+        // The rules and the full option descriptions are in state once, not repeated per line.
+        instructions: `Choose the best delivery of the line marked [[ ]] in this passage, following state.deliveryGuide and the option details in state.deliveryOptions: "${passage(u)}"`,
+        criteria: JEV_DELIVERY_LABELS
+      }), indices, { deliveryGuide: DELIVERY_CONTEXT_RULES, deliveryOptions: JEV_DELIVERY_CHOICES });
     } else {
       const items = dialogueUnits.map(u => {
         const localContext = transcript.slice(Math.max(0, u.start - 300), Math.min(transcript.length, u.end + 300));
@@ -2622,7 +2647,9 @@ async function generateRaw({ choirPurpose: purpose = 'LLM call', ...request }) {
 // Splitting a reply into parts helps when a provider blocks its content. Bad
 // credentials, rate limits, unknown models and unsupported settings fail every
 // part the same way, so the planner reports them at once.
-const fatalProviderError = error => /\((?:401|402|403|404|429)\)|\b(?:401|402|403|404|429)\b.*\b(?:unauthori[sz]ed|forbidden|not found|too many)|api key|unauthori[sz]ed|authenticat|rate.?limit|quota|insufficient|billing|does not exist|model_not_found|unknown model|unsupported (?:value|parameter)|not supported with this model|\((?:5\d\d)\)|\b(?:500|502|503|504|529)\b|overloaded|service unavailable|bad gateway|internal (?:server )?error|timed? ?out|timeout|fetch failed|network ?error|econn|socket hang up|max_tokens/i.test(error?.message || '');
+const fatalProviderError = error => /\((?:401|402|403|404|429)\)|\b(?:401|402|403|404|429)\b.*\b(?:unauthori[sz]ed|forbidden|not found|too many)|api key|unauthori[sz]ed|authenticat|rate.?limit|quota|insufficient|billing|does not exist|model_not_found|unknown model|unsupported (?:value|parameter)|not supported with this model|\((?:5\d\d)\)|\b(?:HTTP|status)[ :]*5\d\d\b|overloaded|service unavailable|bad gateway|internal server error|fetch failed|network ?error|econn|socket hang up/i.test(error?.message || '');
+// Timeouts and output limits stay retryable: the planner's smaller parts can succeed where
+// the whole reply did not. Only an unavailable provider or network fails at once.
 
 const FISH_LANGUAGES = { en: 'English', zh: 'Chinese', ja: 'Japanese', ko: 'Korean', es: 'Spanish', pt: 'Portuguese', fr: 'French', de: 'German', it: 'Italian', ru: 'Russian', ar: 'Arabic', nl: 'Dutch', pl: 'Polish' };
 
@@ -2748,7 +2775,11 @@ let musicCatalog, musicCatalogFailedAt = 0;
 function loadMusicCatalog() {
   if (!musicCatalog || musicCatalogFailedAt && Date.now() - musicCatalogFailedAt > 60000) {
     musicCatalogFailedAt = 0;
-    musicCatalog = getJson(`${MUSIC_BASE}pieces.json`, { Accept: 'application/json' }, new AbortController().signal, 'Incompetech catalog').then(pieces => {
+    // A hung request must fail (and be retried a minute later), not block every music choice
+    // until the backend restarts.
+    let timer;
+    const hung = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Incompetech catalog timed out')), 20000); });
+    musicCatalog = Promise.race([getJson(`${MUSIC_BASE}pieces.json`, { Accept: 'application/json' }, new AbortController().signal, 'Incompetech catalog'), hung]).finally(() => clearTimeout(timer)).then(pieces => {
       if (!Array.isArray(pieces)) throw new Error('Incompetech catalog is not a track list');
       return pieces;
     }).catch(error => { musicCatalogFailedAt = Date.now(); throw error; });
@@ -3009,7 +3040,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
     if (message.action === 'injectContext') {
       if (typeof input.chatId !== 'string' || !input.chatId) throw new Error('Choose a chat for planning inside the reply.');
       const cast = Array.isArray(input.cast) ? input.cast.filter(name => typeof name === 'string' && name.trim()).map(name => name.trim().slice(0, 100)).slice(0, 40) : [];
-      const info = { delivery: ['auto', 'macro'].includes(input.delivery) ? input.delivery : 'off', cast, sfx: input.sfx === true, ambience: input.ambience === true };
+      const info = { delivery: ['auto', 'macro'].includes(input.delivery) ? input.delivery : 'off', cast, sfx: input.sfx === true, ambience: input.ambience === true, skip: input.skip !== false, language: input.language !== false };
       // Chat loads report Off too; a chat that never used the feature needs no file written.
       const saved = await loadInjectContext(userId, input.chatId);
       injectContexts.set(injectContextKey(userId,input.chatId), info);if (userId) injectUsers.set(input.chatId, userId);

@@ -2,6 +2,12 @@
 
 Release notes for Choir on the `lunch-test` and `staging` branches, newest first. A few lunch-test builds between staging.29 and staging.30 were numbered `1.1.6-lunch-test.N`.
 
+**Token, efficiency, reliability and bug audits (9 November).**
+- Fewer tokens. Jev sends the delivery rules and option details once per round instead of in every line's question, offers only NPCs the reply can involve, uses shorter role labels, 600-character profiles, 1,500 characters of earlier chat and ±200 characters around each quote. The plan-inside-the-reply instruction sent with every message asks for SKIP rows only when non-story lines are skipped and LANG only when a Fish community voice may be chosen, and drops a duplicate example row. The planner asks for NPC rows only for voiceless people the reply can involve.
+- Reliability. A failed or slow settings save no longer blocks Play or Replay (Retry save is offered). A plan is kept even when the cast save fails. Companion playback waits at most 8 seconds for sound-effect choices, and a failed choice is not paid for again for 5 minutes. The music catalogue cannot hang, and long music downloads are no longer cut off and restarted.
+- Efficiency. Section controls refresh once per pause instead of per keystroke; an unchanged playback position is not written again; a deleted message's saved plan is removed; earlier messages without a non-story check are looked up once per session; audio caches keep the most recently used clips.
+- Fixes. "While Anna and Ben laughed together, Cara said…" no longer fails Jev or the quick planner, and "Anna, Ben, and Cara said" is unison again. Doubled closing quotes (`"Hello,"" she said`) stay narration. Outage detection no longer stops a long reply's split retry after a timeout. Cue keeps sound cues whatever their capitalisation or quote style. A merged punctuation block keeps its sound cue. Subtle acting no longer adds a Fish S1 soft-tone marker.
+
 **Audit fixes, second batch.**
 - Cue reuses the opening clips that full-message playback already paid for (and the reverse): whole plan blocks are cut and batched the same way.
 - Cue prepares the next paragraph with its own speaker hint, message and position, and asks for a paragraph's sound effects once even when its lookahead and its playback ask together.

@@ -379,7 +379,7 @@ function decodeEntity(entity,name){
   const known={quot:'"',apos:"'",nbsp:' ',amp:'&',lt:'<',gt:'>',mdash:'—',ndash:'–',hellip:'…',lsquo:'‘',rsquo:'’',ldquo:'“',rdquo:'”',laquo:'«',raquo:'»'},key=name.toLowerCase();
   if(Object.hasOwn(known,key))return known[key];
   const point=key.startsWith('#x')?parseInt(key.slice(2),16):Number(key.slice(1));
-  return Number.isInteger(point) && point>0 && point<=0x10ffff?String.fromCodePoint(point):entity;
+  return Number.isInteger(point) && point>0 && point<=0x10ffff && (point<0xd800 || point>0xdfff)?String.fromCodePoint(point):entity;
 }
 function cardAnalysisRoles(rawRoles,card={}) {
   const candidates=validateCardRoles(rawRoles);
@@ -688,8 +688,10 @@ function unisonSpeakers(transcript,unit,config) {
   const resolveGroup=group=>{const names=[...new Set(group)];return names.length>=2 && (!/\bboth\b/i.test(subject) || names.length===2)?names:[];};
   // A single person named in the verb's own clause speaks alone: in "While Anna and Ben
   // laughed together, Cara said", the pair belongs to another clause.
+  // That is "no unison" (null), not an unnamed group ([]), which planners treat as an error.
+  // A last clause opening with "and"/"&" ends a list ("Anna, Ben, and Cara"), not a clause.
   const ownClause=subject.split(/[,;:]/).at(-1);
-  if(mentions(ownClause).length && !groupIn(ownClause))return [];
+  if(!/^\s*(?:(?:and|or)\b|&)/i.test(ownClause) &&mentions(ownClause).length && !groupIn(ownClause))return null;
   const explicit=groupIn(subject);
   if(explicit)return resolveGroup(explicit);
   if(!/\b(?:they|both|all)\b/i.test(subject))return [];
@@ -717,13 +719,16 @@ function foldWordlessSegments(segments,spans,transcript){
     if(hasWords(segments[index].text)){index++;continue;}
     const before=index>0,after=index<segments.length-1;
     const intoPrevious=before && (!after || spans[index].start===spans[index-1].end || spans[index+1].start!==spans[index].end);
+    // The block's own text (an audio tag included) and its sound cues travel with it.
+    const block=segments[index],target=intoPrevious?segments[index-1]:segments[index+1];
     if(intoPrevious){
-      segments[index-1].text+=transcript.slice(spans[index-1].end,spans[index].end);
+      target.text+=transcript.slice(spans[index-1].end,spans[index].start)+block.text;
       spans[index-1].end=spans[index].end;
     }else{
-      segments[index+1].text=transcript.slice(spans[index].start,spans[index+1].start)+segments[index+1].text;
+      target.text=block.text+transcript.slice(spans[index].end,spans[index+1].start)+target.text;
       spans[index+1].start=spans[index].start;
     }
+    for(const key of ['sfx','ambience','music'])if(block[key]?.length)target[key]=intoPrevious?[...(target[key] || []),...block[key]]:[...block[key],...(target[key] || [])];
     segments.splice(index,1);spans.splice(index,1);
   }
 }
@@ -1117,13 +1122,15 @@ function speechSourceUnits(transcript) {
     const {position,closed,opened}=paragraphScore(stop),next=position.get(at)+1;
     return closed[next]<=opened[next];
   };
-  let open=false;
+  let open=false,closedAt=-2;
   const masked=transcript.replace(/\n[ \t]*\n|"/g,(mark,at)=>{
     if(mark!=='"'){open=false;return mark;}
     // A doubled opening mark (""Hello," she said) opens once: the extra one is ignored.
     if(!open && transcript[at+1]==='"' && /[^\s"]/u.test(transcript[at+2] || '') && (at===0 || /\s/.test(transcript[at-1])))return '';
+    // A doubled closing mark ("Hello,"" she said) closes once.
+    if(!open && closedAt===at-1 && !/[p{L}p{N}]/u.test(transcript[at+1] || ''))return '';
     if(afterDigit(at) && (!open || feet(at) || !closesQuote(at)))return '';
-    open=!open;return mark;
+    open=!open;if(!open)closedAt=at;return mark;
   });
   // Other languages' paired marks: French/Russian «…», Japanese/Chinese 「…」 and 『…』, German/Polish „…“ or „…”.
   // Each closes at its own partner and never across a blank line.
@@ -1392,7 +1399,13 @@ function castingPrompt(units, config, context) {
     const about=Array.from(String(profile?.description || '').replace(/\s+/g,' ')).slice(0,220).join('');
     cast.push(`- ${castField(actor.speaker,mark)}${aliases.length?` (aliases: ${aliases.map(alias=>castField(alias,mark)).join(', ')})`:''}${role?` [${role}]`:''}${about?`: ${about}`:''}`);
   }
-  const unvoiced=actors.filter(actor=>!(config.npcs.includes(actor)?npcCastActor(actor,config):actor).voice).map(actor=>castField(actor.speaker,mark));
+  // NPC rows are only asked for voiceless people this reply can involve: rows for absent ones
+  // are paid output that nothing uses. A distinctive word counts ("Gate guard" → "the guard").
+  const seen=`${context || ''}\n${(units || []).map(unit=>unit.text).join('\n')}`.normalize('NFKC').toLowerCase();
+  const nameWords=name=>String(name || '').normalize('NFKC').toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(word=>word.length>2 && !['the','and','one','two'].includes(word));
+  const mentioned=actor=>[actor.speaker,...(actor.aliases || [])].some(name=>nameWords(name).some(word=>new RegExp(`(?<![\\p{L}\\p{N}])${escapePattern(word)}`,'u').test(seen)));
+  // Leads are always asked: they often speak unnamed ("Hello." from the card's character).
+  const unvoiced=actors.filter(actor=>!(config.npcs.includes(actor)?npcCastActor(actor,config):actor).voice && (config.fixed.includes(actor) || mentioned(actor))).map(actor=>castField(actor.speaker,mark));
   const system=CASTING_SYSTEM+`\n${DELIVERY_CONTEXT_RULES}`+(unvoiced.length?`\nThese cast members have no voice yet; add an NPC line for each of them too: ${unvoiced.join(', ')}.`:'')
     +(config.communityRoutes && Object.keys(config.communityRoutes).length?`\nChoose the NPC voice words from: ${FISH_VOICE_TAGS}. Then add one line: LANG|ISO 639-1 code of the story's language.`:'');
   const lines=units.map(unit=>unit.kind==='dialogue'?`D${unit.id}: ${unit.text}`:`   ${unit.text}`);
@@ -2125,7 +2138,9 @@ function injectedSkipLines(lines, plan) {
   return lines.flatMap((line,index)=>{const own=words(line);return starts.some(start=>start.every((word,at)=>own[at]===word) && (start.length>=4 || own.length===start.length))?[index]:[];});
 }
 
-function injectionPrompt({cast=[], sfx=false, ambience=false}={}) {
+// Sent with every roleplay generation, so it asks only for rows Choir will use: SKIP when
+// non-story lines are skipped, LANG when a Fish community voice may be chosen by language.
+function injectionPrompt({cast=[], sfx=false, ambience=false, skip=true, language=true}={}) {
   const mark=pipeMark(cast);
   const sounds=[
     sfx?'SFX|1 to 3 English search words naming the sound|2 to 6 exact consecutive words from your reply where it happens (at most 4, only concrete sounds that happen now: doors, steps, impacts, weather; never voices or music)':'',
@@ -2135,16 +2150,15 @@ function injectionPrompt({cast=[], sfx=false, ambience=false}={}) {
     '[Choir audio casting: write your reply exactly as usual, then append this hidden block as the very last thing, with nothing after it. Never mention it in the story.]',
     '<!--choir',
     'Q1|Speaker|delivery|first words',
-    'Q2|Speaker|delivery|first words',
     'NPC|Name|gender|age and tone',
-    'SKIP|first words',
-    'LANG|language code',
+    ...(skip?['SKIP|first words']:[]),
+    ...(language?['LANG|language code']:[]),
     ...(sounds.length?sounds:[]),
     '-->',
     'One Q row per quoted passage of dialogue in your reply, in order (Q1 is the first "…" quote); first words are the first 3 words inside its quotation marks, copied exactly. Speaker is the exact name of who says it aloud; use NOT_SPOKEN for quoted words nobody says aloud (terms, signs, written text, remembered speech). Cast: '+(cast.length?cast.map(name=>castField(name,mark)).join(', '):'none listed')+'.'+(cast.some(name=>String(name).includes('|'))?` (${mark} is part of a name; copy it exactly, never as |.)`:''),
-    'For each line of your reply that is not story to be read aloud (status or tracker lines, stat lists, headers, menus, notes to the reader), add SKIP|its first 4 words, copied exactly. Write no SKIP rows when every line is story.',
+    ...(skip?['For each line of your reply that is not story to be read aloud (status or tracker lines, stat lists, headers, menus, notes to the reader), add SKIP|its first 4 words, copied exactly. Write no SKIP rows when every line is story.']:[]),
     'For each speaker not in the cast, add one separate NPC row: NPC|Name|female, male or neutral|young, middle-aged or old and 1 to 3 tone words. Their Q rows use just the name.',
-    'LANG is the ISO 639-1 code of the language your reply is written in (en, fr, ja…).',
+    ...(language?['LANG is the ISO 639-1 code of the language your reply is written in (en, fr, ja…).']:[]),
     'delivery is 2 to 6 words of tone for that line, restrained unless the scene clearly calls for more, e.g. "warm, slightly amused" or "quiet, tense".'
   ].join('\n');
 }
@@ -3436,7 +3450,7 @@ function fishS1Cues(acting) {
 // unmarked line, and narration keeps its steady delivery.
 const ACTING_INTENSITY_LEVELS=[[-2,'Very subtle'],[-1,'Subtle'],[0,'Natural'],[1,'Expressive'],[2,'Very expressive']];
 const normalizeActingIntensity=value=>{const number=Number(value);return Number.isInteger(number) && number>=-2 && number<=2?number:0;};
-const INTENSITY_WORDS={'-2':'barely there, very understated','-1':'understated, restrained','1':'expressive, fully committed','2':'intense, big and theatrical'};
+const INTENSITY_WORDS={'-2':'barely there, very understated','-1':'understated, low-key','1':'expressive, fully committed','2':'intense, big and theatrical'};
 const FISH_INTENSITY_WORDS={'-2':'very subtle','-1':'subtle','1':'expressive','2':'intense'};
 // Fish S1 markers have no degree; dialling down drops the loudest ones instead.
 const S1_STRONG=new Set(['shouting','screaming','hysterical','crying loudly','sobbing','laughing','angry']);
@@ -4002,6 +4016,8 @@ export async function setup(ctx) {
   function readVolatileAudio(cache,key){
     const entry=cache.get(key);
     if(entry && (audioExpired(entry) || entry.signal?.aborted)){cache.delete(key);return;}
+    // A clip just used is kept longest: eviction removes the least recently used one.
+    if(entry){cache.delete(key);cache.set(key,entry);}
     return entry;
   }
   function loadVolatileAudio(cache,key,sourceKey,snapshot,signal,load,limit){
@@ -5285,7 +5301,9 @@ export async function setup(ctx) {
       .filter(name=>name && !placeholders.has(normalizeName(name))).concat(activePersonaName?[activePersonaName]:[]))];
     const key=String(value.freesoundApiKey || '').trim();
     const context={chatId:targetChat,delivery:resolvePlannerMode(value)!=='heuristic'?injectDelivery(value):'off',cast,
-      sfx:Boolean(key) && value.enableSfx!==false,ambience:Boolean(key) && value.enableAmbience!==false};
+      sfx:Boolean(key) && value.enableSfx!==false,ambience:Boolean(key) && value.enableAmbience!==false,
+      // Rows Choir would ignore are not requested on every generation.
+      skip:value.skipMeta!==false,language:Object.values(casting(value).communityRoutes || {}).some(Boolean)};
     const signature=JSON.stringify(context),sent=sentInjectContexts.get(targetChat);
     // Unforced, a chat never synced from this page skips Off (nothing to undo). On chat load the
     // sync is forced, so an Off chosen elsewhere replaces the backend's saved Automatic.
@@ -5375,6 +5393,11 @@ export async function setup(ctx) {
     // A voice, style or acting change makes cached clips stale: refresh the "Cached" labels too.
     saveState('Saving…');clearTimeout(autosaveTimer);autosaveTimer=setTimeout(()=>{void flushSettings().catch(()=>{});void refreshCacheStatus()?.catch?.(()=>{});},250);
     return true;
+  }
+  // Playback uses the settings already in memory: a failed or slow save offers Retry save and
+  // never blocks Play (or disables Stop) for longer than a moment.
+  function settleSettingsForPlayback(){
+    return Promise.race([flushSettings().catch(()=>{if(!disposed)saveState('Save failed · Retry save',true);}),new Promise(resolve=>setTimeout(resolve,3000))]);
   }
   async function flushSettings(){
     clearTimeout(autosaveTimer);autosaveTimer=null;
@@ -6478,7 +6501,7 @@ export async function setup(ctx) {
     $('preview').replaceChildren();
     $('planSummary').textContent=`Speech plan · ${plan.segments.length} spoken blocks`;
     if(plan.warning){const warning=document.createElement('p');warning.setAttribute('role','note');warning.textContent=`Jev failed: ${plan.warning}. Explicit LLM fallback supplied this attribution.`;$('preview').append(warning);}
-    if(plan.guessed){const note=document.createElement('p');note.setAttribute('role','note');note.dataset.choirGuessed='';note.textContent=`The planner did not answer ${plan.guessed===1?'1 line':`${plan.guessed} lines`}; ${plan.guessed===1?'it was':'they were'} given the previous speaker. Check the speakers below.`;$('preview').append(note);}
+    if(plan.guessed){const note=document.createElement('p');note.setAttribute('role','note');note.dataset.choirGuessed='';note.textContent=`The planner did not answer ${plan.guessed===1?'1 line':`${plan.guessed} lines`}; ${plan.guessed===1?'it was':'they were'} given the previous speaker, or the narrator when none came before. Check the speakers below.`;$('preview').append(note);}
     for(const [index,segment] of plan.segments.entries()) {
       const card=document.createElement('div');card.className='et-card et-plan-block';
       const isMutedNarrator=normalizeName(segment.speaker)==='narrator' && Boolean(config.muteNarrator);
@@ -6752,7 +6775,7 @@ export async function setup(ctx) {
     if(!transcript || config?.skipMeta===false || resolvePlannerMode(config)==='heuristic')return transcript;
     const key=`skip:${await sha256Hex(transcript)}`;
     // A reply written with Choir's block lists its own non-story lines: no check needed.
-    let skip=written?injectedSkipLines(transcriptLines(transcript),written):skipChecks.get(key) ?? await ctx.settings.get(key).catch(()=>null);
+    let skip=written?injectedSkipLines(transcriptLines(transcript),written):skipChecks.has(key)?skipChecks.get(key):await ctx.settings.get(key).catch(()=>null);
     if(!Array.isArray(skip) && signal){
       status('Checking for non-story blocks…');
       try{
@@ -6764,8 +6787,10 @@ export async function setup(ctx) {
         return transcript;
       }
     }
-    if(!Array.isArray(skip))return transcript;
-    skipChecks.set(key,skip);
+    // Earlier messages without a stored check are looked up once per session, not on every plan.
+    const remember=value=>{skipChecks.delete(key);skipChecks.set(key,value);if(skipChecks.size>200)skipChecks.delete(skipChecks.keys().next().value);};
+    if(!Array.isArray(skip)){if(!signal)remember(null);return transcript;}
+    remember(skip);
     return withoutLines(transcript,skip);
   }
   // Casting, sounds and non-story lines the roleplay model wrote with a reply (Plan inside the reply).
@@ -6926,9 +6951,12 @@ export async function setup(ctx) {
       plan.segments=cued.segments;planSource.soundCues=cued.checked;planSource.soundCueWarning=cued.warning || '';
       rememberPlanCast(validated);
       renderCast();renderPreview();setBusy(true);
-      await persistConfig(targetChat,config);
+      // The plan is saved even when the cast write fails, so its speakers survive a reload and
+      // the planner is not paid again; the cast error is still reported.
+      const [castSaved]=await Promise.allSettled([persistConfig(targetChat,config)]);
       if(token!==revision || disposed)return;
       await persistPlan();
+      if(castSaved.status==='rejected')throw castSaved.reason;
       status(`Ready: ${plan.segments.length} turns, ${new Set(plan.segments.flatMap(speechMembers).map(s=>s.speaker)).size} speakers.${plannerMode==='heuristic' || plannerMode==='jev' && !jevFailure?` ${plannerMode==='heuristic'?'Local heuristic':'Jev'} attribution.`:''}${jevFailure?` Jev failed: ${jevFailure}. LLM fallback used.`:''} ${describeCalls(preparationCalls)}`);
     } finally {ctrl.abort();if(planningSource?.token===token)planningSource=null;if(token===revision){controller=null;advancePlayback=null;generationPolicyChanged=null;updateNextControls();setBusy(false);}}
     if(autoPlay && token===revision)await play();
@@ -7151,11 +7179,14 @@ export async function setup(ctx) {
   // Pause, Stop and the end of a clip save the exact position; while playing, a
   // save every few seconds keeps resume close without loading the database.
   const POSITION_SAVE_MS=5000;
+  // Each position is an HTTP write; an unchanged position (repeated clip boundaries) is not sent again.
+  let positionWritten='';
   function savePosition(seconds=0){
-    if(!activePlayback)return;
-    const value={...activePlayback,seconds};
+    if(!activePlayback || disposed)return;
+    const value={...activePlayback,seconds},signature=JSON.stringify(value);
+    if(signature===positionWritten)return;positionWritten=signature;
     // A late failure from a chat the user has left must not replace the current chat's status.
-    void ctx.settings.set(`position:${value.chatId}`,value).catch(error=>{if(!disposed && value.chatId===chatId)status(`Playback position could not be saved: ${error.message}`,true);});
+    void ctx.settings.set(`position:${value.chatId}`,value).catch(error=>{positionWritten='';if(!disposed && value.chatId===chatId)status(`Playback position could not be saved: ${error.message}`,true);});
   }
   const speechMembers=segment=>segment.unison?segment.unison.map(member=>({...member,text:segment.text,passageIndex:segment.passageIndex})):segment.turns || [segment];
   const withoutBase=(segment,cast)=>{
@@ -7672,7 +7703,7 @@ export async function setup(ctx) {
     // A chat load or connection switch in progress reloads voices; finish it first.
     await voicesLoading;if(disposed)return;
     const preflightRevision=revision,preflightChat=chatId,preflightStops=visibleStops;
-    await flushSettings();
+    await settleSettingsForPlayback();
     const retentionChat=chatId,retentionEdit=settingsEdit;
     const latestPreferences=await ctx.settings.get(GLOBAL_SETTINGS_KEY).catch(()=>null);
     if(disposed || preflightChat!==chatId)return;
@@ -7761,7 +7792,7 @@ export async function setup(ctx) {
     const ctrl=new AbortController();controller=ctrl;setBusy(true);
     status('Loading saved audio…');
     try {
-      await flushSettings();
+      await settleSettingsForPlayback();
       const recording=await recordingStore('get',recordingKey(targetChat,messageId));
       if(token!==revision || ctrl.signal.aborted)throw abortError();
       if(!recording)throw new Error('No saved audio for this message on this device. Plan and play it first.');
@@ -7955,7 +7986,13 @@ export async function setup(ctx) {
     else {const label=document.createElement('span');label.textContent='Plan this message to show its sections.';entry.list.append(label);}
   }
   function syncMessageControls(entry){entry.play.hidden=!config?.sectionButtons;if(!config?.sectionButtons)entry.closeSections();entry.controls.hidden=!config?.sectionButtons && entry.download.hidden;entry.place();}
-  function refreshSectionControls(){for(const entry of messageSections)void renderSectionControls(entry).catch(error=>{if(!disposed)status(`Section controls unavailable: ${error.message}`,true);});}
+  // Each refresh reads a saved plan and hashes it for every visible message. Keystrokes and
+  // slider drags ask many times a second, so requests within a short pause share one refresh.
+  let sectionRefreshTimer=null;
+  function refreshSectionControls(){
+    if(sectionRefreshTimer)return;
+    sectionRefreshTimer=setTimeout(()=>{sectionRefreshTimer=null;if(disposed)return;for(const entry of messageSections)void renderSectionControls(entry).catch(error=>{if(!disposed)status(`Section controls unavailable: ${error.message}`,true);});},120);
+  }
   const messageDownloads=new Set();
   function downloadableRecording(recording,content){
     const played=recording?.playedAudio;
@@ -8388,6 +8425,11 @@ export async function setup(ctx) {
         if(event==='MESSAGE_DELETED')invalidateVolatileAudio({kind:'delete',chatId:companion.chatId,messageId:id});
         else if(edited==null || !sameSpeech(edited,paragraphPlaybackText) && !String(edited).includes(paragraphPlaybackText))stop(false);
       }
+      // A deleted message's saved plan is no longer reachable; Lumiverse loads every stored row at
+      // start-up, so leaving it would grow that load with every deleted reply.
+      if(event==='MESSAGE_DELETED' && id && chatId && typeof ctx.settings.remove==='function'){
+        const targetChat=chatId;void planKey(targetChat,id).then(key=>ctx.settings.remove(key)).catch(()=>{});
+      }
       renderMessages();
     }));
   }
@@ -8443,7 +8485,7 @@ export async function setup(ctx) {
     const entry={signal};entry.promise=(async()=>{
       let blob;
       if(track.url?.startsWith('blob:'))blob=await fetch(track.url,{signal}).then(response=>response.blob());
-      else{const result=await rpc('musicAudio',{url:track.url},signal,60000);signal.throwIfAborted();const audio=audioBytes(result.base64,result.mimeType);blob=new Blob([audio.data],{type:audio.mimeType});}
+      else{const result=await rpc('musicAudio',{url:track.url},signal,150000);signal.throwIfAborted();const audio=audioBytes(result.base64,result.mimeType);blob=new Blob([audio.data],{type:audio.mimeType});}
       signal.throwIfAborted();if(!blob.size)throw new Error('The music track was empty.');
       return track.blob=blob;
     })();musicAudioLoads.set(track,entry);
@@ -8484,7 +8526,9 @@ export async function setup(ctx) {
     return loadVolatileAudio(paragraphAudioCache,k,cacheKey(seg,snap),snap,sig,()=>synthesizeSegment(seg,snap,sig),80).then(blob=>prepare?preparePlayback(blob,seg,snap):blob);
   }
 
-  const paragraphCues = new Map(), paragraphCuesPending = new Map();
+  const paragraphCues = new Map(), paragraphCuesPending = new Map(), paragraphCueFailures = new Map();
+  // A failed choice is not paid for again on every replay; it is retried after a cool-down.
+  const CUE_RETRY_MS = 5 * 60 * 1000, CUE_WAIT_MS = 8000;
   function paragraphSegments(rawText, snap, preferredSpeaker = '', messageId = null, paragraphIndex = null) {
     const cleanPara = transcriptFromMessage(rawText,snap.ignoredTags).trim();
     if (!cleanPara) return {segments: [], cleanPara, fromPlan: false};
@@ -8512,7 +8556,9 @@ export async function setup(ctx) {
           // elsewhere would otherwise play at this paragraph's first word.
           const block = plan.segments[spoken[first]], opens = norm(block.text).startsWith(target), own = {...block, text: cleanPara};
           for (const key of ['sfx', 'ambience', 'music']) if (Array.isArray(block[key])) {
-            const kept = block[key].filter(cue => cue.trigger ? target.includes(norm(cue.trigger)) : opens);
+            // Triggers match as cueOffset accepts them: case-insensitive, curly and straight quotes alike.
+            const fold = text => norm(text).toLowerCase().replace(/[“”«»„]/g, '"').replace(/[‘’]/g, "'");
+            const kept = block[key].filter(cue => cue.trigger ? fold(cleanPara).includes(fold(cue.trigger)) : opens);
             if (kept.length) own[key] = kept; else delete own[key];
           }
           if (opens && norm(block.text) === target) own.passageIndex = spoken[first];
@@ -8589,11 +8635,16 @@ export async function setup(ctx) {
       if (paragraphCues.has(cleanPara)) return;
       signal?.throwIfAborted();
     }
+    const failed = paragraphCueFailures.get(cleanPara);
+    if (failed && Date.now() - failed.at < CUE_RETRY_MS) throw new Error(failed.message);
     const work = chooseSoundCues(segments, signal, () => {}, playing);
     paragraphCuesPending.set(cleanPara, work);
     try {
-      paragraphCues.set(cleanPara, await work);
+      paragraphCues.set(cleanPara, await work);paragraphCueFailures.delete(cleanPara);
       if (paragraphCues.size > 80) paragraphCues.delete(paragraphCues.keys().next().value);
+    } catch (error) {
+      if (!signal?.aborted) {paragraphCueFailures.set(cleanPara, {at: Date.now(), message: error.message});if (paragraphCueFailures.size > 80) paragraphCueFailures.delete(paragraphCueFailures.keys().next().value);}
+      throw error;
     } finally { if (paragraphCuesPending.get(cleanPara) === work) paragraphCuesPending.delete(cleanPara); }
   }
 
@@ -8658,7 +8709,12 @@ export async function setup(ctx) {
       for(const pending of handoff){pending.choirDetach?.();ctrl.signal.addEventListener('abort',()=>pending.abort(),{once:true});}
       try {
         let cueWarning='';
-        try{await loadParagraphCues(text,snapshot,speaker,ctrl.signal,undefined,messageId,paragraphIndex);}
+        // Sound effects are optional: speech waits a few seconds for them, never for a slow planner.
+        try{
+          const cueWork=loadParagraphCues(text,snapshot,speaker,ctrl.signal,undefined,messageId,paragraphIndex);
+          let wait;const late=await Promise.race([cueWork.then(()=>false),new Promise(resolve=>{wait=setTimeout(()=>resolve(true),CUE_WAIT_MS);})]).finally(()=>clearTimeout(wait));
+          if(late){cueWork.catch(()=>{});cueWarning='Sound effects are still being chosen; they join the next play of this paragraph.';}
+        }
         catch(error){if(ctrl.signal.aborted || token!==revision)throw abortError();cueWarning=error.message;}
         if(disposed || token!==revision || ctrl.signal.aborted || signal?.aborted)throw abortError();
         mixerPlaybackSegments=planAndBatchParagraph(text,snapshot,false,speaker,messageId,paragraphIndex);renderMixer();

@@ -100,7 +100,7 @@ export function fishS1Cues(acting) {
 // unmarked line, and narration keeps its steady delivery.
 export const ACTING_INTENSITY_LEVELS=[[-2,'Very subtle'],[-1,'Subtle'],[0,'Natural'],[1,'Expressive'],[2,'Very expressive']];
 export const normalizeActingIntensity=value=>{const number=Number(value);return Number.isInteger(number) && number>=-2 && number<=2?number:0;};
-const INTENSITY_WORDS={'-2':'barely there, very understated','-1':'understated, restrained','1':'expressive, fully committed','2':'intense, big and theatrical'};
+const INTENSITY_WORDS={'-2':'barely there, very understated','-1':'understated, low-key','1':'expressive, fully committed','2':'intense, big and theatrical'};
 const FISH_INTENSITY_WORDS={'-2':'very subtle','-1':'subtle','1':'expressive','2':'intense'};
 // Fish S1 markers have no degree; dialling down drops the loudest ones instead.
 const S1_STRONG=new Set(['shouting','screaming','hysterical','crying loudly','sobbing','laughing','angry']);

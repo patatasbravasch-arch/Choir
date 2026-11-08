@@ -104,7 +104,7 @@ test('the Acting dial is saved per chat and scales the directions sent on the ne
     await until(()=>h.store.get('chat:chat-a').actingIntensity===-1);
     const before=h.synthesis.length;await h.play();
     assert.ok(h.synthesis.length>before,'a new level makes fresh audio');
-    assert.ok(h.synthesis.slice(before).some(input=>/understated, restrained/.test(JSON.stringify(input.parameters))));
+    assert.ok(h.synthesis.slice(before).some(input=>/understated, low-key/.test(JSON.stringify(input.parameters))));
   }finally{await h.close();}
 });
 
@@ -178,4 +178,23 @@ test('audit: a settings edit with no chat open says it was not saved',async()=>{
     h.$('prefetch').value='3';h.$('prefetch').dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));
     assert.match(h.$('saveState').textContent,/Open a chat to save settings/);
   }finally{await h.close();}
+});
+
+test('audit 3: a failed settings save never blocks Play, and a failed cast save still keeps the plan',async()=>{
+  const h=await harness();
+  try{
+    Object.assign(h.store.get('chat:chat-a'),{skipMeta:false,enableSfx:false,enableAmbience:false,enableMusic:false,normalizeLoudness:false});
+    await h.reload();await h.plan();
+    h.state.failConfigSave=true;
+    h.$('prefetch').value='2';h.$('prefetch').dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));
+    await h.play();assert.ok(h.synthesis.length>0,'Play used the settings in memory');
+    assert.match(h.$('saveState').textContent,/Save failed/);
+  }finally{h.state.failConfigSave=false;await h.close();}
+  const g=await harness();
+  try{
+    Object.assign(g.store.get('chat:chat-a'),{skipMeta:false,enableSfx:false,enableAmbience:false,enableMusic:false,normalizeLoudness:false});
+    await g.reload();g.state.failConfigSave=true;
+    g.$('latest').click();await until(()=>/storage failed/i.test(g.$('status').textContent));
+    assert.ok([...g.store.keys()].some(key=>key.startsWith('plan:')),'the plan was saved despite the cast write failing');
+  }finally{g.state.failConfigSave=false;await g.close();}
 });

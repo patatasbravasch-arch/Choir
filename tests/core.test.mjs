@@ -30,7 +30,10 @@ test('audit: dialogue detection handles doubled, reversed, unclosed and paragrap
 test('audit: unison needs the group to be the verb\'s own subject, and knows every speech verb',()=>{
   const cfg={fixed:[{speaker:'Narrator'},{speaker:'Anna'},{speaker:'Ben'},{speaker:'Cara'}],npcs:[]};
   const unison=text=>core.unisonSpeakers(text,core.speechSourceUnits(text).find(unit=>unit.kind==='dialogue'),cfg);
-  assert.deepEqual(unison('While Anna and Ben laughed together, Cara said, "Stop it."'),[]);
+  // Not unison at all (null): an empty list would mean an unnamed group, which planners reject.
+  assert.equal(unison('While Anna and Ben laughed together, Cara said, "Stop it."'),null);
+  assert.deepEqual(unison('Anna, Ben, and Cara said in unison, "Go!"'),['Anna','Ben','Cara']);
+  assert.deepEqual(unison('Anna, Ben, & Cara said together, "Go!"'),['Anna','Ben','Cara']);
   assert.deepEqual(unison('"Yes!" Anna and Ben said together.'),['Anna','Ben']);
   assert.deepEqual(unison('Anna and Ben, both grinning, said together, "Yes!"'),['Anna','Ben']);
   assert.deepEqual(unison('Anna, Ben and Cara said in unison, "Go!"'),['Anna','Ben','Cara']);
@@ -1219,4 +1222,24 @@ test('French, Russian, Japanese, Chinese, German and Polish quotation marks are 
   assert.deepEqual(core.injectedCastRows(japanese,core.readInjectedPlan('<!-- choir\nQ1|Alice|calm\nLANG|ja\n-->')),{rows:'D1|Alice|calm\nLANG|ja',covered:true});
   // An interrupted guillemet quote still carries its speaker across a short tag.
   assert.equal(core.injectedCastRows('« Wes, » dit-elle. « Viens. »',core.readInjectedPlan('<!-- choir\nQ1|Léa|douce|Wes\n-->')).covered,true);
+});
+
+test('audit 3: doubled closing quotes, merged blocks\' cues and invalid numeric entities',()=>{
+  const units=text=>core.speechSourceUnits(text).map(unit=>`${unit.kind[0]}:${unit.text}`);
+  assert.deepEqual(units('"Hello,"" she said. "Bye."'),['d:"Hello,"','n:" she said.','d:"Bye."']);
+  assert.deepEqual(units('He shouted ""Run!"" and left.'),['n:He shouted "','d:"Run!"','n:" and left.']);
+  const config={voices:[{id:'n'},{id:'z'}],fixed:[{speaker:'Narrator',voice:'n',style:''},{speaker:'Zack',voice:'z',style:''}],npcs:[],useStyle:false};
+  const plan=validatePlan({segments:[{speaker:'Narrator',text:'The door creaked.'},{speaker:'Narrator',text:'—',sfx:[{query:'door creak',trigger:'—'}]},{speaker:'Zack',text:'"Hi,"'},{speaker:'Narrator',text:'Zack said.'}]},'The door creaked.\n\n—\n\n"Hi," Zack said.',config);
+  assert.equal(plan.segments[0].text,'The door creaked.\n\n—');assert.equal(plan.segments[0].sfx?.[0]?.query,'door creak');
+  assert.equal(core.transcriptFromMessage('A &#55357; B &#128578;'),'A &#55357; B 🙂');
+});
+
+test('audit 3 tokens: the per-message instruction and planner prompt ask only for rows Choir uses',()=>{
+  const full=core.injectionPrompt({cast:['Mira'],sfx:true}),lean=core.injectionPrompt({cast:['Mira'],sfx:true,skip:false,language:false});
+  assert.match(full,/SKIP\|first words/);assert.match(full,/LANG\|language code/);
+  assert.doesNotMatch(lean,/SKIP|LANG/);assert.ok(lean.length<full.length-250,`${full.length} → ${lean.length}`);
+  assert.equal((full.match(/^Q\d\|/gm) || []).length,1,'one example row is enough');
+  const config=castingCast();config.npcs=[{speaker:'Gate guard',voice:''},{speaker:'Harbour master',voice:''}];
+  const [system]=castingPrompt(speechSourceUnits('The guard frowned. "Halt."'),config,'');
+  assert.match(system.content,/Gate guard/);assert.doesNotMatch(system.content,/Harbour master/,'an NPC absent from the reply is not asked for');
 });

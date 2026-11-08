@@ -224,7 +224,7 @@ test('the acting dial scales each character\'s direction down or up, never narra
   const gemini=intensity=>voiceDelivery({segment:line,actor:zack,family:'gemini',connection:{provider:'google_tts',model:'gemini-3.8-flash-tts'},supported:{speech_style:{}},intensity}).parameters.speech_style;
   assert.equal(gemini(0),'deep, gravelly warning');
   assert.equal(gemini(-2),'barely there, very understated: deep, gravelly warning');
-  assert.equal(gemini(-1),'understated, restrained: deep, gravelly warning');
+  assert.equal(gemini(-1),'understated, low-key: deep, gravelly warning');
   assert.equal(gemini(1),'expressive, fully committed: deep, gravelly warning');
   assert.equal(gemini(2),'intense, big and theatrical: deep, gravelly warning');
   assert.equal(gemini('7'),'deep, gravelly warning','out-of-range values fall back to natural');
@@ -233,6 +233,9 @@ test('the acting dial scales each character\'s direction down or up, never narra
   assert.equal(fish(2),'[intense, deep, gravelly warning] "Keep your boots planted."');
   const s1=intensity=>voiceDelivery({segment:{...line,style:'shouting, angry'},actor:zack,family:'fish_audio',connection:{model:'s1'},intensity}).text;
   assert.match(s1(0),/\(shouting\)/);assert.doesNotMatch(s1(-1),/shouting|angry/);
+  // The dial never adds a marker of its own: "Happy" at Subtle stays (happy), no (soft tone).
+  const happy=intensity=>voiceDelivery({segment:{...line,style:'Happy'},actor:zack,family:'fish_audio',connection:{model:'s1'},intensity}).text;
+  for(const level of [-2,-1,0,1,2])assert.equal(happy(level),'(happy) "Keep your boots planted."',`level ${level}`);
   // Narration and lines without any direction are untouched.
   assert.equal(voiceDelivery({segment:{...line,style:'Measured narration'},actor:{speaker:'Narrator',style:'Measured narration'},narrator:true,family:'gemini',connection:{provider:'google_tts',model:'gemini-3.8-flash-tts'},supported:{speech_style:{}},intensity:2}).parameters.speech_style,'Measured narration');
   assert.equal(voiceDelivery({segment:{...line,style:''},actor:zack,family:'gemini',connection:{provider:'google_tts',model:'gemini-3.8-flash-tts'},supported:{speech_style:{}},intensity:-2}).parameters.speech_style,'');
