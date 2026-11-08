@@ -1605,3 +1605,34 @@ test('an optional sound choice with no Decision connection is not logged as a fa
   assert.ok(!h.sent.some(item=>item.message.call?.error),JSON.stringify(h.sent.map(item=>item.message.call).filter(Boolean)));
   void message;
 });
+
+test('audit: Jev gives one unnamed speaker a free voice without a paid gender question that can only fail',async()=>{
+  const cast={voices:[{id:'n'},{id:'f',gender:'female'},{id:'m',gender:'male'}],fixed:[{speaker:'Narrator',voice:'n',style:''},{speaker:'Mira',voice:'f',style:''}],npcs:[],useStyle:false};
+  const asked=[],h=await harness(null,null,null,null,null,{evaluate:async request=>{
+    asked.push(...Object.keys(request.questions));
+    return {answers:Object.fromEntries(Object.keys(request.questions).map(key=>[key,{choice:key.startsWith('speaker_')?'Someone not listed':'unknown'}]))};
+  }});
+  h.send('planJev',{transcript:'The old guard grunted. "Move along."',config:cast});
+  const result=(await h.result()).message;
+  assert.equal(result.error,undefined,result.error);
+  assert.ok(!asked.some(key=>key.startsWith('voice_gender_')),JSON.stringify(asked));
+  assert.ok(result.result.segments.some(segment=>segment.text==='"Move along."' && segment.voice));
+});
+
+test('audit: a provider outage fails the planner once instead of resending the reply in chunks',async()=>{
+  for(const message of ['(503) overloaded','Request timed out','fetch failed','(500) internal error']){
+    let calls=0;
+    const h=await harness(async()=>{calls++;throw new Error(message);});
+    const transcript=Array.from({length:40},(_,i)=>`"Line number ${i}," Mira said, and the long paragraph went on describing the hall in detail.`).join('\n\n');
+    h.send('plan',{transcript,config:{...config,fixed:[...config.fixed,{speaker:'Mira',voice:'Kore',style:''}]}});
+    const result=(await h.result()).message;
+    assert.match(result.error || '',/Planner failed/,message);assert.equal(calls,1,message);
+  }
+});
+
+test('audit: the Decision connection test is not READY when no speaker was chosen',async()=>{
+  const h=await harness(null,null,null,null,null,{evaluate:async()=>({answers:{}})});
+  h.send('testPlanner',{plannerMode:'jev'});
+  const result=(await h.result()).message;
+  assert.ok(!result.result?.response?.startsWith('READY'),JSON.stringify(result));
+});

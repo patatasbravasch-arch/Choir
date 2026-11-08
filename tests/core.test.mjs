@@ -8,6 +8,46 @@ import {randomUuid,sha256Hex,ignoredTagNames,characterCardRoles,validateCardRole
 import {normalizePlaybackRate,normalizeVoiceGap,speakerPlaybackRate,effectivePlaybackRate,browserPlaybackRate,PLAYBACK_RATE_LIMITS,VOICE_GAP_LIMITS,BROWSER_PLAYBACK_RATE_LIMITS} from '../src/core.js';
 import * as core from '../src/core.js';
 
+test('audit: dialogue detection handles doubled, reversed, unclosed and paragraph-bounded quotes',()=>{
+  const units=text=>core.speechSourceUnits(text).map(unit=>`${unit.kind[0]}:${unit.text}`);
+  // A doubled opening mark keeps the line as dialogue (the stray mark is folded later).
+  assert.deepEqual(units('""Hello," she said.'),['n:"','d:"Hello,"','n:she said.']);
+  // German/Danish »…« is dialogue, not the narration between two quotes.
+  assert.deepEqual(units('»Hallo«, sagte er. »Tschüss.«'),['d:»Hallo«','n:, sagte er.','d:»Tschüss.«']);
+  assert.deepEqual(units('« Bonjour », dit-il.'),['d:« Bonjour »','n:, dit-il.']);
+  // An unclosed curly quote ends at its paragraph, like a straight one.
+  assert.deepEqual(units('He said “hi. Later.\n\nShe said “bye.”'),['n:He said','d:“hi. Later.','n:She said','d:“bye.”']);
+  // A reply cut off inside a quote keeps that speech as dialogue.
+  assert.deepEqual(units('Anna turned. "Wait for me'),['n:Anna turned.','d:"Wait for me']);
+  assert.deepEqual(units('The pipe is 12" wide. "Come in," he said.'),['n:The pipe is 12" wide.','d:"Come in,"','n:he said.']);
+  // The full plan gives the whole line, stray mark included, to its speaker.
+  const config={voices:[{id:'n'},{id:'z'}],fixed:[{speaker:'Narrator',voice:'n',style:''},{speaker:'Zack',voice:'z',style:''}],npcs:[],useStyle:false};
+  const transcript='She paused. ""Keep your boots planted," Zack growled.';
+  const plan=validatePlan({segments:core.speechSourceUnits(transcript).map(unit=>({speaker:unit.kind==='dialogue'?'Zack':'Narrator',text:unit.text}))},transcript,config);
+  assert.deepEqual(plan.segments.map(segment=>[segment.speaker,segment.text]),[['Narrator','She paused.'],['Zack','""Keep your boots planted,"'],['Narrator','Zack growled.']]);
+});
+
+test('audit: unison needs the group to be the verb\'s own subject, and knows every speech verb',()=>{
+  const cfg={fixed:[{speaker:'Narrator'},{speaker:'Anna'},{speaker:'Ben'},{speaker:'Cara'}],npcs:[]};
+  const unison=text=>core.unisonSpeakers(text,core.speechSourceUnits(text).find(unit=>unit.kind==='dialogue'),cfg);
+  assert.deepEqual(unison('While Anna and Ben laughed together, Cara said, "Stop it."'),[]);
+  assert.deepEqual(unison('"Yes!" Anna and Ben said together.'),['Anna','Ben']);
+  assert.deepEqual(unison('Anna and Ben, both grinning, said together, "Yes!"'),['Anna','Ben']);
+  assert.deepEqual(unison('Anna, Ben and Cara said in unison, "Go!"'),['Anna','Ben','Cara']);
+  assert.deepEqual(unison('"Fine," Anna and Ben muttered in unison.'),['Anna','Ben']);
+});
+
+test('audit: a short SKIP row names a whole short line, never every line starting with that word',()=>{
+  const lines=['Status','Anna','Trust 40','Anna walked into the tavern and sat down.','HP: 20/20 Mana 5 left'];
+  assert.deepEqual(core.injectedSkipLines(lines,{skip:['Status','Anna','Trust 40','HP 20 20 Mana']}),[0,1,2,4]);
+});
+
+test('audit: speech text decodes numeric and common named HTML entities in one pass',()=>{
+  const text=core.transcriptFromMessage('He waited&nbsp;&mdash;then said &#8220;Hi&#8221; &amp;lt;3 &quot;ok&quot;');
+  assert.equal(text,'He waited —then said “Hi” &lt;3 "ok"');
+  assert.ok(core.speechSourceUnits(text).some(unit=>unit.kind==='dialogue' && unit.text==='“Hi”'));
+});
+
 test('a Freesound query without a match is retried shorter, keeping the sound, never down to one generic word',()=>{
   // Real planned queries from a test chat.
   assert.deepEqual(core.soundQueryFallbacks('hand pull cloth rustle'),['hand pull cloth rustle','pull cloth rustle','hand pull cloth','cloth rustle','hand pull']);

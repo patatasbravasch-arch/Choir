@@ -372,16 +372,20 @@ function validateCardRoles(roles) {
 
 // Evidence must still occur in one card field. Normalize presentation only;
 // paraphrases and invented excerpts are not evidence for a new lead.
+// One decoder for every text Choir reads: named basics plus any numeric entity (&#8220;, &#x201C;).
+// A single pass, so "&amp;lt;" stays "&lt;" as written.
+const HTML_ENTITY=/&(quot|apos|nbsp|amp|lt|gt|mdash|ndash|hellip|lsquo|rsquo|ldquo|rdquo|laquo|raquo|#\d+|#x[a-f0-9]+);/gi;
+function decodeEntity(entity,name){
+  const known={quot:'"',apos:"'",nbsp:' ',amp:'&',lt:'<',gt:'>',mdash:'—',ndash:'–',hellip:'…',lsquo:'‘',rsquo:'’',ldquo:'“',rdquo:'”',laquo:'«',raquo:'»'},key=name.toLowerCase();
+  if(Object.hasOwn(known,key))return known[key];
+  const point=key.startsWith('#x')?parseInt(key.slice(2),16):Number(key.slice(1));
+  return Number.isInteger(point) && point>0 && point<=0x10ffff?String.fromCodePoint(point):entity;
+}
 function cardAnalysisRoles(rawRoles,card={}) {
   const candidates=validateCardRoles(rawRoles);
   const normalize=value=>String(value || '')
     .replace(/<\/?(?:p|div|li|h[1-6]|br|section|article|blockquote)\b[^>]*>/gi,' ').replace(/<[^>]*>/g,'')
-    .replace(/&(quot|apos|nbsp|amp|lt|gt|#\d+|#x[a-f0-9]+);/gi,(entity,name)=>{
-      const known={quot:'"',apos:"'",nbsp:' ',amp:'&',lt:'<',gt:'>'},key=name.toLowerCase();
-      if(Object.hasOwn(known,key))return known[key];
-      const point=key.startsWith('#x')?parseInt(key.slice(2),16):Number(key.slice(1));
-      return Number.isInteger(point) && point>0 && point<=0x10ffff?String.fromCodePoint(point):entity;
-    })
+    .replace(HTML_ENTITY,decodeEntity)
     .normalize('NFKC').replace(/[\u2018\u2019]/g,"'").replace(/[\u201c\u201d]/g,'"')
     .replace(/(\*{1,3}|_{1,3}|`{1,3})([^\n]*?)\1/g,'$2').replace(/\s+/gu,' ').trim().toLowerCase();
   const sources=['name','description','personality','scenario','first_mes'].map(field=>normalize(card[field]));
@@ -557,8 +561,7 @@ function transcriptFromMessage(value, ignoredTags=[]) {
     .replace(/^[ \t]*(?:#{1,6}[ \t]*)?(?:Chapter|Act|Episode|Scene|Part|Book|Volume)[ \t]+(?:\d+|[IVXLCDM]+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)(?:[ \t]*[:\-.—–][^\n]*)?[ \t]*$/gim, '')
     .replace(/^[ \t]*#{1,6}[ \t]+/gm, '')
     .replace(/\*|`/g, '')
-    .replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'")
-    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
+    .replace(HTML_ENTITY, decodeEntity).replace(/ /g, ' ')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
@@ -665,7 +668,7 @@ function unisonSpeakers(transcript,unit,config) {
   if(unit.kind!=='dialogue')return null;
   const following=transcript.slice(unit.end).split(/[.!?\n"“”«»「」『』„]/)[0];
   const preceding=transcript.slice(Math.max(0,unit.start-400),unit.start).split(/["“”«»「」『』„]/).at(-1);
-  const verbs=/\b(?:say|says|said|reply|replies|replied|ask|asks|asked|shout|shouts|shouted|yell|yells|yelled|scream|screams|screamed|whisper|whispers|whispered|call|calls|called|speak|speaks|spoke|answer|answers|answered|cry|cries|cried|exclaim|exclaims|exclaimed|chant|chants|chanted|sing|sings|sang|murmur|murmurs|murmured|declare|declares|declared)\b/i;
+  const verbs=new RegExp(SPEECH_VERBS.source,'i');
   const collective=/\b(?:in (?:perfect |complete )?unison|together|simultaneously)\b/i;
   const tag=[following,preceding.split(/[.!?\n]/).at(-1)].find(text=>text.length<=250 && verbs.test(text) && collective.test(text));
   if(!tag)return null;
@@ -683,6 +686,10 @@ function unisonSpeakers(transcript,unit,config) {
   };
   const subject=tag.slice(0,verbs.exec(tag).index);
   const resolveGroup=group=>{const names=[...new Set(group)];return names.length>=2 && (!/\bboth\b/i.test(subject) || names.length===2)?names:[];};
+  // A single person named in the verb's own clause speaks alone: in "While Anna and Ben
+  // laughed together, Cara said", the pair belongs to another clause.
+  const ownClause=subject.split(/[,;:]/).at(-1);
+  if(mentions(ownClause).length && !groupIn(ownClause))return [];
   const explicit=groupIn(subject);
   if(explicit)return resolveGroup(explicit);
   if(!/\b(?:they|both|all)\b/i.test(subject))return [];
@@ -724,7 +731,6 @@ function validatePlan(raw, transcript, config) {
   config=reconcileCastDuplicates(config);
   validateCastConfig(config);
   if (!raw || !Array.isArray(raw.segments) || !raw.segments.length) throw new Error('Expected at least one speech segment.');
-  const voices = new Set(config.voices.map(v => v.id));
   const cast = new Map([...config.fixed, ...config.npcs.map(actor=>npcCastActor(actor,config))].map(v => [normalizeName(v.speaker), {...v}]));
   const fixedNames=new Set(config.fixed.map(actor=>normalizeName(actor.speaker)));
   const aliases = new Map([...config.fixed, ...config.npcs].flatMap(actor=>(actor.aliases || []).map(alias=>[normalizeName(alias),normalizeName(actor.speaker)])));
@@ -1114,12 +1120,14 @@ function speechSourceUnits(transcript) {
   let open=false;
   const masked=transcript.replace(/\n[ \t]*\n|"/g,(mark,at)=>{
     if(mark!=='"'){open=false;return mark;}
+    // A doubled opening mark (""Hello," she said) opens once: the extra one is ignored.
+    if(!open && transcript[at+1]==='"' && /[^\s"]/u.test(transcript[at+2] || '') && (at===0 || /\s/.test(transcript[at-1])))return '';
     if(afterDigit(at) && (!open || feet(at) || !closesQuote(at)))return '';
     open=!open;return mark;
   });
   // Other languages' paired marks: French/Russian «…», Japanese/Chinese 「…」 and 『…』, German/Polish „…“ or „…”.
   // Each closes at its own partner and never across a blank line.
-  for(const match of masked.matchAll(/"[^"\n]*(?:\n(?![ \t]*\n)[^"\n]*)*(?:"|(?=\n[ \t]*\n))|“[^”]*”|«(?:[^»\n]|\n(?![ \t]*\n))*»|「(?:[^」\n]|\n(?![ \t]*\n))*」|『(?:[^』\n]|\n(?![ \t]*\n))*』|„(?:[^“”\n]|\n(?![ \t]*\n))*[“”]/g)) {
+  for(const match of masked.matchAll(/"[^"\n]*(?:\n(?![ \t]*\n)[^"\n]*)*(?:"|(?=\n[ \t]*\n)|$)|“(?:[^”\n]|\n(?![ \t]*\n))*(?:”|(?=\n[ \t]*\n)|$)|»(?:[^«\n]|\n(?![ \t]*\n))*«|«(?:[^»\n]|\n(?![ \t]*\n))*»|「(?:[^」\n]|\n(?![ \t]*\n))*」|『(?:[^』\n]|\n(?![ \t]*\n))*』|„(?:[^“”\n]|\n(?![ \t]*\n))*[“”]/g)) {
     narration(transcript.slice(cursor,match.index));add(transcript.slice(match.index,match.index+match[0].length),'dialogue');cursor=match.index+match[0].length;
   }
   narration(transcript.slice(cursor));return units;
@@ -1807,7 +1815,7 @@ function spaceSoundEffects(points,{start=0,last=-Infinity}={}) {
 function sfxCueOffset(text, trigger) {
   let target=Math.max(0,cueOffset(text,trigger));
   if(!target)return 0;
-  const quotations=[...text.matchAll(/"[^"]*(?:"|$)|“[^”]*(?:”|$)/g)];
+  const quotations=[...text.matchAll(/"[^"]*(?:"|$)|“[^”]*(?:”|$)|«[^»]*(?:»|$)|»[^«]*(?:«|$)|「[^」]*(?:」|$)|『[^』]*(?:』|$)|„[^“”]*(?:[“”]|$)/g)];
   const utterance=quotations.find(quote=>target>=quote.index && target<quote.index+quote[0].length);
   if(utterance)target=utterance.index;
   if(/^(?:and|but|or|then|as|when|while|before|after|once|until|unless|because|although|though|since)\s+\S+/i.test(text.slice(target)) && !/[\p{L}\p{N}]/u.test(text[target-1]))return target;
@@ -2109,7 +2117,9 @@ function injectedSoundCues(segments, plan) {
 function injectedSkipLines(lines, plan) {
   const words=text=>String(text || '').normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu,' ').trim().split(/\s+/).filter(Boolean);
   const starts=(plan?.skip || []).map(words).filter(start=>start.length);
-  return lines.flatMap((line,index)=>{const own=words(line);return starts.some(start=>start.every((word,at)=>own[at]===word))?[index]:[];});
+  // Rows copy a line's first 4 words, so a shorter row names a whole short line:
+  // "SKIP|Anna" (a stat-block name) must not drop "Anna walked into the tavern."
+  return lines.flatMap((line,index)=>{const own=words(line);return starts.some(start=>start.every((word,at)=>own[at]===word) && (start.length>=4 || own.length===start.length))?[index]:[];});
 }
 
 function injectionPrompt({cast=[], sfx=false, ambience=false}={}) {
@@ -3874,7 +3884,7 @@ export async function setup(ctx) {
       <label class="et-check" title="Scroll the chat to the passage being read. Scrolling yourself pauses this until the next Play."><input data-et="followNarration" type="checkbox"> Follow narration</label>
       <label class="et-check"><input data-et="auto" type="checkbox"> Auto-play new replies</label>
       <label class="et-check" hidden><input data-et="useStyle" type="checkbox" checked> Delivery styles</label>
-      <label class="et-check" title="Inspect final Choir TTS request bodies after planning. Keeps the last 20 attempted calls in memory for this chat; no credentials or saved debug logs."><input data-et="paranoidMode" type="checkbox"> Paranoid mode · inspect TTS requests</label>
+      <label class="et-check" title="Inspect final Choir TTS request bodies after planning. Keeps the last 50 attempted calls in memory for this chat; no credentials or saved debug logs."><input data-et="paranoidMode" type="checkbox"> Paranoid mode · inspect TTS requests</label>
       <label class="et-check" hidden><input data-et="useFastClassifier" type="checkbox"> Fast Attribution (0ms instant for narration & 1-on-1 dialogue)</label>
     </div>
     </section><section data-choir-page="settings"><details>
@@ -5263,7 +5273,8 @@ export async function setup(ctx) {
   function syncInjectContext(targetChat=chatId,value=config,force=false){
     if(!targetChat || !value?.fixed)return;
     const placeholders=new Set(['narrator','persona','{{user}}','character','{{char}}']);
-    const cast=[...new Set([...value.fixed,...(value.npcs || [])].map(actor=>String(actor.speaker || '').trim())
+    // Known NPCs live in the active connection's cast, so the model reuses their names.
+    const cast=[...new Set([...value.fixed,...(value.casts?.[scope(value)] || value.npcs || [])].map(actor=>String(actor.speaker || '').trim())
       .filter(name=>name && !placeholders.has(normalizeName(name))).concat(activePersonaName?[activePersonaName]:[]))];
     const key=String(value.freesoundApiKey || '').trim();
     const context={chatId:targetChat,delivery:resolvePlannerMode(value)!=='heuristic'?injectDelivery(value):'off',cast,
@@ -5374,13 +5385,13 @@ export async function setup(ctx) {
   root.addEventListener('input',autoSaveEvent);
   for(const name of autosaveFields)$(name)?.addEventListener('change',autoSaveEvent);
   $('followNarration').addEventListener('change',syncNarrationFollow);
-  root.addEventListener('change',event=>{if(event.target.hasAttribute('data-choir-persist'))autoSaveEvent(event);});
+  const persistChange=event=>{if(event.target.hasAttribute('data-choir-persist'))autoSaveEvent(event);};root.addEventListener('change',persistChange);
   const docRoot=root?.ownerDocument || (typeof document!=='undefined'?document:null);
   const viewRoot=docRoot?.defaultView || (typeof window!=='undefined'?window:null);
   const saveOnLeave=()=>{void flushSettings().catch(()=>{});void persistMixer(false);};
   viewRoot?.addEventListener('pagehide',saveOnLeave);
   const saveOnHidden=()=>{if(docRoot?.visibilityState==='hidden')saveOnLeave();};docRoot?.addEventListener('visibilitychange',saveOnHidden);
-  unsubs.push(()=>{root.removeEventListener('input',autoSaveEvent);root.removeEventListener('change',autoSaveEvent);viewRoot?.removeEventListener('pagehide',saveOnLeave);docRoot?.removeEventListener('visibilitychange',saveOnHidden);clearTimeout(autosaveTimer);});
+  unsubs.push(()=>{root.removeEventListener('input',autoSaveEvent);root.removeEventListener('change',persistChange);viewRoot?.removeEventListener('pagehide',saveOnLeave);docRoot?.removeEventListener('visibilitychange',saveOnHidden);clearTimeout(autosaveTimer);});
 
   function rpc(action,input,signal,timeoutMs=185000,onProgress) {
     if (signal?.aborted) return Promise.reject(abortError());
@@ -6224,7 +6235,9 @@ export async function setup(ctx) {
     if($('freesoundApiKey'))$('freesoundApiKey').value=config.freesoundApiKey||'';$('concurrency').value=config.concurrency;
     if($('plannerMode'))$('plannerMode').value=resolvePlannerMode(config);
     if($('useFastClassifier'))$('useFastClassifier').checked=Boolean(config.useFastClassifier);
-    if($('jevKey'))$('jevKey').value=config.jevApiKey||'';
+    // The Jev key lives only in this session's field and is never saved with a chat, so a
+    // chat loaded without one must not erase the key the user entered.
+    if($('jevKey') && config.jevApiKey)$('jevKey').value=config.jevApiKey;
     if($('jevEndpoint'))$('jevEndpoint').value=config.jevEndpoint||'';
     for(const name of ['allowLlmFallback','normalizeLoudness','skipMeta','sectionButtons'])$(name).checked=Boolean(config[name]);
     $('injectPlan').value=injectDelivery(config);
@@ -6735,7 +6748,7 @@ export async function setup(ctx) {
     const content=contentOverride ?? ctx.messages.getContent(messageId);
     if(content==null)throw new Error('Message is no longer available.');
     let transcript=filteredTranscript(content);
-    if(!transcript)throw new Error('This message contains no speakable text.');
+    if(!/[\p{L}\p{N}]/u.test(transcript))throw new Error('This message contains no speakable text.');
     let snapshot=structuredClone(casting(config)),context='';
     const ctrl=new AbortController();controller=ctrl;
     planningSource={messageId,chatId:targetChat,content,token};messagePlaybackId=messageId;
@@ -8176,26 +8189,6 @@ export async function setup(ctx) {
     preview.hidden=false;
   };
   $('add').onclick=()=>{const names=new Set([...castRows,...npcRows].filter(entry=>root.contains(entry.row)).map(entry=>normalizeName(entry.read().speaker)));let index=1;while(names.has(normalizeName(`Character ${index}`)))index++;castRows.push(makeRow({speaker:`Character ${index}`,voice:'',style:''},$('fixed'),false,true));scheduleSettingsSave();renderMixer();};
-        const doSearchVoices = () => {
-    const query = $('voiceSearchQuery')?.value?.trim() || '';
-    openVoiceLibraryModal({
-      defaultQuery: query || 'narrator',
-      onSelect: async (item) => {
-        const fishRoute=[scope(config),...casting(config).fixed.map(actor=>actor.route),...casting(config).npcs.map(actor=>actor.route)].find(route=>route && detectProvider(route)==='fish_audio');
-        if(!fishRoute)throw new Error('Select a Fish Audio connection before adding community voices.');
-        rememberExtraVoiceRoute(item.id,fishRoute);
-        const entry = `${item.id} | ${item.name}${item.description ? ` · ${item.description}` : ''}`;
-        const existing = $('extraVoices').value.trim();
-        $('extraVoices').value = existing ? `${existing}\n${entry}` : entry;
-        config = capture();
-        if (chatId) await persistConfig(chatId,config);
-        loadVersion++; await loadVoices();
-        status(`Added "${item.name}" to voice catalogue.`);
-      }
-    });
-  };
-  $('searchVoicesBtn')?.addEventListener('click', doSearchVoices);
-  $('voiceSearchQuery')?.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); doSearchVoices(); } });
   $('load').onclick=()=>chatLoading?loadChat(true):run(async()=>{await flushSettings();config=capture();loadVersion++;await loadProviders();await persistConfig(chatId,config,true);saveState('Settings saved');clearPlan();status('Connections and voices reloaded.');});
   $('plannerMode')?.addEventListener('change',updatePlannerVisibility);
   $('allowLlmFallback').onchange=updatePlannerVisibility;
@@ -8456,7 +8449,17 @@ export async function setup(ctx) {
       // Every place in the plan that covers the paragraph, in story order.
       const matches = [];
       for (let first = 0; first < spoken.length; first++) {
-        if (norm(plan.segments[spoken[first]].text).includes(target)) {matches.push([...leadingSounds(spoken[first]), {...plan.segments[spoken[first]], text: cleanPara}]);continue;}
+        if (norm(plan.segments[spoken[first]].text).includes(target)) {
+          // A block that spans several paragraphs carries every paragraph's sounds; this
+          // paragraph keeps only those whose words it contains. A cue whose trigger is
+          // elsewhere would otherwise play at this paragraph's first word.
+          const block = plan.segments[spoken[first]], opens = norm(block.text).startsWith(target), own = {...block, text: cleanPara};
+          for (const key of ['sfx', 'ambience', 'music']) if (Array.isArray(block[key])) {
+            const kept = block[key].filter(cue => cue.trigger ? target.includes(norm(cue.trigger)) : opens);
+            if (kept.length) own[key] = kept; else delete own[key];
+          }
+          matches.push([...(opens ? leadingSounds(spoken[first]) : []), own]);continue;
+        }
         let joined = '';
         for (let last = first; last < spoken.length; last++) {
           joined = norm(`${joined} ${plan.segments[spoken[last]].text}`);
@@ -8523,7 +8526,8 @@ export async function setup(ctx) {
   const bridge = {
     version: 1,
     isAvailable: () => !disposed,
-    getConfig: () => structuredClone(config),
+    // Other extensions read the setup, never its credentials.
+    getConfig: () => {const {freesoundApiKey,jevApiKey,...shared}=structuredClone(config);return shared;},
     isNarratorMuted: () => speakerExcluded('Narrator'),
     setNarratorMuted: (muted) => {
       if (config) config.muteNarrator = Boolean(muted);
