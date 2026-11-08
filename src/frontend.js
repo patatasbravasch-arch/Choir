@@ -499,6 +499,8 @@ export async function setup(ctx) {
   function readVolatileAudio(cache,key){
     const entry=cache.get(key);
     if(entry && (audioExpired(entry) || entry.signal?.aborted)){cache.delete(key);return;}
+    // A clip just used is kept longest: eviction removes the least recently used one.
+    if(entry){cache.delete(key);cache.set(key,entry);}
     return entry;
   }
   function loadVolatileAudio(cache,key,sourceKey,snapshot,signal,load,limit){
@@ -1782,7 +1784,9 @@ export async function setup(ctx) {
       .filter(name=>name && !placeholders.has(normalizeName(name))).concat(activePersonaName?[activePersonaName]:[]))];
     const key=String(value.freesoundApiKey || '').trim();
     const context={chatId:targetChat,delivery:resolvePlannerMode(value)!=='heuristic'?injectDelivery(value):'off',cast,
-      sfx:Boolean(key) && value.enableSfx!==false,ambience:Boolean(key) && value.enableAmbience!==false};
+      sfx:Boolean(key) && value.enableSfx!==false,ambience:Boolean(key) && value.enableAmbience!==false,
+      // Rows Choir would ignore are not requested on every generation.
+      skip:value.skipMeta!==false,language:Object.values(casting(value).communityRoutes || {}).some(Boolean)};
     const signature=JSON.stringify(context),sent=sentInjectContexts.get(targetChat);
     // Unforced, a chat never synced from this page skips Off (nothing to undo). On chat load the
     // sync is forced, so an Off chosen elsewhere replaces the backend's saved Automatic.
@@ -1872,6 +1876,11 @@ export async function setup(ctx) {
     // A voice, style or acting change makes cached clips stale: refresh the "Cached" labels too.
     saveState('Saving…');clearTimeout(autosaveTimer);autosaveTimer=setTimeout(()=>{void flushSettings().catch(()=>{});void refreshCacheStatus()?.catch?.(()=>{});},250);
     return true;
+  }
+  // Playback uses the settings already in memory: a failed or slow save offers Retry save and
+  // never blocks Play (or disables Stop) for longer than a moment.
+  function settleSettingsForPlayback(){
+    return Promise.race([flushSettings().catch(()=>{if(!disposed)saveState('Save failed · Retry save',true);}),new Promise(resolve=>setTimeout(resolve,3000))]);
   }
   async function flushSettings(){
     clearTimeout(autosaveTimer);autosaveTimer=null;
@@ -2975,7 +2984,7 @@ export async function setup(ctx) {
     $('preview').replaceChildren();
     $('planSummary').textContent=`Speech plan · ${plan.segments.length} spoken blocks`;
     if(plan.warning){const warning=document.createElement('p');warning.setAttribute('role','note');warning.textContent=`Jev failed: ${plan.warning}. Explicit LLM fallback supplied this attribution.`;$('preview').append(warning);}
-    if(plan.guessed){const note=document.createElement('p');note.setAttribute('role','note');note.dataset.choirGuessed='';note.textContent=`The planner did not answer ${plan.guessed===1?'1 line':`${plan.guessed} lines`}; ${plan.guessed===1?'it was':'they were'} given the previous speaker. Check the speakers below.`;$('preview').append(note);}
+    if(plan.guessed){const note=document.createElement('p');note.setAttribute('role','note');note.dataset.choirGuessed='';note.textContent=`The planner did not answer ${plan.guessed===1?'1 line':`${plan.guessed} lines`}; ${plan.guessed===1?'it was':'they were'} given the previous speaker, or the narrator when none came before. Check the speakers below.`;$('preview').append(note);}
     for(const [index,segment] of plan.segments.entries()) {
       const card=document.createElement('div');card.className='et-card et-plan-block';
       const isMutedNarrator=normalizeName(segment.speaker)==='narrator' && Boolean(config.muteNarrator);
@@ -3207,7 +3216,7 @@ export async function setup(ctx) {
     if(!transcript || config?.skipMeta===false || resolvePlannerMode(config)==='heuristic')return transcript;
     const key=`skip:${await sha256Hex(transcript)}`;
     // A reply written with Choir's block lists its own non-story lines: no check needed.
-    let skip=written?injectedSkipLines(transcriptLines(transcript),written):skipChecks.get(key) ?? await ctx.settings.get(key).catch(()=>null);
+    let skip=written?injectedSkipLines(transcriptLines(transcript),written):skipChecks.has(key)?skipChecks.get(key):await ctx.settings.get(key).catch(()=>null);
     if(!Array.isArray(skip) && signal){
       status('Checking for non-story blocks…');
       try{
@@ -3219,8 +3228,10 @@ export async function setup(ctx) {
         return transcript;
       }
     }
-    if(!Array.isArray(skip))return transcript;
-    skipChecks.set(key,skip);
+    // Earlier messages without a stored check are looked up once per session, not on every plan.
+    const remember=value=>{skipChecks.delete(key);skipChecks.set(key,value);if(skipChecks.size>200)skipChecks.delete(skipChecks.keys().next().value);};
+    if(!Array.isArray(skip)){if(!signal)remember(null);return transcript;}
+    remember(skip);
     return withoutLines(transcript,skip);
   }
   // Casting, sounds and non-story lines the roleplay model wrote with a reply (Plan inside the reply).
@@ -3381,9 +3392,12 @@ export async function setup(ctx) {
       plan.segments=cued.segments;planSource.soundCues=cued.checked;planSource.soundCueWarning=cued.warning || '';
       rememberPlanCast(validated);
       renderCast();renderPreview();setBusy(true);
-      await persistConfig(targetChat,config);
+      // The plan is saved even when the cast write fails, so its speakers survive a reload and
+      // the planner is not paid again; the cast error is still reported.
+      const [castSaved]=await Promise.allSettled([persistConfig(targetChat,config)]);
       if(token!==revision || disposed)return;
       await persistPlan();
+      if(castSaved.status==='rejected')throw castSaved.reason;
       status(`Ready: ${plan.segments.length} turns, ${new Set(plan.segments.flatMap(speechMembers).map(s=>s.speaker)).size} speakers.${plannerMode==='heuristic' || plannerMode==='jev' && !jevFailure?` ${plannerMode==='heuristic'?'Local heuristic':'Jev'} attribution.`:''}${jevFailure?` Jev failed: ${jevFailure}. LLM fallback used.`:''} ${describeCalls(preparationCalls)}`);
     } finally {ctrl.abort();if(planningSource?.token===token)planningSource=null;if(token===revision){controller=null;advancePlayback=null;generationPolicyChanged=null;updateNextControls();setBusy(false);}}
     if(autoPlay && token===revision)await play();
@@ -3606,11 +3620,14 @@ export async function setup(ctx) {
   // Pause, Stop and the end of a clip save the exact position; while playing, a
   // save every few seconds keeps resume close without loading the database.
   const POSITION_SAVE_MS=5000;
+  // Each position is an HTTP write; an unchanged position (repeated clip boundaries) is not sent again.
+  let positionWritten='';
   function savePosition(seconds=0){
-    if(!activePlayback)return;
-    const value={...activePlayback,seconds};
+    if(!activePlayback || disposed)return;
+    const value={...activePlayback,seconds},signature=JSON.stringify(value);
+    if(signature===positionWritten)return;positionWritten=signature;
     // A late failure from a chat the user has left must not replace the current chat's status.
-    void ctx.settings.set(`position:${value.chatId}`,value).catch(error=>{if(!disposed && value.chatId===chatId)status(`Playback position could not be saved: ${error.message}`,true);});
+    void ctx.settings.set(`position:${value.chatId}`,value).catch(error=>{positionWritten='';if(!disposed && value.chatId===chatId)status(`Playback position could not be saved: ${error.message}`,true);});
   }
   const speechMembers=segment=>segment.unison?segment.unison.map(member=>({...member,text:segment.text,passageIndex:segment.passageIndex})):segment.turns || [segment];
   const withoutBase=(segment,cast)=>{
@@ -4127,7 +4144,7 @@ export async function setup(ctx) {
     // A chat load or connection switch in progress reloads voices; finish it first.
     await voicesLoading;if(disposed)return;
     const preflightRevision=revision,preflightChat=chatId,preflightStops=visibleStops;
-    await flushSettings();
+    await settleSettingsForPlayback();
     const retentionChat=chatId,retentionEdit=settingsEdit;
     const latestPreferences=await ctx.settings.get(GLOBAL_SETTINGS_KEY).catch(()=>null);
     if(disposed || preflightChat!==chatId)return;
@@ -4216,7 +4233,7 @@ export async function setup(ctx) {
     const ctrl=new AbortController();controller=ctrl;setBusy(true);
     status('Loading saved audio…');
     try {
-      await flushSettings();
+      await settleSettingsForPlayback();
       const recording=await recordingStore('get',recordingKey(targetChat,messageId));
       if(token!==revision || ctrl.signal.aborted)throw abortError();
       if(!recording)throw new Error('No saved audio for this message on this device. Plan and play it first.');
@@ -4410,7 +4427,13 @@ export async function setup(ctx) {
     else {const label=document.createElement('span');label.textContent='Plan this message to show its sections.';entry.list.append(label);}
   }
   function syncMessageControls(entry){entry.play.hidden=!config?.sectionButtons;if(!config?.sectionButtons)entry.closeSections();entry.controls.hidden=!config?.sectionButtons && entry.download.hidden;entry.place();}
-  function refreshSectionControls(){for(const entry of messageSections)void renderSectionControls(entry).catch(error=>{if(!disposed)status(`Section controls unavailable: ${error.message}`,true);});}
+  // Each refresh reads a saved plan and hashes it for every visible message. Keystrokes and
+  // slider drags ask many times a second, so requests within a short pause share one refresh.
+  let sectionRefreshTimer=null;
+  function refreshSectionControls(){
+    if(sectionRefreshTimer)return;
+    sectionRefreshTimer=setTimeout(()=>{sectionRefreshTimer=null;if(disposed)return;for(const entry of messageSections)void renderSectionControls(entry).catch(error=>{if(!disposed)status(`Section controls unavailable: ${error.message}`,true);});},120);
+  }
   const messageDownloads=new Set();
   function downloadableRecording(recording,content){
     const played=recording?.playedAudio;
@@ -4843,6 +4866,11 @@ export async function setup(ctx) {
         if(event==='MESSAGE_DELETED')invalidateVolatileAudio({kind:'delete',chatId:companion.chatId,messageId:id});
         else if(edited==null || !sameSpeech(edited,paragraphPlaybackText) && !String(edited).includes(paragraphPlaybackText))stop(false);
       }
+      // A deleted message's saved plan is no longer reachable; Lumiverse loads every stored row at
+      // start-up, so leaving it would grow that load with every deleted reply.
+      if(event==='MESSAGE_DELETED' && id && chatId && typeof ctx.settings.remove==='function'){
+        const targetChat=chatId;void planKey(targetChat,id).then(key=>ctx.settings.remove(key)).catch(()=>{});
+      }
       renderMessages();
     }));
   }
@@ -4898,7 +4926,7 @@ export async function setup(ctx) {
     const entry={signal};entry.promise=(async()=>{
       let blob;
       if(track.url?.startsWith('blob:'))blob=await fetch(track.url,{signal}).then(response=>response.blob());
-      else{const result=await rpc('musicAudio',{url:track.url},signal,60000);signal.throwIfAborted();const audio=audioBytes(result.base64,result.mimeType);blob=new Blob([audio.data],{type:audio.mimeType});}
+      else{const result=await rpc('musicAudio',{url:track.url},signal,150000);signal.throwIfAborted();const audio=audioBytes(result.base64,result.mimeType);blob=new Blob([audio.data],{type:audio.mimeType});}
       signal.throwIfAborted();if(!blob.size)throw new Error('The music track was empty.');
       return track.blob=blob;
     })();musicAudioLoads.set(track,entry);
@@ -4939,7 +4967,9 @@ export async function setup(ctx) {
     return loadVolatileAudio(paragraphAudioCache,k,cacheKey(seg,snap),snap,sig,()=>synthesizeSegment(seg,snap,sig),80).then(blob=>prepare?preparePlayback(blob,seg,snap):blob);
   }
 
-  const paragraphCues = new Map(), paragraphCuesPending = new Map();
+  const paragraphCues = new Map(), paragraphCuesPending = new Map(), paragraphCueFailures = new Map();
+  // A failed choice is not paid for again on every replay; it is retried after a cool-down.
+  const CUE_RETRY_MS = 5 * 60 * 1000, CUE_WAIT_MS = 8000;
   function paragraphSegments(rawText, snap, preferredSpeaker = '', messageId = null, paragraphIndex = null) {
     const cleanPara = transcriptFromMessage(rawText,snap.ignoredTags).trim();
     if (!cleanPara) return {segments: [], cleanPara, fromPlan: false};
@@ -4967,7 +4997,9 @@ export async function setup(ctx) {
           // elsewhere would otherwise play at this paragraph's first word.
           const block = plan.segments[spoken[first]], opens = norm(block.text).startsWith(target), own = {...block, text: cleanPara};
           for (const key of ['sfx', 'ambience', 'music']) if (Array.isArray(block[key])) {
-            const kept = block[key].filter(cue => cue.trigger ? target.includes(norm(cue.trigger)) : opens);
+            // Triggers match as cueOffset accepts them: case-insensitive, curly and straight quotes alike.
+            const fold = text => norm(text).toLowerCase().replace(/[“”«»„]/g, '"').replace(/[‘’]/g, "'");
+            const kept = block[key].filter(cue => cue.trigger ? fold(cleanPara).includes(fold(cue.trigger)) : opens);
             if (kept.length) own[key] = kept; else delete own[key];
           }
           if (opens && norm(block.text) === target) own.passageIndex = spoken[first];
@@ -5044,11 +5076,16 @@ export async function setup(ctx) {
       if (paragraphCues.has(cleanPara)) return;
       signal?.throwIfAborted();
     }
+    const failed = paragraphCueFailures.get(cleanPara);
+    if (failed && Date.now() - failed.at < CUE_RETRY_MS) throw new Error(failed.message);
     const work = chooseSoundCues(segments, signal, () => {}, playing);
     paragraphCuesPending.set(cleanPara, work);
     try {
-      paragraphCues.set(cleanPara, await work);
+      paragraphCues.set(cleanPara, await work);paragraphCueFailures.delete(cleanPara);
       if (paragraphCues.size > 80) paragraphCues.delete(paragraphCues.keys().next().value);
+    } catch (error) {
+      if (!signal?.aborted) {paragraphCueFailures.set(cleanPara, {at: Date.now(), message: error.message});if (paragraphCueFailures.size > 80) paragraphCueFailures.delete(paragraphCueFailures.keys().next().value);}
+      throw error;
     } finally { if (paragraphCuesPending.get(cleanPara) === work) paragraphCuesPending.delete(cleanPara); }
   }
 
@@ -5113,7 +5150,12 @@ export async function setup(ctx) {
       for(const pending of handoff){pending.choirDetach?.();ctrl.signal.addEventListener('abort',()=>pending.abort(),{once:true});}
       try {
         let cueWarning='';
-        try{await loadParagraphCues(text,snapshot,speaker,ctrl.signal,undefined,messageId,paragraphIndex);}
+        // Sound effects are optional: speech waits a few seconds for them, never for a slow planner.
+        try{
+          const cueWork=loadParagraphCues(text,snapshot,speaker,ctrl.signal,undefined,messageId,paragraphIndex);
+          let wait;const late=await Promise.race([cueWork.then(()=>false),new Promise(resolve=>{wait=setTimeout(()=>resolve(true),CUE_WAIT_MS);})]).finally(()=>clearTimeout(wait));
+          if(late){cueWork.catch(()=>{});cueWarning='Sound effects are still being chosen; they join the next play of this paragraph.';}
+        }
         catch(error){if(ctrl.signal.aborted || token!==revision)throw abortError();cueWarning=error.message;}
         if(disposed || token!==revision || ctrl.signal.aborted || signal?.aborted)throw abortError();
         mixerPlaybackSegments=planAndBatchParagraph(text,snapshot,false,speaker,messageId,paragraphIndex);renderMixer();

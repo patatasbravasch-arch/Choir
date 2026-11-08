@@ -36,7 +36,13 @@ for(const native of [true,false])test(`${native?'Lumiverse Decision':'direct Jev
   const plan=await planWithJev({transcript,config:c,apiKey:native?undefined:'test-key',context:'Julian is initially delighted by the encounter.'});
   assert.equal(requests.length,2,'the existing speaker and emotion evaluations remain sufficient');
   const questions=Object.values(requests[1].questions);
-  for(const question of questions){assert.ok(question.instructions.includes(DELIVERY_CONTEXT_RULES));assert.match(question.criteria.amused,/Low intensity/);assert.match(question.criteria.delighted,/Moderate intensity/);assert.match(question.criteria.furious,/High intensity/);assert.ok(question.criteria.playful);assert.match(question.criteria.angry,/genuine anger/);}
+  // Lumiverse Decisions carry the rules and option details once in state; each question has short labels.
+  if(native)assert.equal(requests[1].state.deliveryGuide,DELIVERY_CONTEXT_RULES);
+  for(const question of questions){
+   const details=native?requests[1].state.deliveryOptions:question.criteria;
+   assert.equal(question.instructions.includes(DELIVERY_CONTEXT_RULES),!native);
+   assert.match(details.amused,/Low intensity/);assert.match(details.delighted,/Moderate intensity/);assert.match(details.furious,/High intensity/);assert.ok(question.criteria.playful);assert.match(details.angry,/genuine anger/);
+  }
   if(native)assert.match(questions[1].instructions,/wicked grin/);
   else assert.match(requests[1].state[1].context,/wicked grin/);
   const spoken=plan.segments.filter(segment=>segment.speaker==='Julian'),expected=['Slightly amused, conversational','Clearly delighted, warm','Intensely angry','Natural, conversational delivery'];

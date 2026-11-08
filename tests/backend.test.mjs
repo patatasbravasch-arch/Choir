@@ -10,7 +10,7 @@ test('Jev distinguishes two male leads from one card and reuses independent auto
   let request;const decisions={evaluate:async input=>{request=input;return {answers:{speaker_0:{choice:'Adrian'},speaker_1:{choice:'Ethan'},speaker_2:{choice:'Ethan'}}};}};
   const h=await harness(null,null,null,null,null,decisions);h.send('planJev',{transcript:'Adrian said, "Hello." Ethan replied, "Wait." Ethan added, "Stay."',config:cast});
   const result=(await h.result()).message;assert.equal(result.error,undefined);assert.deepEqual([...result.result.segments.filter(segment=>segment.speaker!=='Narrator').map(segment=>[segment.speaker,segment.voice])],[['Adrian','low'],['Ethan','bright'],['Ethan','bright']]);
-  assert.match(request.questions.speaker_0.criteria.Adrian,/lead character/);assert.match(request.state.characters.find(character=>character.name==='Ethan').about,/brighter/);assert.equal(result.result.npcs.length,0);
+  assert.match(request.questions.speaker_0.criteria.Adrian,/lead from the character card/);assert.match(request.state.characters.find(character=>character.name==='Ethan').about,/brighter/);assert.equal(result.result.npcs.length,0);
 });
 
 const config={voices:[{id:'Charon'},{id:'Kore'}],fixed:[{speaker:'Narrator',voice:'Charon',style:''}],npcs:[],useStyle:true};
@@ -636,9 +636,11 @@ for (const [emotion, expected] of [['sigh', 'Soft sigh'], ['relieved', 'Softly r
       if (input.questions.speaker_0) return {answers: {speaker_0: {choice: 'Mira'}}};
       emotionCalls++;
       const criteria = input.questions.emotion_0.criteria;
-      assert.match(criteria.relieved, /Tension easing/);
-      assert.match(criteria.sigh, /choose relieved when the scene describes relief/);
-      assert.equal(criteria.sigh.split('.')[0], 'Soft sigh');
+      // Full descriptions travel once in state; each question carries the short labels.
+      const options = input.state.deliveryOptions;
+      assert.match(options.relieved, /Tension easing/);
+      assert.match(options.sigh, /choose relieved when the scene describes relief/);
+      assert.equal(criteria.sigh, 'Soft sigh');assert.match(input.state.deliveryGuide, /Delivery guidance/);
       return {answers: {emotion_0: {choice: emotion}}};
     }};
     const h = await harness(null, null, null, null, null, decisions);
@@ -784,15 +786,14 @@ const scenarioTranscript = 'Jay unhooked the receiver. "Hello?" Saki flinched. "
 
 test('Jev offers the persona and a scenario card by who they are, with profiles in the state, on both Jev paths', async () => {
   const expected = {
-    Persona: "Persona (also called Jay): the user's own character (persona).",
-    'Metamorphosis: Just the Way You Are!': "Metamorphosis: Just the Way You Are!: a lead character defined by the character card; use this person's own profile, and distinguish other people in the same card.",
-    'Student 1': 'Student 1: a supporting character.',
-    'Student 2': 'Student 2 (also called Kenta): a supporting character.',
+    // Short labels; NPCs the reply never names (the two students) are not offered.
+    Persona: "Persona (also called Jay): the user's character.",
+    'Metamorphosis: Just the Way You Are!': "Metamorphosis: Just the Way You Are!: a lead from the character card.",
     'Someone not listed': 'A speaker who matches none of the other choices, their names or descriptions.',
     'Nobody (not spoken aloud)': "Not dialogue: these quoted words are not said aloud by anyone at this moment. Examples: a quoted word, name, nickname or term being talked about; written, typed or displayed text; words someone said earlier that the narration is only quoting; out-of-character notes; or a noise. A character's own quoted thoughts are not Nobody: they belong to that character."
   };
   const checkState = characters => {
-    assert.deepEqual([...characters.map(c => c.name)], ['Persona', 'Metamorphosis: Just the Way You Are!', 'Student 1', 'Student 2']);
+    assert.deepEqual([...characters.map(c => c.name)], ['Persona', 'Metamorphosis: Just the Way You Are!']);
     assert.match(characters[0].about, /straight black hair/);
     assert.match(characters[1].about, /Saki stood far off/);
   };
@@ -1621,7 +1622,7 @@ test('audit: Jev gives one unnamed speaker a free voice without a paid gender qu
 });
 
 test('audit: a provider outage fails the planner once instead of resending the reply in chunks',async()=>{
-  for(const message of ['(503) overloaded','Request timed out','fetch failed','(500) internal error']){
+  for(const message of ['(503) overloaded','HTTP 502 Bad Gateway','fetch failed','(500) internal error']){
     let calls=0;
     const h=await harness(async()=>{calls++;throw new Error(message);});
     const transcript=Array.from({length:40},(_,i)=>`"Line number ${i}," Mira said, and the long paragraph went on describing the hall in detail.`).join('\n\n');
@@ -1671,4 +1672,39 @@ test('audit: the planner reports how many lines it had to give the previous spea
   h.send('plan',{transcript:'"Hello," Mira said. "Again." "And again."',config:{...config,fixed:[...config.fixed,{speaker:'Mira',voice:'Kore',style:''}]}});
   const result=(await h.result()).message;
   assert.equal(result.error,undefined,result.error);assert.equal(result.result.guessed,2);
+});
+
+test('audit: Jev plans a line whose speaker is alone while another pair acts together',async()=>{
+  const cast={voices:[{id:'n'},{id:'a'},{id:'b'},{id:'c'}],fixed:[{speaker:'Narrator',voice:'n',style:''},{speaker:'Anna',voice:'a',style:''},{speaker:'Ben',voice:'b',style:''},{speaker:'Cara',voice:'c',style:''}],npcs:[],useStyle:false};
+  const h=await harness(null,null,null,null,null,{evaluate:async request=>({answers:Object.fromEntries(Object.keys(request.questions).map(key=>[key,{choice:'Cara'}]))})});
+  h.send('planJev',{transcript:'While Anna and Ben laughed together, Cara said, "Stop it."',config:cast});
+  const result=(await h.result()).message;
+  assert.equal(result.error,undefined,result.error);
+  assert.equal(result.result.segments.find(segment=>segment.text==='"Stop it."').speaker,'Cara');
+});
+
+test('audit: timeouts, output limits and content messages stay retryable in smaller parts',async()=>{
+  for(const message of ['Request timed out after 120000ms','Generation stopped (max_tokens reached)','Input exceeds 500 characters for this filter','insufficient context'.replace('insufficient','missing')]){
+    let calls=0;
+    const h=await harness(async()=>{calls++;throw new Error(message);});
+    const transcript=Array.from({length:40},(_,i)=>`"Line number ${i}," Mira said, and the long paragraph went on describing the hall in detail.`).join('\n\n');
+    h.send('plan',{transcript,config:{...config,fixed:[...config.fixed,{speaker:'Mira',voice:'Kore',style:''}]}});
+    await h.result();assert.ok(calls>1,message);
+  }
+});
+
+test('audit 3 tokens: Jev offers only NPCs the reply can involve and sends delivery rules once per round',async()=>{
+  const cast={voices:[{id:'n'},{id:'m'},{id:'g'},{id:'h'}],fixed:[{speaker:'Narrator',voice:'n',style:''},{speaker:'Mira',voice:'m',style:''}],
+    npcs:[{speaker:'Gate guard',voice:'g',style:''},{speaker:'Harbour master',voice:'h',style:''}],useStyle:true};
+  const requests=[],h=await harness(null,null,null,null,null,{evaluate:async request=>{
+    requests.push(request);
+    return {answers:Object.fromEntries(Object.keys(request.questions).map(key=>[key,{choice:key.startsWith('speaker_')?'Gate guard':'neutral'}]))};
+  }});
+  h.send('planJev',{transcript:'The guard frowned. "Halt." Mira sighed. "Fine."',config:cast});
+  const result=(await h.result()).message;assert.equal(result.error,undefined,result.error);
+  const speaker=requests.find(request=>request.questions.speaker_0);
+  assert.ok(speaker.questions.speaker_0.criteria['Gate guard']);assert.equal(speaker.questions.speaker_0.criteria['Harbour master'],undefined);
+  const delivery=requests.find(request=>Object.keys(request.questions).some(key=>key.startsWith('emotion_')));
+  assert.match(delivery.state.deliveryGuide,/Delivery guidance/);
+  for(const question of Object.values(delivery.questions)){assert.doesNotMatch(question.instructions,/Delivery guidance/);assert.ok(Object.values(question.criteria).every(label=>label.length<40));}
 });

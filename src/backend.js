@@ -121,6 +121,7 @@ const JEV_DELIVERY = {
   relieved: ['Softly relieved, warm', 'Tension easing, welcome reassurance or a relieved breath explicitly supported by the scene'],
   sigh: ['Soft sigh', 'An explicitly written sigh or exhalation whose mood is unclear. A sigh alone does not mean fatigue or sadness; choose relieved when the scene describes relief']
 };
+const JEV_DELIVERY_LABELS = Object.fromEntries(Object.entries(JEV_DELIVERY).map(([key,[style]])=>[key,style]));
 const JEV_DELIVERY_CHOICES = Object.fromEntries(Object.entries(JEV_DELIVERY).map(([key,[style,description]])=>[key,`${style}. ${description}`]));
 
 // Jev can only choose, so a new speaker's name must be offered: capitalised word runs that appear mid-sentence,
@@ -149,11 +150,12 @@ export function jevSpeakerCast(config) {
     const name = String(actor.speaker || '').trim(), key = normalizeName(name);
     if (!name || key === 'narrator' || cast.has(key)) continue;
     const profile = profiles.find(p => normalizeName(p.speaker) === key);
-    const role = profile?.role === 'persona' ? "the user's own character (persona)"
-      : profile?.role === 'character' ? "a lead character defined by the character card; use this person's own profile, and distinguish other people in the same card"
+    // Short labels: every speaker question repeats them, and the profile itself is in state.characters.
+    const role = profile?.role === 'persona' ? "the user's character"
+      : profile?.role === 'character' ? "a lead from the character card"
       : config.fixed.includes(actor) ? 'a main character' : 'a supporting character';
     const names = [...new Set([profile?.name, ...(actor.aliases || [])].filter(other => other?.trim() && normalizeName(other) !== key))];
-    const about = [profile?.description, profile?.personality, profile?.scenario, profile?.firstMessage].filter(text => text?.trim()).join('\n').slice(0, 1500);
+    const about = [profile?.description, profile?.personality, profile?.scenario, profile?.firstMessage].filter(text => text?.trim()).join('\n').slice(0, 600);
     cast.set(key, { name, description: `${name}${names.length ? ` (also called ${names.join(', ')})` : ''}: ${role}.`, ...(about ? { about } : {}) });
   }
   return [...cast.values()];
@@ -180,7 +182,14 @@ export async function planWithJev({ transcript, config, apiKey, endpoint, contex
   const narrator = config.fixed?.find(a => normalizeName(a.speaker) === 'narrator');
   // The persona speaks in replies too, so every named cast member is a choice. A line from someone outside the
   // cast gets its own answer instead of borrowing a listed character's voice.
-  const cast = jevSpeakerCast(config);
+  // NPCs named nowhere in this reply or the recent chat cannot be speaking it; offering them
+  // would only lengthen every speaker question.
+  const seen = `${context}\n${transcript}`.normalize('NFKC').toLowerCase();
+  // Any distinctive word counts: Choir's own NPC names ("Gate guard", "Student 1") are written
+  // as "the guard" or "a student" in the story.
+  const words = name => String(name || '').normalize('NFKC').toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(word => word.length > 2 && !['the','and','one','two'].includes(word));
+  const present = actor => [actor.speaker, ...(actor.aliases || [])].some(name => words(name).some(word => new RegExp(`(?<![\\p{L}\\p{N}])${word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'u').test(seen)));
+  const cast = jevSpeakerCast({ ...config, npcs: (config.npcs || []).filter(present) });
   const choices = cast.length ? [...cast, { name: UNLISTED_SPEAKER, description: 'A speaker who matches none of the other choices, their names or descriptions.' }, NOT_SPOKEN_CHOICE] : [];
 
   const chosen = new Map(), catalogueVoices = new Map(), used = new Set(allCast.map(actor => actor.voice).filter(Boolean));
@@ -232,19 +241,20 @@ export async function planWithJev({ transcript, config, apiKey, endpoint, contex
   let classifyDelivery = null;
 
   // Each question carries its line in place: a bare quote such as "Robots?" cannot be attributed on its own.
-  const passage = u => `${transcript.slice(Math.max(0, u.start - 300), u.start)}[[${u.text}]]${transcript.slice(u.end, u.end + 300)}`;
-  const state = { transcript, ...(context ? { context } : {}), characters: cast };
+  const passage = u => `${transcript.slice(Math.max(0, u.start - 200), u.start)}[[${u.text}]]${transcript.slice(u.end, u.end + 200)}`;
+  // The whole reply is in state; earlier chat only settles who "he" or "she" is at the start.
+  const state = { transcript, ...(context ? { context: String(context).slice(-1500) } : {}), characters: cast };
   if (dialogueUnits.length > 0) {
     if (hasSpindleDecisions) {
       // Lumiverse accepts at most 256 questions per evaluation.
-      const ask = async (name, question, indices = dialogueUnits.map((_, i) => i)) => {
+      const ask = async (name, question, indices = dialogueUnits.map((_, i) => i), extraState = null) => {
         const answers = {};
         for (let start = 0; start < indices.length; start += 256) {
           const questions = Object.fromEntries(indices.slice(start, start + 256).map(i => [`${name}_${i}`, question(dialogueUnits[i])]));
           Object.assign(answers, (await evaluateDecisions({
             userId: userId || undefined,
             connection_id: decisionConnection || config.decisionConnection || undefined,
-            state,
+            state: extraState ? { ...state, ...extraState } : state,
             questions
           }, { signal })).answers);
         }
@@ -256,9 +266,10 @@ export async function planWithJev({ transcript, config, apiKey, endpoint, contex
         : dialogueUnits.map(() => UNLISTED_SPEAKER);
       if (config.useStyle !== false) classifyDelivery = indices => ask('emotion', u => ({
         type: 'choice',
-        instructions: `${DELIVERY_CONTEXT_RULES}\nChoose the best delivery of the line marked [[ ]] in this passage: "${passage(u)}"`,
-        criteria: JEV_DELIVERY_CHOICES
-      }), indices);
+        // The rules and the full option descriptions are in state once, not repeated per line.
+        instructions: `Choose the best delivery of the line marked [[ ]] in this passage, following state.deliveryGuide and the option details in state.deliveryOptions: "${passage(u)}"`,
+        criteria: JEV_DELIVERY_LABELS
+      }), indices, { deliveryGuide: DELIVERY_CONTEXT_RULES, deliveryOptions: JEV_DELIVERY_CHOICES });
     } else {
       const items = dialogueUnits.map(u => {
         const localContext = transcript.slice(Math.max(0, u.start - 300), Math.min(transcript.length, u.end + 300));
@@ -472,7 +483,9 @@ async function generateRaw({ choirPurpose: purpose = 'LLM call', ...request }) {
 // Splitting a reply into parts helps when a provider blocks its content. Bad
 // credentials, rate limits, unknown models and unsupported settings fail every
 // part the same way, so the planner reports them at once.
-export const fatalProviderError = error => /\((?:401|402|403|404|429)\)|\b(?:401|402|403|404|429)\b.*\b(?:unauthori[sz]ed|forbidden|not found|too many)|api key|unauthori[sz]ed|authenticat|rate.?limit|quota|insufficient|billing|does not exist|model_not_found|unknown model|unsupported (?:value|parameter)|not supported with this model|\((?:5\d\d)\)|\b(?:500|502|503|504|529)\b|overloaded|service unavailable|bad gateway|internal (?:server )?error|timed? ?out|timeout|fetch failed|network ?error|econn|socket hang up|max_tokens/i.test(error?.message || '');
+export const fatalProviderError = error => /\((?:401|402|403|404|429)\)|\b(?:401|402|403|404|429)\b.*\b(?:unauthori[sz]ed|forbidden|not found|too many)|api key|unauthori[sz]ed|authenticat|rate.?limit|quota|insufficient|billing|does not exist|model_not_found|unknown model|unsupported (?:value|parameter)|not supported with this model|\((?:5\d\d)\)|\b(?:HTTP|status)[ :]*5\d\d\b|overloaded|service unavailable|bad gateway|internal server error|fetch failed|network ?error|econn|socket hang up/i.test(error?.message || '');
+// Timeouts and output limits stay retryable: the planner's smaller parts can succeed where
+// the whole reply did not. Only an unavailable provider or network fails at once.
 
 const FISH_LANGUAGES = { en: 'English', zh: 'Chinese', ja: 'Japanese', ko: 'Korean', es: 'Spanish', pt: 'Portuguese', fr: 'French', de: 'German', it: 'Italian', ru: 'Russian', ar: 'Arabic', nl: 'Dutch', pl: 'Polish' };
 
@@ -598,7 +611,11 @@ let musicCatalog, musicCatalogFailedAt = 0;
 function loadMusicCatalog() {
   if (!musicCatalog || musicCatalogFailedAt && Date.now() - musicCatalogFailedAt > 60000) {
     musicCatalogFailedAt = 0;
-    musicCatalog = getJson(`${MUSIC_BASE}pieces.json`, { Accept: 'application/json' }, new AbortController().signal, 'Incompetech catalog').then(pieces => {
+    // A hung request must fail (and be retried a minute later), not block every music choice
+    // until the backend restarts.
+    let timer;
+    const hung = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Incompetech catalog timed out')), 20000); });
+    musicCatalog = Promise.race([getJson(`${MUSIC_BASE}pieces.json`, { Accept: 'application/json' }, new AbortController().signal, 'Incompetech catalog'), hung]).finally(() => clearTimeout(timer)).then(pieces => {
       if (!Array.isArray(pieces)) throw new Error('Incompetech catalog is not a track list');
       return pieces;
     }).catch(error => { musicCatalogFailedAt = Date.now(); throw error; });
@@ -859,7 +876,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
     if (message.action === 'injectContext') {
       if (typeof input.chatId !== 'string' || !input.chatId) throw new Error('Choose a chat for planning inside the reply.');
       const cast = Array.isArray(input.cast) ? input.cast.filter(name => typeof name === 'string' && name.trim()).map(name => name.trim().slice(0, 100)).slice(0, 40) : [];
-      const info = { delivery: ['auto', 'macro'].includes(input.delivery) ? input.delivery : 'off', cast, sfx: input.sfx === true, ambience: input.ambience === true };
+      const info = { delivery: ['auto', 'macro'].includes(input.delivery) ? input.delivery : 'off', cast, sfx: input.sfx === true, ambience: input.ambience === true, skip: input.skip !== false, language: input.language !== false };
       // Chat loads report Off too; a chat that never used the feature needs no file written.
       const saved = await loadInjectContext(userId, input.chatId);
       injectContexts.set(injectContextKey(userId,input.chatId), info);if (userId) injectUsers.set(input.chatId, userId);

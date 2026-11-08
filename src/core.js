@@ -378,7 +378,7 @@ function decodeEntity(entity,name){
   const known={quot:'"',apos:"'",nbsp:' ',amp:'&',lt:'<',gt:'>',mdash:'—',ndash:'–',hellip:'…',lsquo:'‘',rsquo:'’',ldquo:'“',rdquo:'”',laquo:'«',raquo:'»'},key=name.toLowerCase();
   if(Object.hasOwn(known,key))return known[key];
   const point=key.startsWith('#x')?parseInt(key.slice(2),16):Number(key.slice(1));
-  return Number.isInteger(point) && point>0 && point<=0x10ffff?String.fromCodePoint(point):entity;
+  return Number.isInteger(point) && point>0 && point<=0x10ffff && (point<0xd800 || point>0xdfff)?String.fromCodePoint(point):entity;
 }
 export function cardAnalysisRoles(rawRoles,card={}) {
   const candidates=validateCardRoles(rawRoles);
@@ -687,8 +687,10 @@ export function unisonSpeakers(transcript,unit,config) {
   const resolveGroup=group=>{const names=[...new Set(group)];return names.length>=2 && (!/\bboth\b/i.test(subject) || names.length===2)?names:[];};
   // A single person named in the verb's own clause speaks alone: in "While Anna and Ben
   // laughed together, Cara said", the pair belongs to another clause.
+  // That is "no unison" (null), not an unnamed group ([]), which planners treat as an error.
+  // A last clause opening with "and"/"&" ends a list ("Anna, Ben, and Cara"), not a clause.
   const ownClause=subject.split(/[,;:]/).at(-1);
-  if(mentions(ownClause).length && !groupIn(ownClause))return [];
+  if(!/^\s*(?:(?:and|or)\b|&)/i.test(ownClause) &&mentions(ownClause).length && !groupIn(ownClause))return null;
   const explicit=groupIn(subject);
   if(explicit)return resolveGroup(explicit);
   if(!/\b(?:they|both|all)\b/i.test(subject))return [];
@@ -716,13 +718,16 @@ function foldWordlessSegments(segments,spans,transcript){
     if(hasWords(segments[index].text)){index++;continue;}
     const before=index>0,after=index<segments.length-1;
     const intoPrevious=before && (!after || spans[index].start===spans[index-1].end || spans[index+1].start!==spans[index].end);
+    // The block's own text (an audio tag included) and its sound cues travel with it.
+    const block=segments[index],target=intoPrevious?segments[index-1]:segments[index+1];
     if(intoPrevious){
-      segments[index-1].text+=transcript.slice(spans[index-1].end,spans[index].end);
+      target.text+=transcript.slice(spans[index-1].end,spans[index].start)+block.text;
       spans[index-1].end=spans[index].end;
     }else{
-      segments[index+1].text=transcript.slice(spans[index].start,spans[index+1].start)+segments[index+1].text;
+      target.text=block.text+transcript.slice(spans[index].end,spans[index+1].start)+target.text;
       spans[index+1].start=spans[index].start;
     }
+    for(const key of ['sfx','ambience','music'])if(block[key]?.length)target[key]=intoPrevious?[...(target[key] || []),...block[key]]:[...block[key],...(target[key] || [])];
     segments.splice(index,1);spans.splice(index,1);
   }
 }
@@ -1116,13 +1121,15 @@ export function speechSourceUnits(transcript) {
     const {position,closed,opened}=paragraphScore(stop),next=position.get(at)+1;
     return closed[next]<=opened[next];
   };
-  let open=false;
+  let open=false,closedAt=-2;
   const masked=transcript.replace(/\n[ \t]*\n|"/g,(mark,at)=>{
     if(mark!=='"'){open=false;return mark;}
     // A doubled opening mark (""Hello," she said) opens once: the extra one is ignored.
     if(!open && transcript[at+1]==='"' && /[^\s"]/u.test(transcript[at+2] || '') && (at===0 || /\s/.test(transcript[at-1])))return '';
+    // A doubled closing mark ("Hello,"" she said) closes once.
+    if(!open && closedAt===at-1 && !/[p{L}p{N}]/u.test(transcript[at+1] || ''))return '';
     if(afterDigit(at) && (!open || feet(at) || !closesQuote(at)))return '';
-    open=!open;return mark;
+    open=!open;if(!open)closedAt=at;return mark;
   });
   // Other languages' paired marks: French/Russian «…», Japanese/Chinese 「…」 and 『…』, German/Polish „…“ or „…”.
   // Each closes at its own partner and never across a blank line.
@@ -1391,7 +1398,13 @@ export function castingPrompt(units, config, context) {
     const about=Array.from(String(profile?.description || '').replace(/\s+/g,' ')).slice(0,220).join('');
     cast.push(`- ${castField(actor.speaker,mark)}${aliases.length?` (aliases: ${aliases.map(alias=>castField(alias,mark)).join(', ')})`:''}${role?` [${role}]`:''}${about?`: ${about}`:''}`);
   }
-  const unvoiced=actors.filter(actor=>!(config.npcs.includes(actor)?npcCastActor(actor,config):actor).voice).map(actor=>castField(actor.speaker,mark));
+  // NPC rows are only asked for voiceless people this reply can involve: rows for absent ones
+  // are paid output that nothing uses. A distinctive word counts ("Gate guard" → "the guard").
+  const seen=`${context || ''}\n${(units || []).map(unit=>unit.text).join('\n')}`.normalize('NFKC').toLowerCase();
+  const nameWords=name=>String(name || '').normalize('NFKC').toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(word=>word.length>2 && !['the','and','one','two'].includes(word));
+  const mentioned=actor=>[actor.speaker,...(actor.aliases || [])].some(name=>nameWords(name).some(word=>new RegExp(`(?<![\\p{L}\\p{N}])${escapePattern(word)}`,'u').test(seen)));
+  // Leads are always asked: they often speak unnamed ("Hello." from the card's character).
+  const unvoiced=actors.filter(actor=>!(config.npcs.includes(actor)?npcCastActor(actor,config):actor).voice && (config.fixed.includes(actor) || mentioned(actor))).map(actor=>castField(actor.speaker,mark));
   const system=CASTING_SYSTEM+`\n${DELIVERY_CONTEXT_RULES}`+(unvoiced.length?`\nThese cast members have no voice yet; add an NPC line for each of them too: ${unvoiced.join(', ')}.`:'')
     +(config.communityRoutes && Object.keys(config.communityRoutes).length?`\nChoose the NPC voice words from: ${FISH_VOICE_TAGS}. Then add one line: LANG|ISO 639-1 code of the story's language.`:'');
   const lines=units.map(unit=>unit.kind==='dialogue'?`D${unit.id}: ${unit.text}`:`   ${unit.text}`);
@@ -2124,7 +2137,9 @@ export function injectedSkipLines(lines, plan) {
   return lines.flatMap((line,index)=>{const own=words(line);return starts.some(start=>start.every((word,at)=>own[at]===word) && (start.length>=4 || own.length===start.length))?[index]:[];});
 }
 
-export function injectionPrompt({cast=[], sfx=false, ambience=false}={}) {
+// Sent with every roleplay generation, so it asks only for rows Choir will use: SKIP when
+// non-story lines are skipped, LANG when a Fish community voice may be chosen by language.
+export function injectionPrompt({cast=[], sfx=false, ambience=false, skip=true, language=true}={}) {
   const mark=pipeMark(cast);
   const sounds=[
     sfx?'SFX|1 to 3 English search words naming the sound|2 to 6 exact consecutive words from your reply where it happens (at most 4, only concrete sounds that happen now: doors, steps, impacts, weather; never voices or music)':'',
@@ -2134,16 +2149,15 @@ export function injectionPrompt({cast=[], sfx=false, ambience=false}={}) {
     '[Choir audio casting: write your reply exactly as usual, then append this hidden block as the very last thing, with nothing after it. Never mention it in the story.]',
     '<!--choir',
     'Q1|Speaker|delivery|first words',
-    'Q2|Speaker|delivery|first words',
     'NPC|Name|gender|age and tone',
-    'SKIP|first words',
-    'LANG|language code',
+    ...(skip?['SKIP|first words']:[]),
+    ...(language?['LANG|language code']:[]),
     ...(sounds.length?sounds:[]),
     '-->',
     'One Q row per quoted passage of dialogue in your reply, in order (Q1 is the first "…" quote); first words are the first 3 words inside its quotation marks, copied exactly. Speaker is the exact name of who says it aloud; use NOT_SPOKEN for quoted words nobody says aloud (terms, signs, written text, remembered speech). Cast: '+(cast.length?cast.map(name=>castField(name,mark)).join(', '):'none listed')+'.'+(cast.some(name=>String(name).includes('|'))?` (${mark} is part of a name; copy it exactly, never as |.)`:''),
-    'For each line of your reply that is not story to be read aloud (status or tracker lines, stat lists, headers, menus, notes to the reader), add SKIP|its first 4 words, copied exactly. Write no SKIP rows when every line is story.',
+    ...(skip?['For each line of your reply that is not story to be read aloud (status or tracker lines, stat lists, headers, menus, notes to the reader), add SKIP|its first 4 words, copied exactly. Write no SKIP rows when every line is story.']:[]),
     'For each speaker not in the cast, add one separate NPC row: NPC|Name|female, male or neutral|young, middle-aged or old and 1 to 3 tone words. Their Q rows use just the name.',
-    'LANG is the ISO 639-1 code of the language your reply is written in (en, fr, ja…).',
+    ...(language?['LANG is the ISO 639-1 code of the language your reply is written in (en, fr, ja…).']:[]),
     'delivery is 2 to 6 words of tone for that line, restrained unless the scene clearly calls for more, e.g. "warm, slightly amused" or "quiet, tense".'
   ].join('\n');
 }
