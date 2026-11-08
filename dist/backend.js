@@ -1480,7 +1480,9 @@ async function castReply(transcript, config, context, llm) {
   if(dialogue.length && !cast.speakers.size)return null;
   const narrator=config.fixed.find(actor=>normalizeName(actor.speaker)==='narrator'),newNames=new Map(),speakers=new Map();
   const resolveActor=castIdentityResolver(actors,[...cast.speakers.values(),...[...cast.npcs.values()].map(actor=>actor.name)]);
+  let guessed=0;
   dialogue.forEach((id,index)=>{
+    if(!cast.speakers.has(id))guessed++;
     const answered=cast.speakers.get(id) ?? dialogue.slice(0,index).map(previous=>cast.speakers.get(previous)).filter(name=>name!==undefined).at(-1) ?? 'NOT_SPOKEN';
     const actor=resolveActor(answered);
     if(actor)speakers.set(id,actor);
@@ -1535,7 +1537,8 @@ async function castReply(transcript, config, context, llm) {
     return {...choose(speakers.get(unit.id)),style:cast.styles.get(unit.id) || 'natural, matching the scene',unit_ids:[unit.id],
       ...(members?.length>=2?{unison:members.map(member=>{const {gender,...voice}=choose(actors.find(actor=>actor.speaker===member));return voice;})}:{})};
   });
-  return {segments,...(cast.language?{language:cast.language}:{})};
+  // Lines the planner never answered take the previous speaker; the count lets the user check them.
+  return {segments,...(cast.language?{language:cast.language}:{}),...(guessed?{guessed}:{})};
 }
 
 // Non-story check: the frozen skip-bench winner prompt. Measured as is; keep it verbatim.
@@ -2347,18 +2350,24 @@ async function planWithJev({ transcript, config, apiKey, endpoint, context = '',
     return match?.id || '';
   };
   // Jev returns no voice description, so the Decision model describes each speaker before the community search.
+  let storyLanguage = '';
   const communityVoice = async (actor, npc) => {
     const route = actor.route || config.defaultRoute || '', name = normalizeName(actor.speaker);
     if (!canSearchCommunity(actor,npc)) return '';
     if (!chosen.has(name)) {
-      const answers = await decide({ transcript, characters: cast }, {
-        gender: { type: 'choice', instructions: `Does ${actor.speaker} in this story have a feminine, masculine or neutral voice?`, criteria: { female: 'Feminine voice', male: 'Masculine voice', neutral: 'Neutral or androgynous voice' } },
-        age: { type: 'choice', instructions: `How old does ${actor.speaker} in this story sound?`, criteria: { young: 'Young', 'middle-aged': 'Middle-aged', old: 'Old' } },
-        language: { type: 'choice', instructions: 'Which language is this story written in?', criteria: FISH_LANGUAGES }
-      }, decisionInput, userId, signal);
-      const language = Object.hasOwn(FISH_LANGUAGES, answers?.language?.choice || '') ? answers.language.choice : 'en';
+      // Ask only what the search uses and the cast does not already say: a set gender is
+      // kept, age never affects the search, and the story's language is asked once per reply.
+      const knownGender = ['female','male','neutral'].includes(actor.gender);
+      const questions = {
+        ...(knownGender ? {} : { gender: { type: 'choice', instructions: `Does ${actor.speaker} in this story have a feminine, masculine or neutral voice?`, criteria: { female: 'Feminine voice', male: 'Masculine voice', neutral: 'Neutral or androgynous voice' } } }),
+        ...(storyLanguage ? {} : { language: { type: 'choice', instructions: 'Which language is this story written in?', criteria: FISH_LANGUAGES } })
+      };
+      signal?.throwIfAborted();
+      const answers = Object.keys(questions).length ? await decide({ transcript, characters: cast }, questions, decisionInput, userId, signal) : {};
+      storyLanguage ||= Object.hasOwn(FISH_LANGUAGES, answers?.language?.choice || '') ? answers.language.choice : 'en';
+      const language = storyLanguage;
       const profile=(config.characterProfiles || []).find(profile=>normalizeName(profile.speaker)===name);
-      const voice = await chooseCommunityVoice({ speaker: actor.speaker, profile, wish: voiceWish({ gender: answers?.gender?.choice, age: answers?.age?.choice }, actor.gender), language, used, input: decisionInput, userId, signal });
+      const voice = await chooseCommunityVoice({ speaker: actor.speaker, profile, wish: voiceWish({ gender: answers?.gender?.choice }, actor.gender), language, used, input: decisionInput, userId, signal });
       chosen.set(name, { ...voice, route });
       used.add(voice.id);
     }
@@ -2378,10 +2387,10 @@ async function planWithJev({ transcript, config, apiKey, endpoint, context = '',
   if (dialogueUnits.length > 0) {
     if (hasSpindleDecisions) {
       // Lumiverse accepts at most 256 questions per evaluation.
-      const ask = async (name, question) => {
+      const ask = async (name, question, indices = dialogueUnits.map((_, i) => i)) => {
         const answers = {};
-        for (let start = 0; start < dialogueUnits.length; start += 256) {
-          const questions = Object.fromEntries(dialogueUnits.slice(start, start + 256).map((u, i) => [`${name}_${start + i}`, question(u)]));
+        for (let start = 0; start < indices.length; start += 256) {
+          const questions = Object.fromEntries(indices.slice(start, start + 256).map(i => [`${name}_${i}`, question(dialogueUnits[i])]));
           Object.assign(answers, (await evaluateDecisions({
             userId: userId || undefined,
             connection_id: decisionConnection || config.decisionConnection || undefined,
@@ -2395,11 +2404,11 @@ async function planWithJev({ transcript, config, apiKey, endpoint, context = '',
       speakerChoices = choices.length
         ? (await ask('speaker', u => ({ type: 'choice', instructions: `Who says the words marked [[ ]] out loud, or thinks them, at this moment in the scene? Use speech tags, nearby actions and turn-taking. If nobody says or thinks them (a quoted term, written text, or words only reported), choose Nobody. Passage: "${passage(u)}"`, criteria }))).map(choice => choice || UNLISTED_SPEAKER)
         : dialogueUnits.map(() => UNLISTED_SPEAKER);
-      if (config.useStyle !== false) classifyDelivery = () => ask('emotion', u => ({
+      if (config.useStyle !== false) classifyDelivery = indices => ask('emotion', u => ({
         type: 'choice',
         instructions: `${DELIVERY_CONTEXT_RULES}\nChoose the best delivery of the line marked [[ ]] in this passage: "${passage(u)}"`,
         criteria: JEV_DELIVERY_CHOICES
-      }));
+      }), indices);
     } else {
       const items = dialogueUnits.map(u => {
         const localContext = transcript.slice(Math.max(0, u.start - 300), Math.min(transcript.length, u.end + 300));
@@ -2416,14 +2425,18 @@ async function planWithJev({ transcript, config, apiKey, endpoint, context = '',
         question: 'Which character speaks this dialogue'
       }) : dialogueUnits.map(() => UNLISTED_SPEAKER);
 
-      if (config.useStyle !== false) classifyDelivery = () => classifyWithJev({
-        items,
+      if (config.useStyle !== false) classifyDelivery = async indices => {
+        const picked = await classifyWithJev({
+        items: indices.map(i => items[i]),
         candidates: Object.entries(JEV_DELIVERY_CHOICES).map(([name,description])=>({name,description})),
         apiKey: key,
         endpoint: ep,
         signal,
         question: `${DELIVERY_CONTEXT_RULES}\nUse this line's before-and-after context in state.lines (or state), and choose its best delivery`
-      });
+        });
+        const choices = [];indices.forEach((index, at) => { choices[index] = picked[at]; });
+        return choices;
+      };
     }
   }
   // Name speakers outside the cast from the story's own names; lines whose speaker stays unnamed keep the fallback below.
@@ -2491,7 +2504,15 @@ async function planWithJev({ transcript, config, apiKey, endpoint, context = '',
   // Delivery is optional and asked last: a rejected emotion answer must not discard the speakers,
   // and no gate above can still throw the plan away after it was paid for.
   if (classifyDelivery) {
-    try { emotionChoices = await classifyDelivery(); }
+    // Only lines someone voices: quotes nobody says aloud and silent or excluded speakers'
+    // lines would be paid for and then dropped.
+    const voiced = dialogueUnits.map((_, i) => i).filter(i => {
+      if (speakerChoices[i] === NOT_SPOKEN) return false;
+      const name = dialogueSpeakerMap.get(dialogueUnits[i].id), actor = allCast.find(actor => [actor.speaker, ...(actor.aliases || [])].some(alias => normalizeName(alias) === normalizeName(name)));
+      const npc = !config.fixed.includes(actor);
+      return !(actor?.excluded || npc && config.npcPolicy?.mode === 'skip');
+    });
+    try { emotionChoices = voiced.length ? await classifyDelivery(voiced) : []; }
     catch (error) { if (signal?.aborted) throw error; emotionChoices = []; }
   }
   for (let i = 0; i < dialogueUnits.length; i++) {
@@ -3175,7 +3196,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
       await castCatalogueVoices(raw,input,userId,controller.signal,progress);
       if(controller.signal.aborted)return;
       const plan=validatePlan(resolvePlanReferences(raw,input.transcript,config),input.transcript,config);
-      send({result:{...plan,...(communityVoices.size?{communityVoices:[...communityVoices.values()]}:{}),...(jevFailure?{warning:jevFailure.message}:{})}});return;
+      send({result:{...plan,...(communityVoices.size?{communityVoices:[...communityVoices.values()]}:{}),...(jevFailure?{warning:jevFailure.message}:{}),...(raw.guessed?{guessed:raw.guessed}:{})}});return;
     }
     if (message.action === 'skipCheck') {
       const lines=Array.isArray(input.lines)?input.lines.map(String):[];

@@ -1480,7 +1480,9 @@ async function castReply(transcript, config, context, llm) {
   if(dialogue.length && !cast.speakers.size)return null;
   const narrator=config.fixed.find(actor=>normalizeName(actor.speaker)==='narrator'),newNames=new Map(),speakers=new Map();
   const resolveActor=castIdentityResolver(actors,[...cast.speakers.values(),...[...cast.npcs.values()].map(actor=>actor.name)]);
+  let guessed=0;
   dialogue.forEach((id,index)=>{
+    if(!cast.speakers.has(id))guessed++;
     const answered=cast.speakers.get(id) ?? dialogue.slice(0,index).map(previous=>cast.speakers.get(previous)).filter(name=>name!==undefined).at(-1) ?? 'NOT_SPOKEN';
     const actor=resolveActor(answered);
     if(actor)speakers.set(id,actor);
@@ -1535,7 +1537,8 @@ async function castReply(transcript, config, context, llm) {
     return {...choose(speakers.get(unit.id)),style:cast.styles.get(unit.id) || 'natural, matching the scene',unit_ids:[unit.id],
       ...(members?.length>=2?{unison:members.map(member=>{const {gender,...voice}=choose(actors.find(actor=>actor.speaker===member));return voice;})}:{})};
   });
-  return {segments,...(cast.language?{language:cast.language}:{})};
+  // Lines the planner never answered take the previous speaker; the count lets the user check them.
+  return {segments,...(cast.language?{language:cast.language}:{}),...(guessed?{guessed}:{})};
 }
 
 // Non-story check: the frozen skip-bench winner prompt. Measured as is; keep it verbatim.
@@ -4820,7 +4823,8 @@ export async function setup(ctx) {
     stop(false);status('Speaker selection changed. Play again to rebuild grouped speech with the selected voices.');return true;
   }
   async function setSpeakerExcluded(speaker,excluded){
-    if(!chatId)return;
+    // While a chat loads, config still belongs to the previous chat: never save it under the new one.
+    if(!chatId || chatLoading)return;
     const legacyNarratorMute=normalizeName(speaker)==='narrator' && Boolean(config.muteNarrator);
     if(legacyNarratorMute)config.muteNarrator=false;
     for(const actor of [...config.fixed,...Object.values(config.casts).flat()])if(normalizeName(actor.speaker)===normalizeName(speaker))actor.excluded=excluded;
@@ -5114,7 +5118,9 @@ export async function setup(ctx) {
   function withDefaultSetup(value,preset,group){
     const candidate={...value,...(!group || group==='npc'?preset.npcPolicy?{npcPolicy:structuredClone(preset.npcPolicy)}:{}:{})};
     if(group!=='npc' && Array.isArray(preset.leadVoices)){
-      candidate.fixed=value.fixed.map((actor,index)=>({...actor,...Object.fromEntries(defaultVoiceFields.filter(name=>preset.leadVoices[Math.min(index,2)] && Object.hasOwn(preset.leadVoices[Math.min(index,2)],name)).map(name=>[name,preset.leadVoices[Math.min(index,2)][name]]))}));
+      // Defaults hold the three leads (narrator, persona, {{char}}). Further characters keep
+      // their own voices: copying the {{char}} default onto each would make them all alike.
+      candidate.fixed=value.fixed.map((actor,index)=>index>2?actor:({...actor,...Object.fromEntries(defaultVoiceFields.filter(name=>preset.leadVoices[index] && Object.hasOwn(preset.leadVoices[index],name)).map(name=>[name,preset.leadVoices[index][name]]))}));
       if(candidate.connectionMode==='one')candidate.singleVoices={...value.singleVoices,[scope(candidate)]:{...value.singleVoices?.[scope(candidate)],...Object.fromEntries(candidate.fixed.slice(0,3).map(actor=>[actor.speaker,actor.voice || '']))}};
     }
     return candidate;
@@ -5332,7 +5338,9 @@ export async function setup(ctx) {
   // Edits whose save failed when leaving a chat, restored with Retry save on return.
   const unsavedSettings=new Map();
   function scheduleSettingsSave(){
-    if(disposed || !chatId || !config)return false;
+    if(disposed || !config)return false;
+    // Settings belong to a chat; without one, say so instead of silently dropping the edit.
+    if(!chatId){saveState('Open a chat to save settings',true);return false;}
     if(chatLoading){saveState('Loading this chat… changes are not saved yet',true);return false;}
     const candidate=capture();let castConflict=false;
     try{
@@ -5363,7 +5371,8 @@ export async function setup(ctx) {
     }
     renderMixer();
     refreshSectionControls();
-    saveState('Saving…');clearTimeout(autosaveTimer);autosaveTimer=setTimeout(()=>void flushSettings().catch(()=>{}),250);
+    // A voice, style or acting change makes cached clips stale: refresh the "Cached" labels too.
+    saveState('Saving…');clearTimeout(autosaveTimer);autosaveTimer=setTimeout(()=>{void flushSettings().catch(()=>{});void refreshCacheStatus()?.catch?.(()=>{});},250);
     return true;
   }
   async function flushSettings(){
@@ -6468,6 +6477,7 @@ export async function setup(ctx) {
     $('preview').replaceChildren();
     $('planSummary').textContent=`Speech plan · ${plan.segments.length} spoken blocks`;
     if(plan.warning){const warning=document.createElement('p');warning.setAttribute('role','note');warning.textContent=`Jev failed: ${plan.warning}. Explicit LLM fallback supplied this attribution.`;$('preview').append(warning);}
+    if(plan.guessed){const note=document.createElement('p');note.setAttribute('role','note');note.dataset.choirGuessed='';note.textContent=`The planner did not answer ${plan.guessed===1?'1 line':`${plan.guessed} lines`}; ${plan.guessed===1?'it was':'they were'} given the previous speaker. Check the speakers below.`;$('preview').append(note);}
     for(const [index,segment] of plan.segments.entries()) {
       const card=document.createElement('div');card.className='et-card et-plan-block';
       const isMutedNarrator=normalizeName(segment.speaker)==='narrator' && Boolean(config.muteNarrator);
@@ -6799,7 +6809,7 @@ export async function setup(ctx) {
         if(!fastPlan)throw new Error(failure.message || 'Heuristic could not identify the speaker. Add clear speaker tags or choose Jev or LLM. No LLM request was made.');
       }
       // 2. Jev System 1 classifier (~20ms)
-      let jevFailure='';
+      let jevFailure='',guessed=0;
       if(!fastPlan){
         snapshot.characterProfiles=await plannerProfiles(snapshot,ctrl.signal);
         if(ctrl.signal.aborted || token!==revision || targetChat!==chatId)return;
@@ -6857,7 +6867,7 @@ export async function setup(ctx) {
           throw new Error(jevFailure?`${jevFailure}\nLLM fallback failed: ${error.message}`:error.message);
         }
         if (token !== revision || targetChat !== chatId || disposed) return;
-        adoptCommunityVoices(result,snapshot);
+        adoptCommunityVoices(result,snapshot);guessed=Number(result.guessed) || 0;
         fastPlan = validatePlan({ segments: stripBase(result.segments) }, transcript, snapshot);
       }
       snapshot.npcs = fastPlan.npcs;
@@ -6867,7 +6877,7 @@ export async function setup(ctx) {
       const combined = stripBase(fastPlan.segments);
       // Validate the complete original reply before audio or cast persistence.
       const validated=validatePlan({segments:combined},transcript,snapshot);
-      plan={...validated,warning:jevFailure};planSource={messageId,content,transcript,chatId:targetChat,soundCues:false,soundCueWarning:''};
+      plan={...validated,warning:jevFailure,...(guessed?{guessed}:{})};planSource={messageId,content,transcript,chatId:targetChat,soundCues:false,soundCueWarning:''};
       const cued=await cuePlannedSegments(plan.segments,ctrl,token,written);
       if(token!==revision || ctrl.signal.aborted)return;
       plan.segments=cued.segments;planSource.soundCues=cued.checked;planSource.soundCueWarning=cued.warning || '';
@@ -8189,7 +8199,8 @@ export async function setup(ctx) {
     preview.hidden=false;
   };
   $('add').onclick=()=>{const names=new Set([...castRows,...npcRows].filter(entry=>root.contains(entry.row)).map(entry=>normalizeName(entry.read().speaker)));let index=1;while(names.has(normalizeName(`Character ${index}`)))index++;castRows.push(makeRow({speaker:`Character ${index}`,voice:'',style:''},$('fixed'),false,true));scheduleSettingsSave();renderMixer();};
-  $('load').onclick=()=>chatLoading?loadChat(true):run(async()=>{await flushSettings();config=capture();loadVersion++;await loadProviders();await persistConfig(chatId,config,true);saveState('Settings saved');clearPlan();status('Connections and voices reloaded.');});
+  // A chat switch during Reload must not receive the previous chat's settings.
+  $('load').onclick=()=>chatLoading?loadChat(true):run(async()=>{const target=chatId;await flushSettings();if(chatLoading || target!==chatId)return;config=capture();const version=++loadVersion;await loadProviders();if(chatLoading || target!==chatId || version!==loadVersion)return;await persistConfig(target,config,true);saveState('Settings saved');clearPlan();status('Connections and voices reloaded.');});
   $('plannerMode')?.addEventListener('change',updatePlannerVisibility);
   $('allowLlmFallback').onchange=updatePlannerVisibility;
   $('sectionButtons').onchange=()=>run(async()=>{config=capture();refreshSectionControls();if(plan)renderPreview();scheduleSettingsSave();await flushSettings();});
@@ -8430,7 +8441,7 @@ export async function setup(ctx) {
     return loadVolatileAudio(paragraphAudioCache,k,cacheKey(seg,snap),snap,sig,()=>synthesizeSegment(seg,snap,sig),80).then(blob=>prepare?preparePlayback(blob,seg,snap):blob);
   }
 
-  const paragraphCues = new Map();
+  const paragraphCues = new Map(), paragraphCuesPending = new Map();
   function paragraphSegments(rawText, snap, preferredSpeaker = '', messageId = null, paragraphIndex = null) {
     const cleanPara = transcriptFromMessage(rawText,snap.ignoredTags).trim();
     if (!cleanPara) return {segments: [], cleanPara, fromPlan: false};
@@ -8445,7 +8456,10 @@ export async function setup(ctx) {
       const norm = text => String(text || '').replace(/\s+/g, ' ').trim(), target = norm(cleanPara);
       const spoken = plan.segments.map((segment, index) => index).filter(index => !plan.segments[index].kind);
       // Sound markers placed right before the matched speech belong to it.
-      const leadingSounds = index => {let start = index;while (start > 0 && plan.segments[start - 1].kind) start--;return plan.segments.slice(start, index);};
+      // Whole plan blocks keep their plan position, so Cue cuts and batches them exactly like
+      // full-message playback and both reuse one set of clips.
+      const positioned = (start, end) => plan.segments.slice(start, end).map((segment, offset) => ({...segment, passageIndex: start + offset}));
+      const leadingSounds = index => {let start = index;while (start > 0 && plan.segments[start - 1].kind) start--;return positioned(start, index);};
       // Every place in the plan that covers the paragraph, in story order.
       const matches = [];
       for (let first = 0; first < spoken.length; first++) {
@@ -8458,12 +8472,13 @@ export async function setup(ctx) {
             const kept = block[key].filter(cue => cue.trigger ? target.includes(norm(cue.trigger)) : opens);
             if (kept.length) own[key] = kept; else delete own[key];
           }
+          if (opens && norm(block.text) === target) own.passageIndex = spoken[first];
           matches.push([...(opens ? leadingSounds(spoken[first]) : []), own]);continue;
         }
         let joined = '';
         for (let last = first; last < spoken.length; last++) {
           joined = norm(`${joined} ${plan.segments[spoken[last]].text}`);
-          if (joined === target) {matches.push([...leadingSounds(spoken[first]), ...plan.segments.slice(spoken[first], spoken[last] + 1)]);break;}
+          if (joined === target) {matches.push([...leadingSounds(spoken[first]), ...positioned(spoken[first], spoken[last] + 1)]);break;}
           if (joined.length >= target.length || !target.startsWith(joined)) break;
         }
       }
@@ -8510,7 +8525,11 @@ export async function setup(ctx) {
   }
 
   function planAndBatchParagraph(rawText, snap, filterMuted = false, preferredSpeaker = '', messageId = null, paragraphIndex = null) {
-    return playbackBatches(paragraphSegments(rawText, snap, preferredSpeaker, messageId, paragraphIndex).segments, snap, {filterMuted});
+    const {segments} = paragraphSegments(rawText, snap, preferredSpeaker, messageId, paragraphIndex);
+    // Ungrouped full-message playback batches each plan block alone; whole blocks do the same here.
+    if (!snap.batchSpeech && segments.length && segments.every(segment => Number.isInteger(segment.passageIndex)))
+      return segments.flatMap(segment => playbackBatches([segment], snap, {filterMuted}));
+    return playbackBatches(segments, snap, {filterMuted});
   }
 
   // Paragraphs outside the current message plan get their effects chosen once per text.
@@ -8519,8 +8538,20 @@ export async function setup(ctx) {
     if (fromPlan || !segments.length || paragraphCues.has(cleanPara) || !soundCuesWanted(snap)) return;
     // Cue carries the playing track into later paragraphs, so the planner changes it only when the scene does.
     const playing = carried || beds.music && {title: beds.music.title || '', feels: beds.music.feels};
-    paragraphCues.set(cleanPara, await chooseSoundCues(segments, signal, () => {}, playing));
-    if (paragraphCues.size > 80) paragraphCues.delete(paragraphCues.keys().next().value);
+    // The next paragraph's lookahead and its own playback can ask at once: share one choice,
+    // so the planner is paid once and both use the same speech cuts.
+    const pending = paragraphCuesPending.get(cleanPara);
+    if (pending) {
+      try { await pending; } catch {}
+      if (paragraphCues.has(cleanPara)) return;
+      signal?.throwIfAborted();
+    }
+    const work = chooseSoundCues(segments, signal, () => {}, playing);
+    paragraphCuesPending.set(cleanPara, work);
+    try {
+      paragraphCues.set(cleanPara, await work);
+      if (paragraphCues.size > 80) paragraphCues.delete(paragraphCues.keys().next().value);
+    } finally { if (paragraphCuesPending.get(cleanPara) === work) paragraphCuesPending.delete(cleanPara); }
   }
 
   const bridge = {
@@ -8548,14 +8579,14 @@ export async function setup(ctx) {
     planParagraph: (text, speaker) => {
       const cap = capture();
       const castInfo = casting(cap);
-      const snapshot = { ...structuredClone(cap), fixed: castInfo.fixed, voices: castInfo.voices, npcs: castInfo.npcs, defaultRoute: castInfo.defaultRoute, npcPolicy:castInfo.npcPolicy };
+      const snapshot = { ...structuredClone(cap), fixed: castInfo.fixed, voices: castInfo.voices, npcs: castInfo.npcs, defaultRoute: castInfo.defaultRoute, npcPolicy:castInfo.npcPolicy, personaSpeaker:castInfo.personaSpeaker };
       // Switched-off sounds stay in the batches only to keep speech cuts stable;
       // companions see the sounds that will actually play.
       const off = segment => segment.kind === 'sfx' && snapshot.enableSfx === false || segment.kind === 'ambience' && snapshot.enableAmbience === false || segment.kind === 'music' && snapshot.enableMusic !== true;
       const batches = planAndBatchParagraph(text, snapshot, false, speaker).filter(segment => !off(segment));
       return { segments: batches };
     },
-    playParagraph: async ({ text, speaker, nextText, chatId: targetChat, messageId, paragraphIndex, signal, onStatus } = {}) => {
+    playParagraph: async ({ text, speaker, nextText, nextSpeaker, nextMessageId, nextParagraphIndex, chatId: targetChat, messageId, paragraphIndex, signal, onStatus } = {}) => {
       if (disposed) return { played: 0 };
       if(signal?.aborted)throw abortError();
       if(targetChat && targetChat!==chatId)throw new Error('The paragraph belongs to a different chat.');
@@ -8567,7 +8598,7 @@ export async function setup(ctx) {
       for(const pending of handoff)paragraphPrefetchControllers.add(pending);
       const cap = capture();
       const castInfo = casting(cap);
-      const snapshot = { ...structuredClone(cap), fixed: castInfo.fixed, voices: castInfo.voices, npcs: castInfo.npcs, defaultRoute: castInfo.defaultRoute, npcPolicy:castInfo.npcPolicy };
+      const snapshot = { ...structuredClone(cap), fixed: castInfo.fixed, voices: castInfo.voices, npcs: castInfo.npcs, defaultRoute: castInfo.defaultRoute, npcPolicy:castInfo.npcPolicy, personaSpeaker:castInfo.personaSpeaker };
 
       snapshot.audioScope={chatId:targetChat || chatId,messageId:messageId || null};
       paragraphPlaybackScope=snapshot.audioScope;paragraphPlaybackText=String(text || '').trim();
@@ -8646,9 +8677,12 @@ export async function setup(ctx) {
         if (snapshot.prefetch>0 && nextText && typeof nextText === 'string' && nextText.trim()) {
           // The current paragraph's music has not started yet, so name it directly.
           const carried = lastMusic(paragraphCues.get(paragraphSegments(text, snapshot, speaker, messageId, paragraphIndex).cleanPara)?.music);
-          nextCueWork=loadParagraphCues(nextText, snapshot, '', ctrl.signal, carried).catch(() => {}).then(() => {
+          // Prepare the next paragraph as its own call will plan it: same speaker hint, message and
+          // position (by default the following paragraph of this message), or the speech is paid twice.
+          const next={speaker:typeof nextSpeaker==='string'?nextSpeaker:'',messageId:nextMessageId ?? messageId ?? null,paragraphIndex:Number.isInteger(nextParagraphIndex)?nextParagraphIndex:Number.isInteger(paragraphIndex) && (nextMessageId ?? messageId)===messageId?paragraphIndex+1:null};
+          nextCueWork=loadParagraphCues(nextText, snapshot, next.speaker, ctrl.signal, carried, next.messageId, next.paragraphIndex).catch(() => {}).then(() => {
             if(ctrl.signal.aborted || token!==revision)return;
-            nextBatches=planAndBatchParagraph(nextText,snapshot,true);
+            nextBatches=planAndBatchParagraph(nextText,snapshot,true,next.speaker,next.messageId,next.paragraphIndex);
             prefetchBeds(nextBatches);prefetchSpeech(currentBatchIndex);
           }).catch(() => {});
         }

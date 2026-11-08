@@ -97,3 +97,39 @@ test('audit: plan-inside-the-reply lists known NPCs, not only the leads',async()
     assert.ok(h.injectContexts.at(-1).input.cast.includes('Guard'),JSON.stringify(h.injectContexts.at(-1).input.cast));
   }finally{await h.close();}
 });
+
+test('audit: Cue reuses the opening clips full-message playback already paid for',async()=>{
+  const h=await harness();
+  try{
+    Object.assign(h.store.get('chat:chat-a'),{skipMeta:false,enableSfx:false,enableAmbience:false,enableMusic:false,normalizeLoudness:false,batchSpeech:false,chunk:1800});
+    const long=`The rain had not stopped for three days, and ${'the gutters along the narrow street overflowed while lanterns swung in the wind, '.repeat(4)}until the watch bell rang.`;
+    const paragraph=`${long} She waited at the door.`;
+    h.message.content=`${paragraph}\n\nThe second paragraph is short.`;await h.reload();await h.plan();await h.play();
+    const paid=h.synthesis.length;assert.ok(paid>=2,'the long opening is cut into startup clips');
+    await globalThis.__CHOIR_API__.playParagraph({text:paragraph,messageId:h.message.id,paragraphIndex:0});
+    assert.equal(h.synthesis.length,paid,'the same opening clips are reused, nothing is paid twice');
+  }finally{await h.close();}
+});
+
+test('audit: Apply default sets the three leads and leaves further characters\x27 own voices',async()=>{
+  const h=await harness();
+  try{
+    const chat=h.store.get('chat:chat-a');
+    chat.fixed=[...chat.fixed.slice(0,3),{speaker:'Extra',voice:chat.fixed[2].voice,style:'extra style'}];
+    h.store.set('settings:captured-defaults',{version:2,leadVoices:chat.fixed.slice(0,3).map(actor=>({voice:actor.voice,route:actor.route || '',style:'DEFAULT'}))});
+    await h.reload();
+    h.$('applyDefaults').click();await until(()=>h.$('defaultStatus').textContent.startsWith('Default applied'));
+    const applied=h.store.get('chat:chat-a').fixed;
+    assert.equal(applied[2].style,'DEFAULT');
+    assert.equal(applied[3].speaker,'Extra');assert.equal(applied[3].style,'extra style','a fourth character keeps its own setup');
+  }finally{await h.close();}
+});
+
+test('audit: a settings edit with no chat open says it was not saved',async()=>{
+  const h=await harness();
+  try{
+    h.state.active=null;await h.subscriptions.get('chat.active')();
+    h.$('prefetch').value='3';h.$('prefetch').dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));
+    assert.match(h.$('saveState').textContent,/Open a chat to save settings/);
+  }finally{await h.close();}
+});
