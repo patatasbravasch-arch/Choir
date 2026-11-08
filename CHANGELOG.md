@@ -2,6 +2,15 @@
 
 Release notes for Choir on the `lunch-test` and `staging` branches, newest first. A few lunch-test builds between staging.29 and staging.30 were numbered `1.1.6-lunch-test.N`.
 
+**Audit fixes, second batch.**
+- Cue reuses the opening clips that full-message playback already paid for (and the reverse): whole plan blocks are cut and batched the same way.
+- Cue prepares the next paragraph with its own speaker hint, message and position, and asks for a paragraph's sound effects once even when its lookahead and its playback ask together.
+- Cue keeps your persona's name, so persona lines get the persona's voice.
+- Jev asks delivery only for lines someone voices, the story's language once per reply, and a Fish speaker's gender only when the cast does not set it; the unused age question is gone.
+- When the planner leaves lines unanswered, the speech plan says how many were given the previous speaker, so you can check them.
+- Apply default sets the narrator, persona and {{char}} only; further characters keep their own voices.
+- Reload and the mixer's voice switch can no longer save one chat's settings into another during a chat switch. A settings edit with no chat open says it was not saved. Cached labels refresh after a voice, style or acting change.
+
 **Audit fixes (8 November).** Five reviewers checked the whole extension; these were confirmed and fixed:
 - Sound effects in Cue: a plan block spanning several paragraphs no longer plays the later paragraphs' effects at the start of each one.
 - Dialogue detection: a doubled opening quote (`""Hello,`) stays the character's line; German/Danish `»…«` is dialogue; an unclosed curly quote stops at its paragraph; a reply cut off mid-quote keeps that speech as dialogue; `&nbsp;`, `&mdash;` and numeric entities such as `&#8220;` are decoded. A message with no words at all is not sent to speech.

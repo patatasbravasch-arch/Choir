@@ -1479,7 +1479,9 @@ export async function castReply(transcript, config, context, llm) {
   if(dialogue.length && !cast.speakers.size)return null;
   const narrator=config.fixed.find(actor=>normalizeName(actor.speaker)==='narrator'),newNames=new Map(),speakers=new Map();
   const resolveActor=castIdentityResolver(actors,[...cast.speakers.values(),...[...cast.npcs.values()].map(actor=>actor.name)]);
+  let guessed=0;
   dialogue.forEach((id,index)=>{
+    if(!cast.speakers.has(id))guessed++;
     const answered=cast.speakers.get(id) ?? dialogue.slice(0,index).map(previous=>cast.speakers.get(previous)).filter(name=>name!==undefined).at(-1) ?? 'NOT_SPOKEN';
     const actor=resolveActor(answered);
     if(actor)speakers.set(id,actor);
@@ -1534,7 +1536,8 @@ export async function castReply(transcript, config, context, llm) {
     return {...choose(speakers.get(unit.id)),style:cast.styles.get(unit.id) || 'natural, matching the scene',unit_ids:[unit.id],
       ...(members?.length>=2?{unison:members.map(member=>{const {gender,...voice}=choose(actors.find(actor=>actor.speaker===member));return voice;})}:{})};
   });
-  return {segments,...(cast.language?{language:cast.language}:{})};
+  // Lines the planner never answered take the previous speaker; the count lets the user check them.
+  return {segments,...(cast.language?{language:cast.language}:{}),...(guessed?{guessed}:{})};
 }
 
 // Non-story check: the frozen skip-bench winner prompt. Measured as is; keep it verbatim.

@@ -1139,7 +1139,8 @@ test('Jev describes a speaker with the Decision model before the community searc
   }});
   h.send('planJev',{transcript:'Mira smiled. "Olá."',config:communityCast});
   const result=JSON.parse(JSON.stringify((await h.result()).message.result));
-  assert.deepEqual(asked,[['speaker_0'],['gender','age','language'],['q0']]);
+  // Age never shaped the search, so it is no longer asked.
+  assert.deepEqual(asked,[['speaker_0'],['gender','language'],['q0']]);
   assert.deepEqual(urls.map(url=>[url.searchParams.get('language'),...url.searchParams.getAll('tag')]),[['pt','female','clear']]);
   assert.equal(result.segments.find(segment=>segment.speaker==='Mira').voice,'old-1');
   assert.deepEqual(result.communityVoices,[{id:'old-1',description:'Elder — female, old',route:'native:fish'}]);
@@ -1635,4 +1636,39 @@ test('audit: the Decision connection test is not READY when no speaker was chose
   h.send('testPlanner',{plannerMode:'jev'});
   const result=(await h.result()).message;
   assert.ok(!result.result?.response?.startsWith('READY'),JSON.stringify(result));
+});
+
+test('audit: Jev asks the story language once and skips a gender the cast already sets',async()=>{
+  const urls=[],asked=[];
+  const cast={...communityCast,fixed:[...communityCast.fixed,{speaker:'Tom',voice:'',gender:'male',style:'',route:'native:fish'}]};
+  const h=await harness(null,fishSearch(urls,[[fishItem('a-1','Ana',['female','young'])],[fishItem('t-1','Tom',['male','young'])]]),null,null,null,{evaluate:async input=>{
+    const questions=Object.keys(input.questions);asked.push(questions);
+    return {answers:Object.fromEntries(questions.map(key=>[key,{choice:key==='gender'?'female':key==='language'?'pt':key==='q0'?'s0':key.startsWith('speaker_')?(key==='speaker_0'?'Mira':'Tom'):'unknown'}]))};
+  }});
+  h.send('planJev',{transcript:'Mira smiled. "Olá." Tom nodded. "Oi."',config:cast});
+  const result=(await h.result()).message;
+  assert.equal(result.error,undefined,result.error);
+  const profiles=asked.filter(questions=>questions.includes('gender') || questions.includes('language'));
+  assert.equal(profiles.flat().filter(key=>key==='language').length,1,JSON.stringify(asked));
+  assert.ok(!asked.flat().includes('age'));
+  assert.equal(profiles.flat().filter(key=>key==='gender').length,1,'Tom\'s gender is already set');
+});
+
+test('audit: Jev asks delivery only for lines someone actually voices',async()=>{
+  const cast={voices:[{id:'n'},{id:'m'}],fixed:[{speaker:'Narrator',voice:'n',style:''},{speaker:'Mira',voice:'m',style:''}],npcs:[],useStyle:true};
+  const asked=[],h=await harness(null,null,null,null,null,{evaluate:async request=>{
+    const keys=Object.keys(request.questions);asked.push(...keys);
+    return {answers:Object.fromEntries(keys.map(key=>[key,{choice:key==='speaker_0'?'Nobody (not spoken aloud)':key.startsWith('speaker_')?'Mira':Object.keys(request.questions[key].criteria)[0]}]))};
+  }});
+  h.send('planJev',{transcript:'The sign read "Closed". Mira sighed. "Fine."',config:cast});
+  const result=(await h.result()).message;
+  assert.equal(result.error,undefined,result.error);
+  assert.deepEqual(asked.filter(key=>key.startsWith('emotion_')),['emotion_1'],JSON.stringify(asked));
+});
+
+test('audit: the planner reports how many lines it had to give the previous speaker',async()=>{
+  const h=await harness(async()=>({content:'D0|Mira|calm'}));
+  h.send('plan',{transcript:'"Hello," Mira said. "Again." "And again."',config:{...config,fixed:[...config.fixed,{speaker:'Mira',voice:'Kore',style:''}]}});
+  const result=(await h.result()).message;
+  assert.equal(result.error,undefined,result.error);assert.equal(result.result.guessed,2);
 });
