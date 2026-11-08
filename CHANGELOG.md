@@ -2,6 +2,9 @@
 
 Release notes for Choir on the `lunch-test` and `staging` branches, newest first. A few lunch-test builds between staging.29 and staging.30 were numbered `1.1.6-lunch-test.N`.
 
+**Backend restart detection.**
+- A plan, sound or music request that a backend restart forgot now fails within about 30 seconds with "Choir's backend restarted… Try again", instead of showing Planning for up to 10 minutes. A backend that stops answering entirely is reported after about a minute. Older backends without the check are never failed by it.
+
 **Token, efficiency, reliability and bug audits (9 November).**
 - Fewer tokens. Jev sends the delivery rules and option details once per round instead of in every line's question, offers only NPCs the reply can involve, uses shorter role labels, 600-character profiles, 1,500 characters of earlier chat and ±200 characters around each quote. The plan-inside-the-reply instruction sent with every message asks for SKIP rows only when non-story lines are skipped and LANG only when a Fish community voice may be chosen, and drops a duplicate example row. The planner asks for NPC rows only for voiceless people the reply can involve.
 - Reliability. A failed or slow settings save no longer blocks Play or Replay (Retry save is offered). A plan is kept even when the cast save fails. Companion playback waits at most 8 seconds for sound-effect choices, and a failed choice is not paid for again for 5 minutes. The music catalogue cannot hang, and long music downloads are no longer cut off and restarted.

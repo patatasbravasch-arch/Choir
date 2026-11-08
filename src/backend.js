@@ -884,6 +884,11 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
         try { await spindle.userStorage?.setJson(injectFile(input.chatId), info, userId ? { userId } : {}); } catch {}
       send({ result: { interceptor: typeof spindle.registerInterceptor === 'function', macro: typeof spindle.registerMacro === 'function' } }); return;
     }
+    // Lets the page tell a long request still running from one a backend restart forgot.
+    if (message.action === 'alive') {
+      const ids = Array.isArray(input.ids) ? input.ids.filter(id => typeof id === 'string').slice(0, 200) : [];
+      send({ result: { running: ids.filter(id => running.has(identity(userId, frontendSessionId, id))) } }); return;
+    }
     if (message.action === 'ping') {
       send({result:{version:'__CHOIR_VERSION__',ready:true,decisionsAvailable:typeof spindle.decisions?.evaluate==='function'}});return;
     }

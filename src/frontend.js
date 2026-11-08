@@ -450,7 +450,7 @@ export async function setup(ctx) {
   const $ = name => root.querySelector(`[data-et="${name}"]`);
   const drawerNavigation=createDrawerNavigation(root);
   for(const button of root.querySelectorAll('button'))button.type='button';
-  const pending = new Map();
+  const pending = new Map(); const LIVENESS_AFTER_MS=30000,LIVENESS_EVERY_MS=15000,LIVENESS_REPLY_MS=10000;
   let audioNamespace,audioNamespaceError;
   for(let attempt=0;attempt<2;attempt++){
     try{
@@ -1925,9 +1925,37 @@ export async function setup(ctx) {
       const done=(error,result)=>{clearTimeout(timer);signal?.removeEventListener('abort',cancel);pending.delete(id);error?reject(error):resolve(result);};
       done.progress=progress=>{lastProgress=progress;onProgress?.(progress);};
       pending.set(id,done); signal?.addEventListener('abort',cancel,{once:true});
+      if(timeoutMs>LIVENESS_AFTER_MS && !['alive','ping'].includes(action))watchLiveness(id,action);
       try {ctx.sendToBackend({namespace:'choir',id,action,input});} catch(error){done(error);}
     });
   }
+  // A backend restart forgets every running request and nothing ever answers it; without this
+  // check a plan would sit on "Planning" until its 10-minute timeout. Long requests are polled:
+  // an id the backend no longer runs, twice in a row, fails with the restart. Silence counts
+  // only once this backend has answered a check, so an older backend without it is never failed.
+  const liveness=new Map();let livenessTimer=null,livenessSeen=false,livenessBusy=false;
+  function watchLiveness(id,action){
+    liveness.set(id,{action,strikes:0,silent:0});
+    const original=pending.get(id);pending.set(id,Object.assign((error,result)=>{unwatch(id);original(error,result);},{progress:original.progress}));
+    livenessTimer??=setInterval(checkLiveness,LIVENESS_EVERY_MS);
+  }
+  async function checkLiveness(){
+    if(!liveness.size || disposed){clearInterval(livenessTimer);livenessTimer=null;return;}
+    if(livenessBusy)return;livenessBusy=true;
+    const ids=[...liveness.keys()];
+    try{
+      const {running=[]}=await rpc('alive',{ids},undefined,LIVENESS_REPLY_MS) || {};livenessSeen=true;
+      for(const id of ids){const watch=liveness.get(id);if(!watch)continue;watch.silent=0;watch.strikes=running.includes(id)?0:watch.strikes+1;
+        if(watch.strikes>=2)lose(id,`Choir's backend restarted while this ${backendRequestKind(watch.action)==='Choir'?'Choir':backendRequestKind(watch.action).toLowerCase()} request was running, so its work was lost. Try again.`);}
+    }catch(error){
+      // "Unknown Choir action" is an older backend: it is alive, it just cannot be checked.
+      if(!/timed out/i.test(error?.message || '') || !livenessSeen)return;
+      for(const id of ids){const watch=liveness.get(id);if(watch && ++watch.silent>=3)lose(id,"Choir's backend stopped responding. Restart Choir in Extensions, reload the page and try again.");}
+    }finally{livenessBusy=false;}
+  }
+  function unwatch(id){liveness.delete(id);if(!liveness.size && livenessTimer){clearInterval(livenessTimer);livenessTimer=null;}}
+  function lose(id,message){unwatch(id);try{ctx.sendToBackend({namespace:'choir',id,action:'cancel'});}catch{}pending.get(id)?.(new Error(message));}
+  unsubs.push(()=>{clearInterval(livenessTimer);livenessTimer=null;liveness.clear();});
   unsubs.push(ctx.onBackendMessage(message=>{
     if(message?.namespace !== 'choir')return;
     if(message.call){if(preparationCalls)preparationCalls.push(message.call);if(config?.paranoidMode){plannerCallLog.push(message.call);if(plannerCallLog.length>50)plannerCallLog.shift();if($('ttsInspectorView').value==='calls')renderTtsInspector();else $('ttsInspectorView').options[2].textContent=`All calls (${plannerCallLog.length+ttsRequestLog.length})`;}return;}
