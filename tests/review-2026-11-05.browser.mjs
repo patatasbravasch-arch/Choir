@@ -152,3 +152,46 @@ test('audit 3: a failed settings save never blocks Play, and a failed cast save 
     assert.ok([...g.store.keys()].some(key=>key.startsWith('plan:')),'the plan was saved despite the cast write failing');
   }finally{g.state.failConfigSave=false;await g.close();}
 });
+
+test('a plan the backend forgot after a restart fails within two liveness checks instead of ten minutes',async()=>{
+  const realSet=globalThis.setInterval,realClear=globalThis.clearInterval;let check=null;
+  globalThis.setInterval=(fn,ms,...rest)=>ms===15000?(check=fn,{liveness:true}):realSet(fn,ms,...rest);
+  globalThis.clearInterval=timer=>timer?.liveness?(check=null):realClear(timer);
+  const h=await harness();
+  try{
+    const send=h.ctx.sendToBackend,planned=[];let restarted=false,checks=0;
+    h.ctx.sendToBackend=request=>{
+      if(['plan','planJev','planWithJev'].includes(request.action)){planned.push(request.id);if(!restarted)return;}
+      if(request.action==='alive'){checks++;setTimeout(()=>h.emitBackend({namespace:'choir',id:request.id,result:{running:restarted?[]:request.input.ids}}),0);return;}
+      return send(request);
+    };
+    // Still running: repeated checks never fail it.
+    h.$('latest').click();await until(()=>planned.length===1 && check);
+    for(let i=0;i<3;i++){await check();}
+    assert.equal(checks,3);assert.doesNotMatch(h.$('status').textContent,/restarted/);
+    // The backend restarts and no longer knows the request.
+    restarted=true;await check();assert.doesNotMatch(h.$('status').textContent,/restarted/,'one miss may be a reply in flight');
+    await check();await until(()=>/backend restarted while this planner request was running/.test(h.$('status').textContent));
+    await until(()=>!h.$('latest').disabled);assert.equal(check,null,'nothing left to watch stops the timer');
+    assert.ok(h.requests.some(request=>request.action==='cancel' && request.id===planned[0]));
+  }finally{await h.close();globalThis.setInterval=realSet;globalThis.clearInterval=realClear;}
+});
+
+test('an older backend without liveness checks never fails a long request',async()=>{
+  const realSet=globalThis.setInterval,realClear=globalThis.clearInterval;let check=null;
+  globalThis.setInterval=(fn,ms,...rest)=>ms===15000?(check=fn,{liveness:true}):realSet(fn,ms,...rest);
+  globalThis.clearInterval=timer=>timer?.liveness?(check=null):realClear(timer);
+  const h=await harness();
+  try{
+    const send=h.ctx.sendToBackend;let held=null;
+    h.ctx.sendToBackend=request=>{
+      if(['plan','planJev','planWithJev'].includes(request.action) && !held){held=request;return;}
+      if(request.action==='alive'){setTimeout(()=>h.emitBackend({namespace:'choir',id:request.id,error:'Unknown Choir action.'}),0);return;}
+      return send(request);
+    };
+    h.$('latest').click();await until(()=>held && check);
+    for(let i=0;i<4;i++)await check();
+    assert.doesNotMatch(h.$('status').textContent,/backend (restarted|stopped)/);
+    send(held);await until(()=>!h.$('latest').disabled);
+  }finally{await h.close();globalThis.setInterval=realSet;globalThis.clearInterval=realClear;}
+});

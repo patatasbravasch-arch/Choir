@@ -272,7 +272,7 @@ async function harness(generate, cors, provider, deadline, stream, decisions,con
   const connection={id:'llm-a',is_default:true,model:'gemini-flash-text',provider,...connectionOverrides};
   vm.runInNewContext(bundle,{spindle:{onFrontendMessage:h=>handler=h,sendToFrontend:(message,user,options)=>{sent.push({message,user,options});if(message.result || message.error)wake?.();},generate:{raw:generate,rawStream:stream},connections:{get:async()=>connection,list:async()=>[connection]},cors,decisions,...extraSpindle},
     console,Map,Set,AbortController,TextEncoder,setTimeout:deadline?(fn,ms)=>{deadline(fn,ms);return 0;}:setTimeout,clearTimeout,URL,crypto:globalThis.crypto,atob,btoa,Uint8Array,DataView});
-  return {sent,send:(action,input,id='request',userId='user-a')=>handler({namespace:'choir',action,input,id},userId,'session-a'),
+  return {sent,send:(action,input,id='request',userId='user-a',session='session-a')=>handler({namespace:'choir',action,input,id},userId,session),
     result:()=>sent.some(item=>item.message.result || item.message.error)?Promise.resolve(sent.findLast(item=>item.message.result || item.message.error)):new Promise(resolve=>{wake=()=>resolve(sent.at(-1));})};
 }
 test('planner uses user identity and routes replies only to the originating browser session',async()=>{
@@ -1707,4 +1707,15 @@ test('audit 3 tokens: Jev offers only NPCs the reply can involve and sends deliv
   const delivery=requests.find(request=>Object.keys(request.questions).some(key=>key.startsWith('emotion_')));
   assert.match(delivery.state.deliveryGuide,/Delivery guidance/);
   for(const question of Object.values(delivery.questions)){assert.doesNotMatch(question.instructions,/Delivery guidance/);assert.ok(Object.values(question.criteria).every(label=>label.length<40));}
+});
+test('alive reports only this session\'s still-running requests so a restart is detectable',async()=>{
+  let release;const h=await harness(()=>new Promise(resolve=>{release=()=>resolve({content:'D0|Narrator|'});}));
+  h.send('plan',{transcript:'"Hello."',config},'long');
+  await new Promise(resolve=>setTimeout(resolve,0));
+  h.send('alive',{ids:['long','forgotten',7]},'check-1');
+  const first=h.sent.find(item=>item.message.id==='check-1').message;assert.deepEqual([...first.result.running],['long']);
+  // Another browser session cannot see or probe this one's requests.
+  h.send('alive',{ids:['long']},'check-2','user-a','session-b');assert.deepEqual([...h.sent.find(item=>item.message.id==='check-2').message.result.running],[]);
+  release();for(let i=0;i<50 && !h.sent.some(item=>item.message.id==='long' && (item.message.result || item.message.error));i++)await new Promise(resolve=>setTimeout(resolve,10));
+  h.send('alive',{ids:['long']},'check-3');assert.deepEqual([...h.sent.find(item=>item.message.id==='check-3').message.result.running],[]);
 });
