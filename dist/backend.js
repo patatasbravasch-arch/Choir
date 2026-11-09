@@ -2653,7 +2653,6 @@ const fatalProviderError = error => /\((?:401|402|403|404|429)\)|\b(?:401|402|40
 
 const FISH_LANGUAGES = { en: 'English', zh: 'Chinese', ja: 'Japanese', ko: 'Korean', es: 'Spanish', pt: 'Portuguese', fr: 'French', de: 'German', it: 'Italian', ru: 'Russian', ar: 'Arabic', nl: 'Dutch', pl: 'Polish' };
 
-// One Decision question set, answered by a Lumiverse Decision connection or a Jev key; no answers without either.
 // Several catalogue voices fit a new character's description: one batched Decision question per
 // reply picks among them. No Decision connection, a failure or an invalid answer keeps the
 // best-ranked voice already chosen, so this never adds an LLM call. Picks are stripped either way.
@@ -2694,6 +2693,7 @@ async function castCatalogueVoices(raw, input, userId, signal, progress) {
   }
 }
 
+// One Decision question set, answered by a Lumiverse Decision connection or a Jev key; no answers without either.
 async function decide(state, questions, input, userId, signal, flags) {
   return typeof spindle.decisions?.evaluate === 'function'
     ? (await evaluateDecisions({ userId, connection_id: input.decisionConnection || undefined, state, questions }, { signal }, flags)).answers

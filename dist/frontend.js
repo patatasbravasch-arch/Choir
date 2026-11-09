@@ -3896,7 +3896,7 @@ export async function setup(ctx) {
     </div>
     <h4 class="et-subhead">Reading</h4>
     <div class="et-row">
-      <label class="et-check" style="display:inline-flex" title="Scales every character's acting directions, planned or base style. Narration stays steady; lines without a direction stay natural. Takes effect on the next Play, with no re-planning.">Acting<select data-et="actingIntensity" style="width:auto"><option value="-2">Very subtle</option><option value="-1">Subtle</option><option value="0">Natural</option><option value="1">Expressive</option><option value="2">Very expressive</option></select></label>
+      <label class="et-check" style="display:inline-flex" title="Scales every character's acting directions, planned or base style. Narration stays steady; lines without a direction stay natural. Takes effect on the next Play, with no re-planning.">Acting<select data-et="actingIntensity" style="width:auto">${ACTING_INTENSITY_LEVELS.map(([value,label])=>`<option value="${value}">${label}</option>`).join('')}</select></label>
       <label class="et-check" style="display:inline-flex">Highlight spoken text<select data-et="readAlong" style="width:auto"><option value="off">Off</option><option value="passage">Passage</option><option value="word">Word by word</option></select></label>
       <label class="et-check" title="Scroll the chat to the passage being read. Scrolling yourself pauses this until the next Play."><input data-et="followNarration" type="checkbox"> Follow narration</label>
       <label class="et-check"><input data-et="auto" type="checkbox"> Auto-play new replies</label>
@@ -5437,10 +5437,10 @@ export async function setup(ctx) {
           ? 'Choir backend did not respond. Update and restart Choir in Extensions, then reload the page. Both backend and frontend must be running.'
           : `${backendRequestKind(action)} request timed out waiting for the backend. ${lastProgress?`Last reported stage: ${lastProgress.stage}. ${lastProgress.provider || ''} ${lastProgress.model || ''}.`:'The backend did not acknowledge this request; restart Choir and reload the page.'}`));
       },timeoutMs);
-      const done=(error,result)=>{clearTimeout(timer);signal?.removeEventListener('abort',cancel);pending.delete(id);error?reject(error):resolve(result);};
+      const done=(error,result)=>{clearTimeout(timer);signal?.removeEventListener('abort',cancel);pending.delete(id);unwatch(id);error?reject(error):resolve(result);};
       done.progress=progress=>{lastProgress=progress;onProgress?.(progress);};
       pending.set(id,done); signal?.addEventListener('abort',cancel,{once:true});
-      if(timeoutMs>LIVENESS_AFTER_MS && !['alive','ping'].includes(action))watchLiveness(id,action);
+      if(timeoutMs>LIVENESS_AFTER_MS && !livenessUnsupported && !['alive','ping'].includes(action))watchLiveness(id,action);
       try {ctx.sendToBackend({namespace:'choir',id,action,input});} catch(error){done(error);}
     });
   }
@@ -5448,10 +5448,9 @@ export async function setup(ctx) {
   // check a plan would sit on "Planning" until its 10-minute timeout. Long requests are polled:
   // an id the backend no longer runs, twice in a row, fails with the restart. Silence counts
   // only once this backend has answered a check, so an older backend without it is never failed.
-  const liveness=new Map();let livenessTimer=null,livenessSeen=false,livenessBusy=false;
+  const liveness=new Map();let livenessTimer=null,livenessSeen=false,livenessBusy=false,livenessUnsupported=false;
   function watchLiveness(id,action){
     liveness.set(id,{action,strikes:0,silent:0});
-    const original=pending.get(id);pending.set(id,Object.assign((error,result)=>{unwatch(id);original(error,result);},{progress:original.progress}));
     livenessTimer??=setInterval(checkLiveness,LIVENESS_EVERY_MS);
   }
   async function checkLiveness(){
@@ -5464,6 +5463,7 @@ export async function setup(ctx) {
         if(watch.strikes>=2)lose(id,`Choir's backend restarted while this ${backendRequestKind(watch.action)==='Choir'?'Choir':backendRequestKind(watch.action).toLowerCase()} request was running, so its work was lost. Try again.`);}
     }catch(error){
       // "Unknown Choir action" is an older backend: it is alive, it just cannot be checked.
+      if(/unknown choir action/i.test(error?.message || '')){livenessUnsupported=true;for(const id of ids)unwatch(id);return;}
       if(!/timed out/i.test(error?.message || '') || !livenessSeen)return;
       for(const id of ids){const watch=liveness.get(id);if(watch && ++watch.silent>=3)lose(id,"Choir's backend stopped responding. Restart Choir in Extensions, reload the page and try again.");}
     }finally{livenessBusy=false;}
@@ -7132,7 +7132,8 @@ export async function setup(ctx) {
     audio.onloadedmetadata=seek;seek();
     // The previous clip's end save already marks this clip's start; saving again on its first
     // tick doubled the position writes, and each write makes Lumiverse re-read its settings.
-    let lastSaved=Date.now();
+    // A playback's first clip has no such save, so it still marks its start at once.
+    let lastSaved=positionMark===positionMarkOf(activePlayback)?Date.now():0;
     audio.ontimeupdate=()=>{updateSeekControls();if(activePlayback && Date.now()-lastSaved>POSITION_SAVE_MS){lastSaved=Date.now();savePosition(audio.currentTime);}};
     audio.ondurationchange=updateSeekControls;
       if(signal.aborted)throw abortError();
@@ -7170,13 +7171,14 @@ export async function setup(ctx) {
   // save every few seconds keeps resume close without loading the database.
   const POSITION_SAVE_MS=5000;
   // Each position is an HTTP write; an unchanged position (repeated clip boundaries) is not sent again.
-  let positionWritten='';
+  let positionWritten='',positionMark='';
+  const positionMarkOf=value=>value?JSON.stringify([value.chatId,value.messageId,value.passage,value.chunk]):'';
   function savePosition(seconds=0){
     if(!activePlayback || disposed)return;
     const value={...activePlayback,seconds},signature=JSON.stringify(value);
-    if(signature===positionWritten)return;positionWritten=signature;
+    if(signature===positionWritten)return;positionWritten=signature;positionMark=positionMarkOf(value);
     // A late failure from a chat the user has left must not replace the current chat's status.
-    void ctx.settings.set(`position:${value.chatId}`,value).catch(error=>{positionWritten='';if(!disposed && value.chatId===chatId)status(`Playback position could not be saved: ${error.message}`,true);});
+    void ctx.settings.set(`position:${value.chatId}`,value).catch(error=>{positionWritten='';positionMark='';if(!disposed && value.chatId===chatId)status(`Playback position could not be saved: ${error.message}`,true);});
   }
   const speechMembers=segment=>segment.unison?segment.unison.map(member=>({...member,text:segment.text,passageIndex:segment.passageIndex})):segment.turns || [segment];
   const withoutBase=(segment,cast)=>{
