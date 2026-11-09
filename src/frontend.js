@@ -3596,6 +3596,7 @@ export async function setup(ctx) {
     // A unison or dialogue block has several speakers; its first speaker's own speed is used for the whole block.
     currentAudioSpeech=Boolean(item && !item.kind);currentSpeedSpeaker=currentAudioSpeech?primarySpeaker(item,speaker):'';setAudioRate(audio,currentAudioSpeech?playbackRateFor(currentSpeedSpeaker):1);audio.preservesPitch=true;
     const endGap=()=>{gapHold?.cancel();if(voiceGapHold===gapHold)voiceGapHold=null;gapHold=null;};
+    let ended=false;
     try {
     if(AudioContextClass){
       try{
@@ -3623,8 +3624,8 @@ export async function setup(ctx) {
         let settled=false;
         const done=error=>{if(settled)return;settled=true;signal.removeEventListener('abort',cancel);audio.onended=null;audio.onerror=null;endGap();syncPlayedAudio();if(currentAudio===audio){finishAudio=null;skipAudio=null;updateNextControls();}error?reject(error):resolve();};
         const cancel=()=>{audio.pause();done(abortError());};finishAudio=cancel;
-        skipAudio=()=>{audio.pause();done();};updateNextControls();
-        audio.onended=()=>done();audio.onerror=()=>done(Object.assign(new Error('Browser could not decode this provider’s audio. Use WAV or MP3.'),{undecodable:true}));
+        skipAudio=()=>{audio.pause();ended=true;done();};updateNextControls();
+        audio.onended=()=>{ended=true;done();};audio.onerror=()=>done(Object.assign(new Error('Browser could not decode this provider’s audio. Use WAV or MP3.'),{undecodable:true}));
         signal.addEventListener('abort',cancel,{once:true});
         if(speakerExcluded(speaker) || speaker==='SFX' && config?.enableSfx===false){done();return;}
         if(track)stopFollowing=followSpeech(audio,track);
@@ -3641,7 +3642,9 @@ export async function setup(ctx) {
         else startAudio();
       });
     } finally {
-      if(activePlayback===position && position)savePosition(audio.currentTime || 0);
+      // A clip that finished or was skipped is followed by the next clip's start save at the same
+      // point; only Stop, pause and errors need the exact position here.
+      if(activePlayback===position && position && !ended)savePosition(audio.currentTime || 0);
       endGap();stopFollowing?.();audio.onloadedmetadata=null;audio.ontimeupdate=null;audio.ondurationchange=null;mediaSource?.disconnect();gain?.disconnect();
       audio.onplay=audio.onpause=null;audio.pause();if(currentAudio===audio){currentAudio=null;currentAudioSpeech=false;currentSpeedSpeaker='';skipAudio=null;currentGain=null;currentNormalize=1;audioReady=false;currentSpeaker='';currentGroupLevel=null;currentGroupNames=[];renderMixer();}syncPlayedAudio();
       URL.revokeObjectURL(url);if(objectUrl===url)objectUrl=null;

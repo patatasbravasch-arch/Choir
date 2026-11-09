@@ -210,3 +210,16 @@ test('a clip that just started does not write the playback position; long clips 
     h.$('stop').click();await tick();assert.equal(h.store.get('position:chat-a').seconds,6.5,'Stop saves the exact position');
   }finally{Date.now=realNow;await h.close();}
 });
+
+test('a message played through writes the position once per clip boundary, not twice',async()=>{
+  const h=await harness();
+  try{
+    await h.plan();
+    const set=h.ctx.settings.set,writes=[];h.ctx.settings.set=(key,value)=>{if(key.startsWith('position:'))writes.push(structuredClone(value));return set(key,value);};
+    await h.play();
+    const clips=h.audios.length;assert.ok(clips>=2,'the fixture plays several clips');
+    assert.ok(writes.length<=clips,`${writes.length} position writes for ${clips} clips`);
+    assert.equal(writes.at(-1).complete,true,'the finished message is marked complete');
+    assert.ok(writes.every(write=>write.seconds===0),'clip boundaries save the next clip\'s start, not the end of the last one');
+  }finally{await h.close();}
+});
