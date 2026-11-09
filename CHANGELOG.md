@@ -4,6 +4,7 @@ Release notes for Choir on the `lunch-test` and `staging` branches, newest first
 
 **Backend restart detection.**
 - A plan, sound or music request that a backend restart forgot now fails within about 30 seconds with "Choir's backend restarted… Try again", instead of showing Planning for up to 10 minutes. A backend that stops answering entirely is reported after about a minute. Older backends without the check are never failed by it.
+- Half as many playback-position writes: a clip no longer saves the moment it starts (the previous clip's end already marks that spot), only every 5 seconds while playing and when it ends. Each write also made Lumiverse re-read its settings.
 
 **Token, efficiency, reliability and bug audits (9 November).**
 - Fewer tokens. Jev sends the delivery rules and option details once per round instead of in every line's question, offers only NPCs the reply can involve, uses shorter role labels, 600-character profiles, 1,500 characters of earlier chat and ±200 characters around each quote. The plan-inside-the-reply instruction sent with every message asks for SKIP rows only when non-story lines are skipped and LANG only when a Fish community voice may be chosen, and drops a duplicate example row. The planner asks for NPC rows only for voiceless people the reply can involve.
