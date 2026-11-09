@@ -236,23 +236,30 @@ test('an older backend without liveness checks never fails a long request',async
       return send(request);
     };
     h.$('latest').click();await until(()=>held && check);
-    for(let i=0;i<4;i++)await check();
+    await check();assert.equal(check,null,"one rejected check is enough to stop asking");
     assert.doesNotMatch(h.$('status').textContent,/backend (restarted|stopped)/);
     send(held);await until(()=>!h.$('latest').disabled);
+    assert.equal(check,null,'an unsupported check stops for good');
+    h.$('latest').click();await until(()=>!h.$('latest').disabled);assert.equal(check,null);
   }finally{await h.close();globalThis.setInterval=realSet;globalThis.clearInterval=realClear;}
 });
 
-test('a clip that just started does not write the playback position; long clips still save every few seconds',async()=>{
+test("only the first clip of a playback marks its start; later clips save every few seconds, and Stop saves the exact spot",async()=>{
   const h=await harness();const realNow=Date.now;
   try{
     await h.plan();
     const set=h.ctx.settings.set,writes=[];h.ctx.settings.set=(key,value)=>{if(key.startsWith('position:'))writes.push(structuredClone(value));return set(key,value);};
     h.state.blockAudio=true;h.$('play').click();await until(()=>h.audios.at(-1)?.paused===false);
+    const first=h.audios.at(-1);first.currentTime=0.3;first.ontimeupdate();await tick();
+    assert.equal(writes.length,1,'the first clip replaces whatever position was stored before this Play');
+    first.currentTime=0.6;first.ontimeupdate();await tick();assert.equal(writes.length,1);
+    const played=h.audios.length;first.currentTime=20;first.onended();await until(()=>h.audios.length>played && h.audios.at(-1).paused===false);
+    assert.equal(writes.length,2,'one save at the clip boundary');assert.equal(writes[1].seconds,0);
     const audio=h.audios.at(-1);audio.currentTime=0.3;audio.ontimeupdate();await tick();
-    assert.equal(writes.length,0,'the previous clip\'s end already marks where this one starts');
-    let shift=6000;Date.now=()=>realNow()+shift;audio.currentTime=6;audio.ontimeupdate();await tick();
-    assert.equal(writes.length,1);assert.equal(writes[0].seconds,6);
-    audio.currentTime=6.5;audio.ontimeupdate();await tick();assert.equal(writes.length,1,'one save per 5 seconds');
+    assert.equal(writes.length,2,'the boundary save already marks where this clip starts');
+    Date.now=()=>realNow()+6000;audio.currentTime=6;audio.ontimeupdate();await tick();
+    assert.equal(writes.length,3);assert.equal(writes[2].seconds,6);
+    audio.currentTime=6.5;audio.ontimeupdate();await tick();assert.equal(writes.length,3,'one save per 5 seconds');
     h.$('stop').click();await tick();assert.equal(h.store.get('position:chat-a').seconds,6.5,'Stop saves the exact position');
   }finally{Date.now=realNow;await h.close();}
 });
@@ -264,8 +271,8 @@ test('a message played through writes the position once per clip boundary, not t
     const set=h.ctx.settings.set,writes=[];h.ctx.settings.set=(key,value)=>{if(key.startsWith('position:'))writes.push(structuredClone(value));return set(key,value);};
     await h.play();
     const clips=h.audios.length;assert.ok(clips>=2,'the fixture plays several clips');
-    assert.ok(writes.length<=clips,`${writes.length} position writes for ${clips} clips`);
+    assert.ok(writes.length<=clips+1,`${writes.length} position writes for ${clips} clips`);
     assert.equal(writes.at(-1).complete,true,'the finished message is marked complete');
-    assert.ok(writes.every(write=>write.seconds===0),'clip boundaries save the next clip\'s start, not the end of the last one');
+    assert.ok(writes.slice(1).every(write=>write.seconds===0),'clip boundaries save the next clip\'s start, not the end of the last one');
   }finally{await h.close();}
 });
