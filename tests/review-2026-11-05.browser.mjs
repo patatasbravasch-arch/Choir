@@ -230,3 +230,13 @@ test('a message played through writes the position once per clip boundary, not t
     assert.ok(writes.slice(1).every(write=>write.seconds===0),'clip boundaries save the next clip\'s start, not the end of the last one');
   }finally{await h.close();}
 });
+
+test('the Acting control is visible in the drawer, in the Reading group beside Highlight spoken text',async()=>{
+  const h=await harness();
+  try{
+    const acting=h.$('actingIntensity');
+    assert.equal(acting.closest('[hidden]'),h.$('readAlong').closest('[hidden]'),'hidden only when its whole tab is');assert.equal(acting.closest('[hidden]:not(.et-task-panel)'),null);
+    assert.equal(acting.closest('.et-control-group')?.querySelector('h4')?.textContent,'Reading');
+    assert.equal(acting.closest('.et-control-group'),h.$('readAlong').closest('.et-control-group'));
+  }finally{await h.close();}
+});

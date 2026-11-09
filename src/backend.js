@@ -63,14 +63,14 @@ export async function classifyWithJev({ items = [], candidates = [], apiKey, end
   return result;
 }
 
-// With Choir on "Default Decision connection" and no Lumiverse default, the host's error names neither setting.
 // Paranoid mode's planner call log. Reports go to the user's open Choir pages,
 // which keep them only while Paranoid mode is on; nothing is stored.
 function reportCall(userId, entry) {
   if (!userId || typeof spindle?.sendToFrontend !== 'function') return;
   try { spindle.sendToFrontend({ namespace: 'choir', call: { at: Date.now(), ...entry } }, userId); } catch {}
 }
-const DECISION_PURPOSES = [[/^speaker_/, 'Jev speakers'], [/^emotion_/, 'Jev delivery'], [/^name_/, 'Jev new names'], [/^voice_gender_/, 'Jev voice genders'], [/^npc_voice_/, 'Jev NPC voices'], [/^(?:gender|age|language)$/, 'Jev voice profile'], [/^q0$/, 'Decision choice (voice or sound)']];
+const DECISION_PURPOSES = [[/^speaker_/, 'Jev speakers'], [/^emotion_/, 'Jev delivery'], [/^name_/, 'Jev new names'], [/^voice_gender_/, 'Jev voice genders'], [/^npc_voice_/, 'Jev NPC voices'], [/^(?:gender|language)$/, 'Jev voice profile'], [/^q0$/, 'Decision choice (voice or sound)']];
+// With Choir on "Default Decision connection" and no Lumiverse default, the host's error names neither setting.
 // An optional question with no Decision connection to answer it sends nothing, so it is not logged as a failed call.
 const noDecisionConnection = (request, error) => !request.connection_id && /no default decision connection/i.test(error?.message || '');
 async function evaluateDecisions(request, options, { optional = false } = {}) {
@@ -812,8 +812,6 @@ async function castCommunityVoices(raw, config, chosen, cast, prefetch) {
 const injectContexts = new Map(), injectUsers = new Map();
 const injectContextKey=(userId,chatId)=>JSON.stringify([userId || '',chatId]);
 const injectFile = chatId => `inject/${encodeURIComponent(chatId)}.json`;
-// A reply cut off mid-note (stopped or truncated) leaves an unclosed block; it goes too.
-const stripInjectedBlocks = text => stripInjectedPlan(text);
 async function loadInjectContext(userId, chatId) {
   if (!chatId) return null;
   const key=injectContextKey(userId,chatId);
@@ -828,7 +826,8 @@ if (typeof spindle !== 'undefined' && typeof spindle?.registerInterceptor === 'f
   spindle.registerInterceptor(async (messages, context) => {
     if (context?.chatId && context?.userId) injectUsers.set(context.chatId, context.userId);
     // Earlier replies keep their blocks in the chat; the model never needs to reread them.
-    const cleaned = messages.map(message => message.role === 'assistant' && typeof message.content === 'string' && message.content.includes('<!--') ? { ...message, content: stripInjectedBlocks(message.content) } : message);
+    // A reply cut off mid-note (stopped or truncated) leaves an unclosed block; it goes too.
+    const cleaned = messages.map(message => message.role === 'assistant' && typeof message.content === 'string' && message.content.includes('<!--') ? { ...message, content: stripInjectedPlan(message.content) } : message);
     const info = await loadInjectContext(context?.userId, context?.chatId);
     if (!injectionWanted(info, 'auto', context?.generationType ?? '')) return { messages: cleaned };
     // An assistant prefill (Start Reply With) must stay the final message for prefix completion.

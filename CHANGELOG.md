@@ -2,6 +2,14 @@
 
 Release notes for Choir on the `lunch-test` and `staging` branches, newest first. A few lunch-test builds between staging.29 and staging.30 were numbered `1.1.6-lunch-test.N`.
 
+**Text markers in Custom skip rules.**
+- Custom skip rules now take any text marker as well as tag names, classes and IDs: `[POV]`, a word in capitals such as `GABI_MONITOR_START`, or `{"mode":"scene-monitor"`. Every line containing a marker is left out of speech. Quotes, spaces and case are ignored; a lowercase word alone is still a tag name, so `summary` does not drop sentences that say summary.
+
+**Full code reread.**
+- The **Acting** control is now visible. It was built, saved and applied, but the drawer left it in a hidden row, so it could not be reached; it sits in Playback → Reading, above Highlight spoken text.
+- Two quotes written back to back (`"Hi.""Bye."`) are two spoken lines again. A check meant to ignore a doubled closing mark had lost its letter-and-digit test and swallowed the second line's opening mark.
+- Removed duplicated and unused code (one shared pattern-escaping helper and word splitter, an inline copy of the download helper, an unused wrapper and variables); moved three comments to the code they describe. No behaviour change.
+
 **Backend restart detection.**
 - A plan, sound or music request that a backend restart forgot now fails within about 30 seconds with "Choir's backend restarted… Try again", instead of showing Planning for up to 10 minutes. A backend that stops answering entirely is reported after about a minute. Older backends without the check are never failed by it.
 - About a third as many playback-position writes: one per clip instead of three. A clip no longer saves the moment it starts or again when it ends normally (the next clip's start save marks the same point); it saves every 5 seconds while playing, and Stop, pause and errors still save the exact spot. Each write also made Lumiverse re-read its settings and preset. The first clip of a playback still marks its start at once, so an earlier message's resume point is replaced straight away.
