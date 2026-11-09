@@ -241,3 +241,18 @@ test('an older backend without liveness checks never fails a long request',async
     send(held);await until(()=>!h.$('latest').disabled);
   }finally{await h.close();globalThis.setInterval=realSet;globalThis.clearInterval=realClear;}
 });
+
+test('a clip that just started does not write the playback position; long clips still save every few seconds',async()=>{
+  const h=await harness();const realNow=Date.now;
+  try{
+    await h.plan();
+    const set=h.ctx.settings.set,writes=[];h.ctx.settings.set=(key,value)=>{if(key.startsWith('position:'))writes.push(structuredClone(value));return set(key,value);};
+    h.state.blockAudio=true;h.$('play').click();await until(()=>h.audios.at(-1)?.paused===false);
+    const audio=h.audios.at(-1);audio.currentTime=0.3;audio.ontimeupdate();await tick();
+    assert.equal(writes.length,0,'the previous clip\'s end already marks where this one starts');
+    let shift=6000;Date.now=()=>realNow()+shift;audio.currentTime=6;audio.ontimeupdate();await tick();
+    assert.equal(writes.length,1);assert.equal(writes[0].seconds,6);
+    audio.currentTime=6.5;audio.ontimeupdate();await tick();assert.equal(writes.length,1,'one save per 5 seconds');
+    h.$('stop').click();await tick();assert.equal(h.store.get('position:chat-a').seconds,6.5,'Stop saves the exact position');
+  }finally{Date.now=realNow;await h.close();}
+});

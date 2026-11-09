@@ -3656,7 +3656,9 @@ export async function setup(ctx) {
     }
     const seek=()=>{if(offset>0 && Number.isFinite(audio.duration))audio.currentTime=Math.min(offset,Math.max(0,audio.duration-0.05));updateSeekControls();};
     audio.onloadedmetadata=seek;seek();
-    let lastSaved=0;
+    // The previous clip's end save already marks this clip's start; saving again on its first
+    // tick doubled the position writes, and each write makes Lumiverse re-read its settings.
+    let lastSaved=Date.now();
     audio.ontimeupdate=()=>{updateSeekControls();if(activePlayback && Date.now()-lastSaved>POSITION_SAVE_MS){lastSaved=Date.now();savePosition(audio.currentTime);}};
     audio.ondurationchange=updateSeekControls;
       if(signal.aborted)throw abortError();
