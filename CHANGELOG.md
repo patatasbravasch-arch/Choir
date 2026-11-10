@@ -2,6 +2,18 @@
 
 Release notes for Choir on the `lunch-test` and `staging` branches, newest first. A few lunch-test builds between staging.29 and staging.30 were numbered `1.1.6-lunch-test.N`.
 
+**Tidier Playback tab.**
+- **Acting** sits with speed, gap and loudness under Playback; Reading keeps only what happens on screen.
+- A saved Freesound key shows as one line (**Freesound key saved · Change**).
+- **This reply** groups the speech plan, attribution editor and the call inspector. Paranoid mode is now **Call inspector**, switched on right there, with **View calls →** beside it.
+- **Speed slider maximum** moved to Settings → Interface.
+- One name per feature: **Auto-play** beside **Auto-plan**, **Choose automatically** for every automatic voice choice, **Automatic voices** everywhere, **Freesound API key**, **Abyssal Constellation mixer theme**.
+- Long hints in Text filters and Performance fold behind **Examples** and **Tips**. Every setting keeps its saved value.
+
+**Drawer speed and plain-HTTP hosts.**
+- Typing in the drawer is about three times lighter: a keystroke in a saved field (a base style, an alias, a limit) took about 27 ms of work and now takes about 9 ms. The mixer no longer rebuilds its channel rows unless something they show changed, and unchanged icons and labels are no longer rewritten, which had made the browser lay out the whole chat page again on every edit.
+- Choir no longer calls `crypto.randomUUID()` anywhere. It was only used where the browser offered it, with a fallback, so plain-HTTP remote hosts already worked; IDs now always come from `crypto.getRandomValues`, which every context has.
+
 **Text markers in Custom skip rules.**
 - Custom skip rules now take any text marker as well as tag names, classes and IDs: `[POV]`, a word in capitals such as `GABI_MONITOR_START`, or `{"mode":"scene-monitor"`. Every line containing a marker is left out of speech. Quotes, spaces and case are ignored; a lowercase word alone is still a tag name, so `summary` does not drop sentences that say summary.
 
