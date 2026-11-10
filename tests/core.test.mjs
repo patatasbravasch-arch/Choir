@@ -278,8 +278,11 @@ test('HTTP UUID fallback uses secure random bytes, preserves v4 bits and generat
   const ids=Array.from({length:1000},()=>randomUuid(httpCrypto));assert.equal(new Set(ids).size,1000);
   for(const id of ids)assert.match(id,/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
   assert.equal(randomUuid({getRandomValues:bytes=>bytes.fill(255)}),'ffffffff-ffff-4fff-bfff-ffffffffffff');
-  const secureCrypto={randomUUID(){assert.equal(this,secureCrypto);return 'native-id';}};
-  assert.equal(randomUuid(secureCrypto),'native-id');
+  // crypto.randomUUID is never called, even where it exists: it is missing on plain-HTTP hosts.
+  const secureCrypto={randomUUID(){throw new Error('randomUUID must not be used');},getRandomValues:bytes=>bytes.fill(0)};
+  assert.equal(randomUuid(secureCrypto),'00000000-0000-4000-8000-000000000000');
+  // No crypto object at all still yields a well-formed v4 ID.
+  assert.match(randomUuid(null),/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
 });
 
 test('HTTP SHA-256 fallback preserves native saved-plan keys for UTF-8 and block boundaries',async()=>{

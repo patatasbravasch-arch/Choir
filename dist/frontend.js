@@ -29,10 +29,14 @@ function mergeSettingsChanges(latest, baseline, local) {
   return structuredClone(local);
 }
 
-// HTTP LAN hosts expose getRandomValues, but not randomUUID or SubtleCrypto.
+// crypto.randomUUID exists only in secure contexts, so a Lumiverse reached over plain HTTP
+// (a LAN or remote host) has none. Choir never calls it: getRandomValues works everywhere
+// and gives the same v4 IDs. Without any crypto object the bytes are merely unpredictable
+// enough for request and element IDs.
 function randomUuid(cryptoApi=globalThis.crypto) {
-  if(typeof cryptoApi?.randomUUID==='function')return cryptoApi.randomUUID();
-  const bytes=cryptoApi.getRandomValues(new Uint8Array(16));
+  const bytes=new Uint8Array(16);
+  if(typeof cryptoApi?.getRandomValues==='function')cryptoApi.getRandomValues(bytes);
+  else for(let index=0;index<bytes.length;index++)bytes[index]=Math.floor(Math.random()*256);
   bytes[6]=(bytes[6]&0x0f)|0x40;bytes[8]=(bytes[8]&0x3f)|0x80;
   const hex=Array.from(bytes,byte=>byte.toString(16).padStart(2,'0')).join('');
   return `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`;
@@ -3974,6 +3978,13 @@ export async function setup(ctx) {
     </details>
   </div>`;
   const $ = name => root.querySelector(`[data-et="${name}"]`);
+  // Refreshes run on every saved edit. Rewriting an unchanged label or icon still replaces its
+  // nodes, and the size read that follows then re-lays-out the whole chat page, so these
+  // write only when the value differs.
+  const setText=(node,text)=>{if(node.textContent!==text)node.textContent=text;};
+  const shownHtml=new WeakMap();
+  const setHtml=(node,html)=>{if(shownHtml.get(node)!==html){shownHtml.set(node,html);node.innerHTML=html;}};
+  const setStyle=(node,name,value)=>{if(node.style[name]!==value)node.style[name]=value;};
   const drawerNavigation=createDrawerNavigation(root);
   for(const button of root.querySelectorAll('button'))button.type='button';
   const pending = new Map(); const LIVENESS_AFTER_MS=30000,LIVENESS_EVERY_MS=15000,LIVENESS_REPLY_MS=10000;
@@ -4021,7 +4032,7 @@ export async function setup(ctx) {
   }
   // Each saved mix gets its own revision, so an export can tell a replacement from the mix it read,
   // even when both have the same size and length.
-  const mixRevision=()=>globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  const mixRevision=()=>randomUuid();
   function invalidateRecordingAudio(key){const [,targetChat,messageId]=JSON.parse(key);invalidateVolatileAudio({kind:'delete',chatId:targetChat,messageId});}
   function readVolatileAudio(cache,key){
     const entry=cache.get(key);
@@ -4535,18 +4546,18 @@ export async function setup(ctx) {
   unsubs.push(()=>{autoPlanAction?.destroy();autoPlanAction=null;toolbarAutoPlan.remove();});
   function refreshAutoPlanControls(){
     $('drawerAutoPlan').checked=Boolean(config?.autoPlan);$('drawerAutoPlan').disabled=!chatId;
-    mixerAutoPlan.textContent='Auto-plan';
+    setText(mixerAutoPlan,'Auto-plan');
     mixerAutoPlan.setAttribute('aria-pressed',String(Boolean(config?.autoPlan)));mixerAutoPlan.disabled=!chatId;
     mixerAutoPlan.title='Plan new assistant replies with the selected engine. Jev and LLM planning can incur costs. Auto-play is controlled separately.';
-    mixerAutoPlay.textContent='Auto-play';
+    setText(mixerAutoPlay,'Auto-play');
     mixerAutoPlay.setAttribute('aria-pressed',String(Boolean(config?.auto)));mixerAutoPlay.disabled=!chatId;
-    mixerSfx.textContent='SFX';mixerSfx.setAttribute('aria-pressed',String(config?.enableSfx!==false));mixerSfx.disabled=!chatId;
-    mixerAmbience.textContent='Ambience';mixerAmbience.setAttribute('aria-pressed',String(config?.enableAmbience!==false));mixerAmbience.disabled=!chatId;
-    mixerMusic.textContent='Music';mixerMusic.setAttribute('aria-pressed',String(config?.enableMusic===true));mixerMusic.disabled=!chatId;
-    mixerFollow.textContent='Follow';mixerFollow.setAttribute('aria-pressed',String(Boolean(config?.followNarration)));mixerFollow.disabled=!chatId;mixerFollow.title=`Follow narration is ${config?.followNarration?'on':'off'}. Scroll the chat to the spoken passage. Scrolling yourself pauses following; toggle off and on to resume.`;
-    mixerMessages.textContent='Messages';mixerMessages.setAttribute('aria-pressed',String(Boolean(config?.sectionButtons)));mixerMessages.disabled=!chatId;mixerMessages.title=`Message play controls are ${config?.sectionButtons?'on':'off'}. Show or hide Play and Sections beside each message. Download appears when a complete played recording is available.`;
+    setText(mixerSfx,'SFX');mixerSfx.setAttribute('aria-pressed',String(config?.enableSfx!==false));mixerSfx.disabled=!chatId;
+    setText(mixerAmbience,'Ambience');mixerAmbience.setAttribute('aria-pressed',String(config?.enableAmbience!==false));mixerAmbience.disabled=!chatId;
+    setText(mixerMusic,'Music');mixerMusic.setAttribute('aria-pressed',String(config?.enableMusic===true));mixerMusic.disabled=!chatId;
+    setText(mixerFollow,'Follow');mixerFollow.setAttribute('aria-pressed',String(Boolean(config?.followNarration)));mixerFollow.disabled=!chatId;mixerFollow.title=`Follow narration is ${config?.followNarration?'on':'off'}. Scroll the chat to the spoken passage. Scrolling yourself pauses following; toggle off and on to resume.`;
+    setText(mixerMessages,'Messages');mixerMessages.setAttribute('aria-pressed',String(Boolean(config?.sectionButtons)));mixerMessages.disabled=!chatId;mixerMessages.title=`Message play controls are ${config?.sectionButtons?'on':'off'}. Show or hide Play and Sections beside each message. Download appears when a complete played recording is available.`;
     for(const button of [mixerAutoPlan,mixerAutoPlay,mixerSfx,mixerAmbience,mixerMusic])button.title=`${button.textContent} is ${button.getAttribute('aria-pressed')==='true'?'on':'off'}. ${button===mixerAutoPlan?'Create plans for new replies. Jev and LLM planning can incur costs. Auto-play controls speech separately.':button===mixerAutoPlay?'Play available plans automatically. Enable Auto-plan too to plan new replies.':button===mixerSfx?'Play scene sound effects.':button===mixerAmbience?'Loop scene ambience under speech.':'Play background music under speech. Replan an existing reply to add music.'}`;
-    toolbarAutoPlan.querySelector('span').textContent=mixerAutoPlan.textContent;toolbarAutoPlan.title=mixerAutoPlan.title;
+    setText(toolbarAutoPlan.querySelector('span'),mixerAutoPlan.textContent);toolbarAutoPlan.title=mixerAutoPlan.title;
     toolbarAutoPlan.setAttribute('aria-label',mixerAutoPlan.textContent);toolbarAutoPlan.setAttribute('aria-pressed',String(Boolean(config?.autoPlan)));toolbarAutoPlan.disabled=!chatId;
     if(config?.showAutoPlanAction){
       // Input bar actions populate Extras and the customizable action catalog;
@@ -4686,12 +4697,12 @@ export async function setup(ctx) {
   function positionMixer(){
     const collapsed=Boolean(mixerState.collapsed);
     const isEnabled=Boolean(config?.enableMixer),expanded=isEnabled && !collapsed;
-    $('showMixer').textContent=expanded?'Close mixer':'Open mixer';
+    setText($('showMixer'),expanded?'Close mixer':'Open mixer');
     $('showMixer').setAttribute('aria-expanded',String(expanded));
     mixer.dataset.collapsed=String(collapsed);mixerBody.hidden=collapsed;mixerTitle.hidden=collapsed;
-    mixer.style.width=collapsed?'44px':`${Math.max(280,(mixerState.quickButtonColumns || 3)*68+16)}px`;mixer.style.padding='0';mixer.style.borderRadius=collapsed?'50%':'12px';
-    mixer.style.borderWidth=collapsed?'0':'1px';
-    collapse.innerHTML=collapsed?ICON_SOUND:ICON_CLOSE;
+    setStyle(mixer,'width',collapsed?'44px':`${Math.max(280,(mixerState.quickButtonColumns || 3)*68+16)}px`);setStyle(mixer,'padding','0px');setStyle(mixer,'borderRadius',collapsed?'50%':'12px');
+    setStyle(mixer,'borderWidth',collapsed?'0px':'1px');
+    setHtml(collapse,collapsed?ICON_SOUND:ICON_CLOSE);
     collapse.setAttribute('aria-label',collapsed?'Open Choir voice mixer':'Collapse Choir voice mixer');
     collapse.setAttribute('aria-expanded',String(!collapsed));collapse.title=collapsed?'Choir voice mixer · click to open, drag to move':'Collapse voice mixer';
     const doc=root?.ownerDocument || (typeof document!=='undefined'?document:null);
@@ -4699,9 +4710,9 @@ export async function setup(ctx) {
     if(!doc || !view)return;
     mixerState.x=Math.max(0,Math.min(Number(mixerState.x)||0,Math.max(0,(view?.innerWidth || 1024)-mixer.offsetWidth-10)));
     mixerState.y=Math.max(0,Math.min(Number(mixerState.y)||0,Math.max(0,(view?.innerHeight || 768)-mixer.offsetHeight-10)));
-    mixer.style.left=`${mixerState.x}px`;mixer.style.top=`${mixerState.y}px`;
-    mixer.hidden = !isEnabled;
-    mixer.style.display = isEnabled ? 'flex' : 'none';
+    setStyle(mixer,'left',`${mixerState.x}px`);setStyle(mixer,'top',`${mixerState.y}px`);
+    if(mixer.hidden===isEnabled)mixer.hidden = !isEnabled;
+    setStyle(mixer,'display',isEnabled ? 'flex' : 'none');
   }
   let suppressMixerClick=false;
   collapse.onclick=event=>{if(suppressMixerClick && event.detail!==0){suppressMixerClick=false;return;}suppressMixerClick=false;mixerState.collapsed=!mixerState.collapsed;positionMixer();persistMixer();};
@@ -4754,6 +4765,7 @@ export async function setup(ctx) {
     hold.run();
     return hold;
   }
+  let mixerRowsSignature='';
   function renderMixer(){
     const doc=root?.ownerDocument || (typeof document!=='undefined'?document:null);
     if(!doc)return;
@@ -4762,9 +4774,16 @@ export async function setup(ctx) {
     syncVoiceControls();
     const focused=doc.activeElement,focusLabel=channelsRoot.contains(focused)?focused.getAttribute('aria-label'):null,focusTabKey=channelTabs.contains(focused)?focused.dataset.channelKey:null,scrollTop=channelsRoot.scrollTop;
     updateNextControls();
+    const speakers=new Set((mixerPlaybackSegments ?? plan?.segments ?? []).flatMap(speechMembers).filter(segment=>!segment.kind && segment.speaker).map(segment=>segment.speaker));
+    // The channel rows are rebuilt only when something they show changed. Every saved edit calls
+    // renderMixer, so typing in an unrelated field (a base style, an alias) used to rebuild the
+    // whole panel on each keystroke, also while the mixer was collapsed.
+    const channelState=speaker=>{const channel=Object.hasOwn(mixerState.channels,speaker)?mixerState.channels[speaker]:null;return [speaker,channel?.volume ?? null,Boolean(channel?.mute),channel?.speed ?? null,speakerExcluded(speaker),currentSpeaker===speaker || currentGroupNames.includes(speaker)];};
+    const signature=JSON.stringify([[...speakers].map(channelState),currentSpeaker,mixerState.volumeLimits,mixerState.layout.voiceSpeeds,mixerState.speedSliderMax,mixerState.sfx,mixerState.ambience,mixerState.music,config?.enableSfx!==false,config?.enableAmbience!==false,config?.enableMusic===true,mixerState.channelGroup,mixerState.channelTab]);
+    if(signature===mixerRowsSignature && channelsRoot.childElementCount){paintSpeakerSpeeds();positionMixer();return;}
+    mixerRowsSignature=signature;
     channelsRoot.replaceChildren();speakerLabel.replaceChildren();
     if(currentSpeaker){const prefix=doc.createElement('span');prefix.className='cm-sr-only';prefix.textContent='Speaking: ';speakerLabel.append(prefix,doc.createTextNode(currentSpeaker));}else speakerLabel.textContent='Ready to play';
-    const speakers=new Set((mixerPlaybackSegments ?? plan?.segments ?? []).flatMap(speechMembers).filter(segment=>!segment.kind && segment.speaker).map(segment=>segment.speaker));
     for(const speaker of speakers){
       if(!Object.hasOwn(mixerState.channels,speaker))Object.defineProperty(mixerBaseline.channels,speaker,{value:{volume:1,mute:false},writable:true,enumerable:true,configurable:true});
       const channel=Object.hasOwn(mixerState.channels,speaker)?mixerState.channels[speaker]:{volume:Math.min(1,mixerState.volumeLimits.voices),mute:false};channel.volume=Math.min(channel.volume,mixerState.volumeLimits.voices);Object.defineProperty(mixerState.channels,speaker,{value:channel,writable:true,enumerable:true,configurable:true});
@@ -4820,13 +4839,13 @@ export async function setup(ctx) {
   }
   function updateTransport(){
     const latest=latestReply(),paused=voiceGapHold?voiceGapHold.paused:(!currentAudio || currentAudio.paused),label=currentAudio?(paused?'Resume Choir audio':'Pause Choir audio'):'Play latest reply';
-    mixerPlay.innerHTML=(paused?ICON_TRANSPORT_PLAY:ICON_TRANSPORT_PAUSE).replace(/<circle[^>]*\/>/,'');mixerPlay.title=label;mixerPlay.setAttribute('aria-label',label);mixerPlay.disabled=currentAudio?!audioReady:busy || Boolean(controller) || !chatId || !latest;
-    $('drawerPlay').textContent=currentAudio?(paused?'Resume':'Pause'):'Play';$('drawerPlay').setAttribute('aria-label',label);$('drawerPlay').disabled=mixerPlay.disabled;
-    $('currentMessageLabel').textContent=Number.isInteger(latest?.index_in_chat)?`Message ${String(latest.index_in_chat+1).padStart(3,'0')}`:'Latest reply';$('drawerDownload').disabled=busy;
+    setHtml(mixerPlay,(paused?ICON_TRANSPORT_PLAY:ICON_TRANSPORT_PAUSE).replace(/<circle[^>]*\/>/,''));mixerPlay.title=label;mixerPlay.setAttribute('aria-label',label);mixerPlay.disabled=currentAudio?!audioReady:busy || Boolean(controller) || !chatId || !latest;
+    setText($('drawerPlay'),currentAudio?(paused?'Resume':'Pause'):'Play');$('drawerPlay').setAttribute('aria-label',label);$('drawerPlay').disabled=mixerPlay.disabled;
+    setText($('currentMessageLabel'),Number.isInteger(latest?.index_in_chat)?`Message ${String(latest.index_in_chat+1).padStart(3,'0')}`:'Latest reply');$('drawerDownload').disabled=busy;
     mixerPlanLatest.disabled=busy || Boolean(controller) || !chatId || !latest;
     mixerStop.disabled=!controller && !currentAudio && !paragraphPrefetchControllers.size && !autoReplyQueue.size && !beds.ambience && !beds.music;
     $('stop').disabled=mixerStop.disabled;
-    mixer.dataset.playState=currentAudio?(paused?'paused':'playing'):busy?'loading':'idle';playbackCaption.textContent=currentAudio?(paused?'Paused':'Now playing'):busy?(planningSource?'Planning speech':'Preparing audio'):'Playback';
+    mixer.dataset.playState=currentAudio?(paused?'paused':'playing'):busy?'loading':'idle';setText(playbackCaption,currentAudio?(paused?'Paused':'Now playing'):busy?(planningSource?'Planning speech':'Preparing audio'):'Playback');
   }
   function speakerExcluded(speaker){return normalizeName(speaker)==='narrator' && Boolean(config?.muteNarrator) || [...(config?.fixed || []),...Object.values(config?.casts || {}).flat()].some(actor=>normalizeName(actor.speaker)===normalizeName(speaker) && actor.excluded) || config?.npcPolicy?.mode==='skip' && Object.values(config.casts || {}).flat().some(actor=>normalizeName(actor.speaker)===normalizeName(speaker));}
   function playbackExcluded(segment){return (segment.unison?segment.unison.every(member=>speakerExcluded(member.speaker)):speakerExcluded(segment.speaker)) || segment.kind==='sfx' && config?.enableSfx===false || segment.kind==='ambience' && config?.enableAmbience===false || segment.kind==='music' && config?.enableMusic!==true;}
@@ -4871,7 +4890,7 @@ export async function setup(ctx) {
     const clock=value=>`${Math.floor(value/60)}:${String(Math.floor(value%60)).padStart(2,'0')}`;
     for(const control of seekControls){
       const visible=available && (!control.messageId || control.messageId===activePlayback.messageId);control.root.hidden=!visible;control.slider.disabled=!visible || duration<=0;
-      control.slider.max=String(duration);control.slider.value=String(Math.min(seconds,duration));control.time.textContent=`${clock(seconds)} / ${clock(duration)}`;
+      control.slider.max=String(duration);control.slider.value=String(Math.min(seconds,duration));setText(control.time,`${clock(seconds)} / ${clock(duration)}`);
       control.slider.style.setProperty('--choir-level',`${duration?Math.min(seconds/duration,1)*100:0}%`);
       const part=(activePlayback?.chunk ?? 0)+1;control.slider.title=`${currentSpeaker || 'Current block'}${part>1?` · part ${part}`:''}`;control.slider.setAttribute('aria-valuetext',`${clock(seconds)} of ${clock(duration)}${part>1?`, part ${part}`:''}`);
     }
@@ -7272,7 +7291,7 @@ export async function setup(ctx) {
   }
   function updateGroupingStatus(){
     const node=$('groupingStatus');if(!node)return;
-    if(plan)$('planSummary').textContent=`Speech plan · ${plan.segments.length} spoken blocks`;
+    if(plan)setText($('planSummary'),`Speech plan · ${plan.segments.length} spoken blocks`);
     node.hidden=true;if(!config?.batchSpeech)return;
     const route=scope(config),connection=nativeConnections.find(item=>`native:${item.id}`===route);
     const maxSpeakers=nativeSpeakerLimit(connection);
