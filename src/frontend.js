@@ -3,7 +3,7 @@ import { createSetupWizard, saveSetupSettings, ONBOARDING_KEY } from './setup.js
 import { ABYSSAL_THEME_CSS } from './abyssal-theme.js';
 import { randomUuid, sha256Hex, GEMINI_VOICES, OPENAI_VOICES, additionalVoices, apiErrorMessage, MAX_SPEECH_CHARS, MAX_CHANNEL_VOLUME, speechProviderFamily, speechRequestLimits, normalizeName, normalizeVoiceCatalogue, characterCardRoles, validateCardRoles, reconcileCardCast, unisonSpeakers, speechSourceUnits, mixUnisonAudio, speechDownloadWav, transcriptFromMessage, readableText, readAlongIndex, locatePassages, spokenLength, validateCastConfig, validatePlan, npcCastActor, parsePlanJson, speechBatches, groupedSpeechBatches, audioBytes, fastClassifyPlan, resolvePlannerMode, attributionPlan, restoreAttribution, passageKey, mixerVolume, loudnessGain, castExport, castImport, applySoundCues, cueOffset, sfxCueOffset, transcriptLines, withoutLines } from './core.js';
 import { normalizeSpeedSliderMax, normalizePlaybackRate, normalizeVoiceGap, speakerPlaybackRate, effectivePlaybackRate, browserPlaybackRate, PLAYBACK_RATE_LIMITS, VOICE_GAP_LIMITS } from './core.js';
-import { soundQueryFallbacks, speechLookaheadEnd, backendRequestKind, LIMITED_SPEECH_PEAK, softClipCurve, spaceSoundEffects, readInjectedPlan, injectedCastRows, injectedSoundCues, injectedSkipLines } from './core.js';
+import { escapePattern, soundQueryFallbacks, speechLookaheadEnd, backendRequestKind, LIMITED_SPEECH_PEAK, softClipCurve, spaceSoundEffects, readInjectedPlan, injectedCastRows, injectedSoundCues, injectedSkipLines } from './core.js';
 import { createPlayedAudioCapture, playedAudioFilename, createWavArchive } from './played-audio.js';
 import { characterDeliveryMode, voiceDelivery, normalizeActingIntensity, ACTING_INTENSITY_LEVELS, normalizeMixerColumns, normalizeMixerVolumeLimits } from './delivery.js';
 import { createDrawerNavigation, DRAWER_UI_CSS } from './drawer-ui.js';
@@ -393,7 +393,7 @@ export async function setup(ctx) {
       <summary>Skip tags and blocks</summary>
       <p class="et-hint">Automatic filtering skips interface panels. Add tags, classes or IDs below to exclude other blocks from speech across all chats.</p>
       <label>Custom skip rules<textarea data-et="ignoredTags" rows="2" placeholder="summary, .status-panel, #phone-panel" aria-label="Skip tags and blocks"></textarea></label>
-      <small>Separate entries with commas or spaces. For example, &lt;summary&gt;, .status-panel or #phone-panel. Text inside matching blocks is skipped too.</small>
+      <small>Separate entries with commas or spaces. For example, &lt;summary&gt;, .status-panel or #phone-panel. Text inside matching blocks is skipped too. Any other text, such as [POV], a word in CAPITALS like GABI_MONITOR_START or {"mode":"scene-monitor", skips every line that contains it.</small>
       <label class="et-check"><input data-et="skipMeta" type="checkbox" checked> Skip non-story blocks</label>
       <div class="et-row"><button data-et="previewReading" class="et-btn-subtle">Preview text to read</button></div>
       <small>The preview applies tag and interface filtering. Optional non-story checking runs when you plan a reply.</small>
@@ -628,7 +628,7 @@ export async function setup(ctx) {
             const identity=JSON.parse(sessionKey);if(identity[0]!==audioNamespace)continue;
             if(operation==='listChat' && identity[1]===targetChat && !seen.has(sessionKey) && !audioExpired(record) && record.playedAudio?.blob?.size)result.push(identity[2]);
             else if(operation==='deleteChat' && identity[1]===targetChat)sessionChanges.set(sessionKey,null);
-            else if(operation==='policy' && JSON.parse(sessionKey)[1]===targetChat && !seen.has(sessionKey))policyRecord(sessionKey,record);
+            else if(operation==='policy' && identity[1]===targetChat && !seen.has(sessionKey))policyRecord(sessionKey,record);
             else if(operation==='prune' && audioExpired(record))sessionChanges.set(sessionKey,null);
           }
         });
@@ -654,9 +654,7 @@ export async function setup(ctx) {
         const cursor=request.result;
         if(cursor){
           let identity;try{identity=JSON.parse(cursor.key);}catch{}
-          const record=cursor.value;
-          const expired=record?.expiresAt!=null && record.expiresAt<=Date.now();
-          if(identity?.[0]===audioNamespace && cursor.key!==keepKey && !recordingInUse(cursor.key) && expired){
+          if(identity?.[0]===audioNamespace && cursor.key!==keepKey && !recordingInUse(cursor.key) && audioExpired(cursor.value)){
             store.delete(cursor.key);removedKeys.push(cursor.key);removed++;
             const marker=JSON.stringify(['generation',...identity]),generation=state.get(marker);generation.onsuccess=()=>state.put((generation.result || 0)+1,marker);
           }
@@ -2603,7 +2601,7 @@ export async function setup(ctx) {
     actors.forEach((actor,index)=>{
       const {entry,home}=entries[index],names=[actor.speaker,...(actor.aliases || [])].map(normalizeName).filter(Boolean);
       const pinned=home===$('fixed') && castRows.indexOf(entry)<2;
-      const present=pinned || !canGroup || names.some(name=>speakers.has(name) || new RegExp(`(?:^|[^\\p{L}\\p{N}_])${name.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}(?=$|[^\\p{L}\\p{N}_])`,'u').test(transcript));
+      const present=pinned || !canGroup || names.some(name=>speakers.has(name) || new RegExp(`(?:^|[^\\p{L}\\p{N}_])${escapePattern(name)}(?=$|[^\\p{L}\\p{N}_])`,'u').test(transcript));
       const editing=!entry.row.querySelector('[data-choir-cast-editor]').hidden;
       const target=editing?entry.row.parentElement:present?home:otherRows;buckets.get(target)?.push(entry.row);
     });
@@ -3388,7 +3386,7 @@ export async function setup(ctx) {
         }
         if(!fastPlan)throw new Error(failure.message || 'Heuristic could not identify the speaker. Add clear speaker tags or choose Jev or LLM. No LLM request was made.');
       }
-      // 2. Jev System 1 classifier (~20ms)
+      // The Jev classifier, unless the reply's own casting already covers every quote.
       let jevFailure='',guessed=0;
       if(!fastPlan){
         snapshot.characterProfiles=await plannerProfiles(snapshot,ctrl.signal);
@@ -3671,7 +3669,7 @@ export async function setup(ctx) {
         skipAudio=()=>{audio.pause();ended=true;done();};updateNextControls();
         audio.onended=()=>{ended=true;done();};audio.onerror=()=>done(Object.assign(new Error('Browser could not decode this provider’s audio. Use WAV or MP3.'),{undecodable:true}));
         signal.addEventListener('abort',cancel,{once:true});
-        if(speakerExcluded(speaker) || speaker==='SFX' && config?.enableSfx===false){done();return;}
+        if(speakerExcluded(speaker) || speaker==='SFX' && config?.enableSfx===false){ended=true;done();return;}
         if(track)stopFollowing=followSpeech(audio,track);
         audio.onplay=audio.onpause=syncPlayedAudio;
         const startAudio=()=>{const playing=audio.play();syncPlayedAudio();return playing.then(()=>{if(!settled && currentAudio===audio){audioReady=true;updateTransport();}}).catch(error=>done(new Error(error.name==='NotAllowedError'?'Browser blocked audio. Click Play in the mixer to enable playback.':error.message)));};
@@ -3890,9 +3888,9 @@ export async function setup(ctx) {
     // Music alone needs no Freesound key; Freesound sounds without one would only fail later.
     return freesoundKey(config)?result:{...result,cues:[],ambience:[]};
   }
-  // Sound effects are optional: a failed choice never blocks speech.
   // The music playing at the end of earlier text, so the next sound request keeps it unless the scene changes.
   const lastMusic=entries=>{const entry=(entries || []).filter(entry=>!entry.stop).at(-1);return entry && {title:'',feels:entry.feels};};
+  // Sound effects are optional: a failed choice never blocks speech.
   async function cuePlannedSegments(segments,ctrl,token,written=null){
     if(!soundCuesWanted(config))return {segments,checked:false};
     const currentMusic=continuousMusic() && beds.music && {title:beds.music.title || '',feels:beds.music.feels};
@@ -3910,8 +3908,7 @@ export async function setup(ctx) {
   }
   async function synthesizeSpeechBlob(segment,snapshot,signal){
     if(signal.aborted)throw abortError();
-    const request=synthesisSettings(segment,snapshot),route=segment.route || scope(snapshot);
-    const connection=request.connection;
+    const request=synthesisSettings(segment,snapshot),connection=request.connection;
     if(!connection)throw new Error(`TTS connection for ${segment.speaker} is no longer available. Choose another connection and plan again.`);
     return nativeSpeech(connection,{voice:segment.voice,text:request.text,parameters:request.parameters},signal,segment.speaker,'Speech playback');
   }
@@ -4075,7 +4072,7 @@ export async function setup(ctx) {
       // Effects download separately and cannot occupy a paid TTS request slot.
       for(const queue of synthesisQueues)while(!ctrl.signal.aborted && (!failed || queue===synthesisQueues[1]) && queue.active<queue.limit && queue.pending.length){
         const idx=queue.pending.shift();
-        if(playbackExcluded(segments[idx])){resolvers.get(idx)({skip:true});scheduled.delete(idx);ready.delete(idx);resolvers.delete(idx);continue;}
+        if(playbackExcluded(segments[idx])){resolvers.get(idx)({skip:true});releaseSlot(idx);continue;}
         queue.active++;
         // Each request can be cancelled alone (Next) as well as with the playback.
         const job=new AbortController(),stopJob=()=>job.abort();
@@ -4602,9 +4599,7 @@ export async function setup(ctx) {
       if(!downloadableRecording(current,content) || current.playedAudio.revision!==played.revision || current.playedAudio.blob.size!==played.blob.size || current.playedAudio.duration!==played.duration)
         throw new Error('This recording was deleted or replaced while the download was prepared. Nothing was downloaded.');
       if(disposed || targetChat!==chatId || token!==revision)throw abortError();
-      const url=URL.createObjectURL(new Blob([wav],{type:'audio/wav'})),link=document.createElement('a');
-      link.href=url;link.download=filename;link.hidden=true;document.body.append(link);link.click();link.remove();
-      downloadUrls.set(url,setTimeout(()=>{URL.revokeObjectURL(url);downloadUrls.delete(url);},30000));
+      saveDownload(new Blob([wav],{type:'audio/wav'}),filename);
       status('Audio downloaded as one WAV of the completed playback, with the sounds, speed and mixer levels heard.');
     } finally {
       await decoder?.close().catch(()=>{});
@@ -4684,8 +4679,8 @@ export async function setup(ctx) {
     const recent=ctx.messages.getRecent(20).filter(v=>!v.extra?.is_system);
     for(const message of recent) {
       const row=document.createElement('div');row.className='et-card et-message';
-      const name=document.createElement('span');name.style.cssText='overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-right:8px;font-size:0.9em';
-      name.style.whiteSpace='normal';name.textContent=`${Number.isInteger(message.index_in_chat)?`Message ${String(message.index_in_chat+1).padStart(3,'0')} · `:''}${message.name || (message.is_user?'You':'Character')}`;const metadata=document.createElement('small');metadata.textContent='No completed mix saved';name.append(metadata);
+      const name=document.createElement('span');name.style.cssText='margin-right:8px;font-size:0.9em';
+      name.textContent=`${Number.isInteger(message.index_in_chat)?`Message ${String(message.index_in_chat+1).padStart(3,'0')} · `:''}${message.name || (message.is_user?'You':'Character')}`;const metadata=document.createElement('small');metadata.textContent='No completed mix saved';name.append(metadata);
       const actions=document.createElement('div');actions.className='et-btn-group';
       const button=document.createElement('button');button.type='button';button.className='et-btn-subtle';button.textContent='Plan';button.onclick=()=>run(()=>prepare(message.id,false,undefined,true));actions.append(button);
       const replay=document.createElement('button');replay.type='button';replay.className='et-btn-subtle';replay.textContent='Replay';replay.onclick=()=>run(()=>replayRecording(message.id));actions.append(replay);
@@ -4802,7 +4797,8 @@ export async function setup(ctx) {
   $('load').onclick=()=>chatLoading?loadChat(true):run(async()=>{const target=chatId;await flushSettings();if(chatLoading || target!==chatId)return;config=capture();const version=++loadVersion;await loadProviders();if(chatLoading || target!==chatId || version!==loadVersion)return;await persistConfig(target,config,true);saveState('Settings saved');clearPlan();status('Connections and voices reloaded.');});
   $('plannerMode')?.addEventListener('change',updatePlannerVisibility);
   $('allowLlmFallback').onchange=updatePlannerVisibility;
-  $('sectionButtons').onchange=()=>run(async()=>{config=capture();refreshSectionControls();if(plan)renderPreview();scheduleSettingsSave();await flushSettings();});
+  // The buttons themselves show or hide at once; their section lists follow in the shared refresh.
+  $('sectionButtons').onchange=()=>run(async()=>{config=capture();for(const entry of messageSections)syncMessageControls(entry);refreshSectionControls();if(plan)renderPreview();scheduleSettingsSave();await flushSettings();});
   $('connectionMode').onchange=()=>(voicesLoading=run(async()=>{
     await flushSettings();
     const messageId=planSource?.messageId,targetChat=chatId;stop(false);config=capture();config.connectionMode=$('connectionMode').value;const version=++loadVersion;
@@ -5052,8 +5048,6 @@ export async function setup(ctx) {
     const cleanPara = transcriptFromMessage(rawText,snap.ignoredTags).trim();
     if (!cleanPara) return {segments: [], cleanPara, fromPlan: false};
 
-    let segments = null;
-
     // 1. Reuse the message plan only when it covers the whole paragraph, in order, for the same
     //    message: either one spoken block contains it, or consecutive blocks add up to exactly it.
     //    A partial overlap would silently drop the paragraph's other sentences.
@@ -5097,8 +5091,9 @@ export async function setup(ctx) {
       if (chosen) return {segments: chosen, cleanPara, fromPlan: true};
     }
 
-    // 2. Otherwise plan the paragraph directly in 0ms without blocking on LLM RPC
-    if (!segments) {
+    // 2. Otherwise plan the paragraph locally, without waiting for a planner call.
+    let segments;
+    {
       let planResult = null;
       if (config.useFastClassifier !== false || snap.fixed.length>3) {
         try { planResult = fastClassifyPlan(cleanPara, { ...snap, speaker: preferredSpeaker }); } catch {}

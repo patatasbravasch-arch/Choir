@@ -1243,3 +1243,25 @@ test('audit 3 tokens: the per-message instruction and planner prompt ask only fo
   const [system]=castingPrompt(speechSourceUnits('The guard frowned. "Halt."'),config,'');
   assert.match(system.content,/Gate guard/);assert.doesNotMatch(system.content,/Harbour master/,'an NPC absent from the reply is not asked for');
 });
+
+test('full reread: two quotes back to back are two lines, and a doubled closing mark still closes once',()=>{
+  const kinds=text=>speechSourceUnits(text).map(unit=>`${unit.kind[0]}:${unit.text}`);
+  // The second mark after a closing quote opens the next line when a letter or digit follows it.
+  assert.deepEqual(kinds('"Hi.""Bye."'),['d:"Hi."','d:"Bye."']);
+  assert.deepEqual(kinds('"Un.""2 more," she said.'),['d:"Un."','d:"2 more,"','n:she said.']);
+  assert.deepEqual(kinds('"Hello,"" she said.').slice(0,1),['d:"Hello,"']);
+});
+
+test('custom skip rules accept text markers: every line containing one is left out',()=>{
+  const rules='summary, .status-panel GABI_MONITOR_START, [POV], {mode":"scene-monitor"';
+  const message=['[POV] Nolan','GABI_MONITOR_START','Nolan froze. "What?" he said.','{"mode":"scene-monitor","focus":"Nolan","comment":"Oh, dropping that."}','A short summary of the day followed.','<div>{ &quot;mode&quot;: &quot;scene-monitor&quot; }</div>'].join('\n');
+  assert.equal(core.transcriptFromMessage(message,rules),'Nolan froze. "What?" he said.\nA short summary of the day followed.');
+  // Tag, class and id rules are not text: "summary" must not drop a sentence that says summary.
+  assert.deepEqual(core.ignoredTextRules(rules),['gabi_monitor_start','[pov]','{mode:scene-monitor']);
+  assert.deepEqual(core.ignoredTextRules('summary <details> .hud #phone-panel div.stats'),[]);
+  assert.deepEqual(core.ignoredTagNames(rules),['summary','.status-panel','gabi_monitor_start']);
+  // Too short to be safe ("a" or "[]" would empty the reply), and case and quotes do not matter.
+  assert.deepEqual(core.ignoredTextRules('[] A1 "'),[]);
+  assert.equal(core.transcriptFromMessage('[pov: Mira]\nShe ran.','[POV'),'She ran.');
+  assert.equal(core.transcriptFromMessage('[POV] Nolan\nHe ran.',''),'[POV] Nolan\nHe ran.');
+});

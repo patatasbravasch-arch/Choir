@@ -47,7 +47,7 @@ export function createDrawerNavigation(root) {
   const automation=group('New replies',playHome),checks=el('div','',automation);checks.className='et-check-grid';
   const autoLabel=el('label','',checks);autoLabel.className='et-check';const auto=el('input','',autoLabel);auto.type='checkbox';auto.dataset.et='drawerAutoPlan';autoLabel.append(doc.createTextNode('Auto-plan'));moveLabel('auto',checks);
   const tuning=group('Playback',playHome);tuning.append(field('playbackSpeedSlot').closest('.et-tuning-grid'));moveLabel('normalizeLoudness',tuning);
-  const reading=group('Reading',playHome);moveLabel('readAlong',reading);moveLabel('followNarration',reading);
+  const reading=group('Reading',playHome);moveLabel('actingIntensity',reading);moveLabel('readAlong',reading);moveLabel('followNarration',reading);
   const sound=group('Soundscape',playHome),soundChecks=el('div','',sound);soundChecks.className='et-check-grid';for(const name of ['enableSfx','enableAmbience','enableMusic','loopMusic'])moveLabel(name,soundChecks);moveLabel('freesoundApiKey',sound);field('enableSfx').closest('label').title='Freesound sound effects; requires the key below.';
   const mixer=group('Mixer',playHome);moveLabel('enableMixer',mixer);const mixerActions=el('div','',mixer);mixerActions.className='et-action-grid';move('customizeMixer',mixerActions);
   const limits=button('Volume limits',mixerActions);limits.dataset.choirVolumeLimits='';

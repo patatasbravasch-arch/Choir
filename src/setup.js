@@ -18,7 +18,7 @@ export function setupDraft(value, preset, existing) {
   if (preset?.npcPolicy) draft.npcPolicy = structuredClone(preset.npcPolicy);
   // Legacy defaults enable Foley without a key. New installations opt in.
   if (!existing) {
-    Object.assign(draft, {enableSfx:false, enableAmbience:false, enableMusic:false, autoDesignNPCs:false,
+    Object.assign(draft, {enableSfx:false, enableAmbience:false, enableMusic:false,
       auto:false, autoPlan:false, allowLlmFallback:false, enableMixer:true, plannerMode:'heuristic', useFastClassifier:true, useJev:false});
     draft.npcPolicy = {...draft.npcPolicy, mode:'skip'};
   }
@@ -498,7 +498,7 @@ export function createSetupWizard(ctx, adapter) {
         const filtering=section('Text filters',body);
         check('Skip non-story blocks',draft.skipMeta!==false,filtering,value=>{draft.skipMeta=value;},'Filter trackers, recaps and interface panels. LLM and Jev modes can also run a planner check.');
         const skipped=element('textarea');skipped.rows=2;skipped.value=draft.ignoredTags || '';skipped.placeholder='summary, .status-panel, #phone-panel';skipped.oninput=()=>{draft.ignoredTags=skipped.value;};
-        field('Skip tags and blocks',skipped,filtering,'Tag names, classes or IDs, separated by commas. Applies across chats.');
+        field('Skip tags and blocks',skipped,filtering,'Tag names, classes or IDs, separated by commas or spaces. Other text, such as [POV], skips every line that contains it. Applies across chats.');
         check('Show automatic planning shortcut',draft.showAutoPlanAction,body,value=>{draft.showAutoPlanAction=value;},'Shows a shortcut; does not turn Auto-plan on.');
         element('p','Set name pronunciation in the character’s Cast editor after setup.',body).className='cs-hint';
       }

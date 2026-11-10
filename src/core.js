@@ -213,7 +213,7 @@ export function reconcileCastDuplicates(value) {
   return {...value,fixed,casts,...(npcs?{npcs}:{}),...(singleVoices?{singleVoices}:{})};
 }
 
-const escapePattern = value => value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+export const escapePattern = value => value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
 
 // Preserve older free-form instructions. Only unambiguous name mappings and
 // hyphenated respellings are interpreted as pronunciation rules.
@@ -268,7 +268,6 @@ const cardSectionName=value=>/^(?:speech|personality|appearance|background|histo
 
 // Check all card fields and keep each profile inside its own section.
 export function characterCardRoleDiscovery(card={}) {
-  const escape=value=>value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
   // "Name: Weston Vance." ends a sentence; the full stop is not part of the name.
   const clean=value=>value.replace(/[*_`]/g,'').replace(/^character(?:\s+\d+)?\s*:\s*/i,'').replace(/(?:['’]s)?\s+(?:data|profile|details|character sheet)$/i,'').trim().replace(/[\s.,;:!?]+$/u,'');
   const title=String(card.name || '').split(/\s*\|\s*/)[0];
@@ -305,7 +304,7 @@ export function characterCardRoleDiscovery(card={}) {
     // person's name. Require that person's own profile before accepting a
     // heading that only matches a decorated part of the title.
     const decoratedTitle=titleNames.some(name=>name.split(/\s+-\s+|\s*[–—:]\s*/u).some(part=>normalizeName(part)===normalizeName(heading.name)));
-    const ownProfile=new RegExp(`^\\s*(?:\\*{1,2})?${escape(heading.name)}(?:\\*{1,2})?(?:\\s+(?:is|was|has|uses)\\b|\\s*[:：])`,'iu').test(block);
+    const ownProfile=new RegExp(`^\\s*(?:\\*{1,2})?${escapePattern(heading.name)}(?:\\*{1,2})?(?:\\s+(?:is|was|has|uses)\\b|\\s*[:：])`,'iu').test(block);
     const namedSection=sections.some(section=>normalizeName(section.tag.replace(/[_-]/g,' '))===normalizeName(heading.name));
     const explicitLead=/\b(?:lead|primary character|main character|playable character)\b/i.test(block);
     return names.length===1 || inTitle || decoratedTitle && ownProfile || namedSection || explicitLead?[{...heading,fullName:names.length===1?names[0]:undefined}]:[];
@@ -319,7 +318,7 @@ export function characterCardRoleDiscovery(card={}) {
     if(names.length!==1 && !sectionTitle && (!heading || normalizeName(heading.name)!==normalizeName(section.tag.replace(/[_-]/g,' '))))continue;
     const fullName=names[0] || heading?.name || sectionTitle,key=normalizeName(fullName);
     if(seenSections.has(key))continue;seenSections.add(key);
-    const short=titleNames.find(name=>normalizeName(name)===normalizeName(heading?.name) || new RegExp(`^${escape(name)}(?:\\s|$)`,'i').test(fullName));
+    const short=titleNames.find(name=>normalizeName(name)===normalizeName(heading?.name) || new RegExp(`^${escapePattern(name)}(?:\\s|$)`,'i').test(fullName));
     add(short || fullName,[...(short && normalizeName(short)!==key?[fullName]:[]),...(!short && fullName.includes(' ')?[fullName.split(' ')[0]]:[])],section.text,section.start);
     spans.push([section.start,section.start+section.text.length+section.tag.length*2+5]);
   }
@@ -428,7 +427,7 @@ export function normalizeVoiceCatalogue(catalogue) {
       normalized.some(value=>['male','masculine','m'].includes(value))?'male':
       normalized.some(value=>['neutral','androgynous','nonbinary','non-binary'].includes(value))?'neutral':undefined;
     gender ??= GEMINI_VOICES.find(v=>v.id===voice.id || String(voice.id).endsWith(`-Chirp3-HD-${v.id}`))?.gender;
-    return {...voice,...(gender?{gender}:{gender:undefined})};
+    return {...voice,gender};
   });
 }
 
@@ -494,7 +493,7 @@ function speechMarkupRanges(text,ignoredTags) {
     const css=node.children.filter(child=>child.tag==='style').map(child=>text.slice(child.openEnd,child.end)).join('\n').replace(/\/\*[\s\S]*?\*\//g,'');
     const cssSelectors=[...css.matchAll(/([^{}]+)\{[^{}]*}/g)].map(rule=>rule[1]);
     const toggle=[...stats.controls].some(id=>stats.labels.has(id) && cssSelectors.some(selector=>
-      new RegExp(`#${id.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}\\s*:\\s*checked\\b`,'i').test(selector)));
+      new RegExp(`#${escapePattern(id)}\\s*:\\s*checked\\b`,'i').test(selector)));
     const surface=node.children.some(child=>child.tag==='style') || /(?:^|;)\s*(?:background(?:-color)?|border(?:-[\w-]+)?|box-shadow)\s*:/.test(attrs.style || '') || /(?:^|[\s_-])(?:widget|panel|browser|phone|device|dashboard)(?:$|[\s_-])/.test(identity);
     let directText='',cursor=node.openEnd;
     const separateParts=node.children.filter(child=>child.stats.tabs || child.stats.panels || child.stats.groups.size || child.stats.controls.size || child.stats.labels.size).length>=2;
@@ -521,11 +520,26 @@ export function vocalEvent(tag) {
   const match=/^<([a-z]+(?:[ -][a-z]+)*)>$/i.exec(tag);
   return match && VOCAL_EVENTS.has(match[1].toLowerCase()) ? match[1].toLowerCase() : '';
 }
+// Skip rules that are not a tag, class or id are text markers: [POV], GABI_MONITOR_START or
+// {"mode":"scene-monitor". Every line containing one is left out. Quotes, spaces and case are
+// ignored, so a marker typed without its quotation marks still matches. A lowercase word alone
+// stays a tag name ("summary" must not drop every line that says summary); a word in CAPITALS
+// or with digits or underscores is both.
+const skipTextKey=text=>String(text || '').replace(/&quot;|&#34;|&apos;|&#39;/gi,'').replace(/["'`‘’“”\s]/g,'').toLowerCase();
+export function ignoredTextRules(value) {
+  const entries=Array.isArray(value)?value:String(value || '').split(/[\s,;]+/);
+  return [...new Set(entries.map(entry=>String(entry).trim()).filter(entry=>!/^(?:<\/?)?(?:[a-z][a-z-]*(?:[.#][\w:-]+)?|[.#][\w:-]+)\/?>?$/.test(entry)).map(skipTextKey).filter(rule=>[...rule].length>=3))].slice(0,100);
+}
+function withoutSkippedText(text,ignoredTags) {
+  const rules=ignoredTextRules(ignoredTags);
+  return rules.length?text.split('\n').filter(line=>{const key=skipTextKey(line);return !rules.some(rule=>key.includes(rule));}).join('\n'):text;
+}
 export function transcriptFromMessage(value, ignoredTags=[]) {
   // Remove complete metadata panels before unwrapping ordinary story markup.
   // Some presets write blank characters (braille blank, Hangul fillers) in place
   // of spaces. They are spaces to a listener and to text search, not to TTS.
   let text=String(value || '').replace(/\r\n/g,'\n').replace(/\r/g,'\n').replace(/[⠀ㅤᅟᅠﾠ]/g,' ').replace(/<!--[\s\S]*?(?:-->|$)/g,' ');
+  text=withoutSkippedText(text,ignoredTags);
   const ranges=speechMarkupRanges(text,ignoredTags);
   for(const [start,end] of ranges.reverse())text=text.slice(0,start)+' '+text.slice(end);
 
@@ -672,7 +686,7 @@ export function unisonSpeakers(transcript,unit,config) {
   const tag=[following,preceding.split(/[.!?\n]/).at(-1)].find(text=>text.length<=250 && verbs.test(text) && collective.test(text));
   if(!tag)return null;
   const cast=[...(config.fixed || []),...(config.npcs || [])].filter(actor=>normalizeName(actor.speaker)!=='narrator');
-  const mentions=text=>cast.flatMap(actor=>[actor.speaker,...(actor.aliases || [])].flatMap(name=>name?[...text.matchAll(new RegExp(`(?<![\\p{L}\\p{N}_])${name.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}(?![\\p{L}\\p{N}_])`,'giu'))].map(match=>({speaker:actor.speaker,start:match.index,end:match.index+match[0].length})):[])).sort((a,b)=>a.start-b.start || b.end-a.end).filter((match,index,list)=>!list.slice(0,index).some(previous=>previous.start<=match.start && previous.end>=match.end));
+  const mentions=text=>cast.flatMap(actor=>[actor.speaker,...(actor.aliases || [])].flatMap(name=>name?[...text.matchAll(new RegExp(`(?<![\\p{L}\\p{N}_])${escapePattern(name)}(?![\\p{L}\\p{N}_])`,'giu'))].map(match=>({speaker:actor.speaker,start:match.index,end:match.index+match[0].length})):[])).sort((a,b)=>a.start-b.start || b.end-a.end).filter((match,index,list)=>!list.slice(0,index).some(previous=>previous.start<=match.start && previous.end>=match.end));
   const groupIn=text=>{
     const names=mentions(text),groups=[];let group=[];
     for(const name of names){
@@ -690,7 +704,7 @@ export function unisonSpeakers(transcript,unit,config) {
   // That is "no unison" (null), not an unnamed group ([]), which planners treat as an error.
   // A last clause opening with "and"/"&" ends a list ("Anna, Ben, and Cara"), not a clause.
   const ownClause=subject.split(/[,;:]/).at(-1);
-  if(!/^\s*(?:(?:and|or)\b|&)/i.test(ownClause) &&mentions(ownClause).length && !groupIn(ownClause))return null;
+  if(!/^\s*(?:(?:and|or)\b|&)/i.test(ownClause) && mentions(ownClause).length && !groupIn(ownClause))return null;
   const explicit=groupIn(subject);
   if(explicit)return resolveGroup(explicit);
   if(!/\b(?:they|both|all)\b/i.test(subject))return [];
@@ -744,7 +758,7 @@ export function validatePlan(raw, transcript, config) {
     if(gender && gender!=='auto' && choice?.gender && choice.gender!==gender)throw new Error(`Automatic casting must select a ${gender} voice, but selected ${voice} (${choice.gender}).`);
   };
   let cursor = 0;
-    const actorForSegment=segment=>{
+  const actorForSegment=segment=>{
     const key = aliases.get(normalizeName(segment.speaker)) || normalizeName(segment.speaker);
     if (!key || key.length > 100) throw new Error('Invalid speech speaker.');
     let actor = cast.get(key);
@@ -831,8 +845,7 @@ export function validatePlan(raw, transcript, config) {
   });
   if (transcript.slice(cursor).trim()) throw new Error('The plan omits the end of the original message.');
   foldWordlessSegments(segments,spans,transcript);
-  const fixed = new Set(config.fixed.map(v => normalizeName(v.speaker)));
-  return {segments, npcs:[...cast.values()].filter(v => !fixed.has(normalizeName(v.speaker)))};
+  return {segments, npcs:[...cast.values()].filter(v => !fixedNames.has(normalizeName(v.speaker)))};
 }
 
 // Persist attribution separately from synthesis choices so recasting is free.
@@ -1127,7 +1140,7 @@ export function speechSourceUnits(transcript) {
     // A doubled opening mark (""Hello," she said) opens once: the extra one is ignored.
     if(!open && transcript[at+1]==='"' && /[^\s"]/u.test(transcript[at+2] || '') && (at===0 || /\s/.test(transcript[at-1])))return '';
     // A doubled closing mark ("Hello,"" she said) closes once.
-    if(!open && closedAt===at-1 && !/[p{L}p{N}]/u.test(transcript[at+1] || ''))return '';
+    if(!open && closedAt===at-1 && !/[\p{L}\p{N}]/u.test(transcript[at+1] || ''))return '';
     if(afterDigit(at) && (!open || feet(at) || !closesQuote(at)))return '';
     open=!open;if(!open)closedAt=at;return mark;
   });
@@ -1714,8 +1727,7 @@ export function fastClassifyPlan(transcript, config, failure) {
   const findSpeakerInTag = (tagText) => {
     const matches=candidates.filter(cand=>[cand.speaker,...(cand.aliases || [])].some(name=>{
         if(!name.trim())return false;
-        const esc = name.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        return new RegExp('(?<![\\p{L}\\p{N}_])' + esc + '(?![\\p{L}\\p{N}_])', 'iu').test(tagText);
+        return new RegExp('(?<![\\p{L}\\p{N}_])' + escapePattern(name.trim()) + '(?![\\p{L}\\p{N}_])', 'iu').test(tagText);
     }));
     return {actor:matches.length===1?matches[0]:null,ambiguous:matches.length>1,matches};
   };
@@ -1808,8 +1820,6 @@ export function cueOffset(text, trigger) {
   return exact >= 0 ? exact : text.toLowerCase().indexOf(trigger.toLowerCase());
 }
 
-// An action-word anchor must not cut its subject off from the verb. Keep an
-// explicitly anchored conjunction clause, otherwise back up to punctuation.
 // Effects anchored at the same break would otherwise play back to back with
 // no speech between them. Keep the first and drop any other closer than a few
 // words; effects separated by a clause of speech all play.
@@ -1827,6 +1837,8 @@ export function spaceSoundEffects(points,{start=0,last=-Infinity}={}) {
   return {kept,last};
 }
 
+// An action-word anchor must not cut its subject off from the verb. Keep an
+// explicitly anchored conjunction clause, otherwise back up to punctuation.
 export function sfxCueOffset(text, trigger) {
   let target=Math.max(0,cueOffset(text,trigger));
   if(!target)return 0;
@@ -2053,7 +2065,7 @@ export function readInjectedPlan(content) {
     else if(tag==='SKIP' && parts[1])skip.push(parts[1].replace(/^["“'‘]+|["”'’]+$/g,''));
     else if(tag==='LANG' && /^[a-z]{2}$/i.test(parts[1] || ''))language=parts[1].toLowerCase();
   }
-  return quotes.size || sfx.length || ambience.length || skip.length|| language?{quotes,npcs,sfx,ambience,skip,language}:null;
+  return quotes.size || sfx.length || ambience.length || skip.length || language?{quotes,npcs,sfx,ambience,skip,language}:null;
 }
 
 export function stripInjectedPlan(content) {
@@ -2067,11 +2079,11 @@ export function stripInjectedPlan(content) {
 // to many models, two to Choir), so rows are matched by the quote's opening
 // words, never by position alone: a single miscount would shift every later
 // speaker. Without opening words, rows are used only when the counts agree.
+const plainWords=text=>String(text || '').normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu,' ').trim().split(/\s+/).filter(Boolean);
 const SPEECH_VERBS=/\b(?:say|says|said|reply|replies|replied|ask|asks|asked|answer|answers|answered|shout|shouts|shouted|whisper|whispers|whispered|call|calls|called|cry|cries|cried|add|adds|added|continue|continues|continued|interrupt|interrupts|interrupted|retort|retorts|retorted|snap|snaps|snapped|murmur|murmurs|murmured|yell|yells|yelled|scream|screams|screamed|interject|interjects|interjected|speak|speaks|spoke|exclaim|exclaims|exclaimed|mutter|mutters|muttered|breathe|breathes|breathed|hiss|hisses|hissed|growl|growls|growled|bark|barks|barked|declare|declares|declared|chant|chants|chanted|sing|sings|sang)\b/gi;
 export function injectedCastRows(transcript, plan) {
   const dialogue=speechSourceUnits(transcript).filter(unit=>unit.kind==='dialogue'),assigned=new Map();
-  const words=text=>String(text || '').normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu,' ').trim().split(/\s+/).filter(Boolean);
-  const opens=(unit,opening)=>{const quote=words(unit.text),start=words(opening);return start.length>0 && start.every((word,index)=>quote[index]===word);};
+  const opens=(unit,opening)=>{const quote=plainWords(unit.text),start=plainWords(opening);return start.length>0 && start.every((word,index)=>quote[index]===word);};
   const numbered=[...plan.quotes.entries()].sort((a,b)=>a[0]-b[0]),ordered=numbered.map(([,quote])=>quote);
   if(ordered.some(quote=>quote.opening)){
     const placed=[];let from=0;
@@ -2130,11 +2142,10 @@ export function injectedSoundCues(segments, plan) {
 // SKIP rows name the first words of lines that are not story (trackers, stat
 // lists, headers); they replace the non-story check for this reply.
 export function injectedSkipLines(lines, plan) {
-  const words=text=>String(text || '').normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu,' ').trim().split(/\s+/).filter(Boolean);
-  const starts=(plan?.skip || []).map(words).filter(start=>start.length);
+  const starts=(plan?.skip || []).map(plainWords).filter(start=>start.length);
   // Rows copy a line's first 4 words, so a shorter row names a whole short line:
   // "SKIP|Anna" (a stat-block name) must not drop "Anna walked into the tavern."
-  return lines.flatMap((line,index)=>{const own=words(line);return starts.some(start=>start.every((word,at)=>own[at]===word) && (start.length>=4 || own.length===start.length))?[index]:[];});
+  return lines.flatMap((line,index)=>{const own=plainWords(line);return starts.some(start=>start.every((word,at)=>own[at]===word) && (start.length>=4 || own.length===start.length))?[index]:[];});
 }
 
 // Sent with every roleplay generation, so it asks only for rows Choir will use: SKIP when
@@ -2152,7 +2163,7 @@ export function injectionPrompt({cast=[], sfx=false, ambience=false, skip=true, 
     'NPC|Name|gender|age and tone',
     ...(skip?['SKIP|first words']:[]),
     ...(language?['LANG|language code']:[]),
-    ...(sounds.length?sounds:[]),
+    ...sounds,
     '-->',
     'One Q row per quoted passage of dialogue in your reply, in order (Q1 is the first "…" quote); first words are the first 3 words inside its quotation marks, copied exactly. Speaker is the exact name of who says it aloud; use NOT_SPOKEN for quoted words nobody says aloud (terms, signs, written text, remembered speech). Cast: '+(cast.length?cast.map(name=>castField(name,mark)).join(', '):'none listed')+'.'+(cast.some(name=>String(name).includes('|'))?` (${mark} is part of a name; copy it exactly, never as |.)`:''),
     ...(skip?['For each line of your reply that is not story to be read aloud (status or tracker lines, stat lists, headers, menus, notes to the reader), add SKIP|its first 4 words, copied exactly. Write no SKIP rows when every line is story.']:[]),
