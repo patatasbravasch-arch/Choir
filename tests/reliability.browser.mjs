@@ -782,7 +782,7 @@ test('Set default browses Fish voices for the selected route, rejects invalid ID
 test('Fish NPC default IDs support shared and preferred voices without altering the active chat',async()=>{
  for(const mode of ['single','preferred']){
   const h=await fishGroupingHarness();try{
-   const before=structuredClone(h.store.get('chat:chat-a'));h.$('captureDefaults').click();const dialog=document.querySelector('[aria-label="Set default"]'),selection=dialog.querySelector('[aria-label="Default Automatic casting"]');
+   const before=structuredClone(h.store.get('chat:chat-a'));h.$('captureDefaults').click();const dialog=document.querySelector('[aria-label="Set default"]'),selection=dialog.querySelector('[aria-label="Default Automatic voices"]');
    selection.value=mode;selection.dispatchEvent(new h.dom.window.Event('change'));const name=mode==='single'?'Default Shared voice':'Default Preferred voices';
    dialog.querySelector(`[aria-label="Paste Fish voice ID for ${name}"]`).click();dialog.querySelector(`[aria-label="Fish voice ID for ${name}"]`).value='fish_npc_default';dialog.querySelector(`[aria-label="Use Fish voice ID for ${name}"]`).click();
    [...dialog.querySelectorAll('button')].find(button=>button.textContent==='Save default').click();await until(()=>!dialog.isConnected);
@@ -799,7 +799,7 @@ test('NPC default modes can be applied per chat, skip synthesis or enforce share
    if(routing==='one'){h.$('connectionMode').value='one';h.$('connectionMode').dispatchEvent(new h.dom.window.Event('change'));await until(()=>h.$('saveState').textContent==='Settings saved');}
    const before=structuredClone(h.store.get('chat:chat-a'));
    h.$('captureDefaults').click();const dialog=document.querySelector('[role="dialog"][aria-label="Set default"]'),change=(name,value)=>{const input=dialog.querySelector(`[aria-label="${name}"]`);input.value=value;input.dispatchEvent(new h.dom.window.Event('change'));return input;};
-   [...dialog.querySelectorAll('button')].find(button=>button.textContent==='Automatic casting').click();change('Default Automatic casting',mode);
+   [...dialog.querySelectorAll('button')].find(button=>button.textContent==='Automatic voices').click();change('Default Automatic voices',mode);
    if(mode==='single')change('Default Shared voice','m');
    if(mode==='preferred'){const pool=dialog.querySelector('[aria-label="Default Preferred voices"]');[...pool.options].forEach(option=>option.selected=['m','new'].includes(option.value));pool.dispatchEvent(new h.dom.window.Event('change'));}
    [...dialog.querySelectorAll('button')].find(button=>button.textContent==='Save default').click();await until(()=>!dialog.isConnected);
@@ -815,9 +815,9 @@ test('NPC default modes can be applied per chat, skip synthesis or enforce share
    const paragraph='Guard said, "A new sentence."',bridge=globalThis.__CHOIR_API__,cuePlan=bridge.planParagraph(paragraph);assert.equal(cuePlan.segments.at(-1).speaker,'Guard');
    const start=h.synthesis.length;await bridge.playParagraph({text:paragraph});const cue=h.synthesis.slice(start).find(request=>request.text.includes('A new sentence'));
    if(mode==='skip')assert.equal(cue,undefined);else{assert.ok(cue);assert.equal(cue.voice,mode==='single'?'m':mode==='preferred'?'new':'g');assert.equal(cue.connectionId,'a');}
-   await h.reload();assert.equal(h.$('npcPolicyRoot').querySelector('[aria-label="Automatic casting"]').value,mode);
-   const selection=h.$('npcPolicyRoot').querySelector('[aria-label="Automatic casting"]');selection.value=mode==='llm'?'skip':'llm';selection.dispatchEvent(new h.dom.window.Event('change'));await until(()=>h.$('saveState').textContent==='Saved automatically');
-   assert.deepEqual(h.store.get('settings:captured-defaults'),preset);await h.reload();assert.equal(h.$('npcPolicyRoot').querySelector('[aria-label="Automatic casting"]').value,mode==='llm'?'skip':'llm');
+   await h.reload();assert.equal(h.$('npcPolicyRoot').querySelector('[aria-label="Automatic voices"]').value,mode);
+   const selection=h.$('npcPolicyRoot').querySelector('[aria-label="Automatic voices"]');selection.value=mode==='llm'?'skip':'llm';selection.dispatchEvent(new h.dom.window.Event('change'));await until(()=>h.$('saveState').textContent==='Saved automatically');
+   assert.deepEqual(h.store.get('settings:captured-defaults'),preset);await h.reload();assert.equal(h.$('npcPolicyRoot').querySelector('[aria-label="Automatic voices"]').value,mode==='llm'?'skip':'llm');
    if(mode==='skip'){await h.play();assert.ok(h.synthesis.some(request=>request.text.includes('Wait')));}
   }finally{await h.close();}
  }
@@ -912,7 +912,7 @@ test('legacy defaults migrate cast choices and cannot replace newer global prefe
  const h=await harness();try{
   const saved=h.store.get('chat:chat-a');h.store.set('settings:captured-defaults',{version:1,preferences:{chunk:500,enableMusic:false,npcPolicy:{mode:'skip',route:'',voice:'',voices:[]}},leadVoices:saved.fixed.map(actor=>({voice:actor.voice,route:actor.route || ''}))});
   h.store.set('settings:global',{chunk:8000,enableMusic:true});h.state.active='chat-new';h.subscriptions.get('chat.active')();await until(()=>h.$('saveState').textContent==='Default setup loaded');
-  assert.equal(h.$('chunk').value,'8000');assert.equal(h.$('enableMusic').checked,true);assert.equal(h.$('npcPolicyRoot').querySelector('[aria-label="Automatic casting"]').value,'skip');assert.equal(h.$('fixed').children[2].querySelector('[data-choir-voice]').value,'m');
+  assert.equal(h.$('chunk').value,'8000');assert.equal(h.$('enableMusic').checked,true);assert.equal(h.$('npcPolicyRoot').querySelector('[aria-label="Automatic voices"]').value,'skip');assert.equal(h.$('fixed').children[2].querySelector('[data-choir-voice]').value,'m');
   captureDefault(h);await until(()=>h.$('defaultStatus').textContent.startsWith('Default saved.'));assert.equal(h.store.get('settings:captured-defaults').version,2);assert.equal(h.store.get('settings:captured-defaults').preferences,undefined);
  }finally{await h.close();}
 });

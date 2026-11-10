@@ -3286,9 +3286,9 @@ function createDrawerNavigation(root) {
   const playHome=home.get('play'),originalPlay=[...playHome.childNodes];
   const automation=group('New replies',playHome),checks=el('div','',automation);checks.className='et-check-grid';
   const autoLabel=el('label','',checks);autoLabel.className='et-check';const auto=el('input','',autoLabel);auto.type='checkbox';auto.dataset.et='drawerAutoPlan';autoLabel.append(doc.createTextNode('Auto-plan'));moveLabel('auto',checks);
-  const tuning=group('Playback',playHome);tuning.append(field('playbackSpeedSlot').closest('.et-tuning-grid'));moveLabel('normalizeLoudness',tuning);
-  const reading=group('Reading',playHome);moveLabel('actingIntensity',reading);moveLabel('readAlong',reading);moveLabel('followNarration',reading);
-  const sound=group('Soundscape',playHome),soundChecks=el('div','',sound);soundChecks.className='et-check-grid';for(const name of ['enableSfx','enableAmbience','enableMusic','loopMusic'])moveLabel(name,soundChecks);moveLabel('freesoundApiKey',sound);field('enableSfx').closest('label').title='Freesound sound effects; requires the key below.';
+  const tuning=group('Playback',playHome);tuning.append(field('playbackSpeedSlot').closest('.et-tuning-grid'));const actingRow=el('div','',tuning);actingRow.className='et-row';moveLabel('actingIntensity',actingRow);moveLabel('normalizeLoudness',tuning);
+  const reading=group('Reading',playHome);moveLabel('readAlong',reading);moveLabel('followNarration',reading);
+  const sound=group('Soundscape',playHome),soundChecks=el('div','',sound);soundChecks.className='et-check-grid';for(const name of ['enableSfx','enableAmbience','enableMusic','loopMusic'])moveLabel(name,soundChecks);const keySaved=el('div','',sound);keySaved.className='et-key-saved';keySaved.dataset.et='freesoundKeySaved';keySaved.hidden=true;el('span','Freesound key saved',keySaved);const keyChange=button('Change',keySaved);keyChange.dataset.et='freesoundKeyChange';keyChange.className='et-btn-subtle';moveLabel('freesoundApiKey',sound);field('enableSfx').closest('label').title='Freesound sound effects; requires the key below.';
   const mixer=group('Mixer',playHome);moveLabel('enableMixer',mixer);const mixerActions=el('div','',mixer);mixerActions.className='et-action-grid';move('customizeMixer',mixerActions);
   const limits=button('Volume limits',mixerActions);limits.dataset.choirVolumeLimits='';
   // Keep hidden compatibility inputs, discard only emptied display wrappers.
@@ -3305,21 +3305,21 @@ function createDrawerNavigation(root) {
   }
   for(const name of ['connectionMode','connection','styleParam','fishVoiceSource'])moveLabel(name,destinations.connections);move('testTts',destinations.connections);move('load',destinations.connections);
   for(const name of ['plannerMode','planner','injectPlan','decisionConnection','allowLlmFallback','plannerTokens'])moveLabel(name,destinations.planner);for(const name of ['jevKey','jevEndpoint','plannerHint','testPlanner'])move(name,destinations.planner);
-  moveLabel('paranoidMode',destinations.planner);
   const filters=field('ignoredTags').closest('details');filters.querySelector('summary')?.remove();destinations.filters.append(...filters.childNodes);filters.remove();
-  const performance=field('concurrency').closest('section');for(const name of ['concurrency','chunk','prefetch','apiBase'])moveLabel(name,destinations.performance);destinations.performance.append(field('batchSpeech').closest('.et-row'));for(const hint of [...performance.querySelectorAll(':scope>p')])destinations.performance.append(hint);
-  for(const name of ['sectionButtons','abyssalMixerTheme','showAutoPlanAction'])moveLabel(name,destinations.interface);
+  const performance=field('concurrency').closest('section');for(const name of ['concurrency','chunk','prefetch','apiBase'])moveLabel(name,destinations.performance);destinations.performance.append(field('batchSpeech').closest('.et-row'));for(const hint of [...performance.querySelectorAll(':scope>p,:scope>.et-more')])destinations.performance.append(hint);
+  for(const name of ['sectionButtons','abyssalMixerTheme','showAutoPlanAction','speedSliderMax'])moveLabel(name,destinations.interface);
   move('extraVoicesWrap',destinations.castTools);move('geminiVoiceHint',destinations.castTools);const castTools=field('castJson').closest('details');castTools.querySelector('summary')?.remove();destinations.castTools.append(...castTools.childNodes);castTools.remove();
   destinations.castTools.querySelector('.et-pagebar').after(defaults,field('defaultStatus'));
   // Plan and JSON editors are separate destinations too.
-  const plan=move('planDetails',playHome);plan.hidden=false;
+  const plan=move('planDetails',playHome);plan.hidden=false;plan.classList.add('et-control-group');el('h4','This reply',plan);
   const planLink=button('Speech plan →',plan);planLink.className='et-link-row';
   const planPage=page('plan','Speech plan','play',planLink);move('planSummary',planPage);
   const deliveryHint=el('p','Automatic acting chooses emotion and intensity per spoken line, such as “slightly amused”. Directions below reflect your current voice settings. Play uses these directions; Replay keeps the saved performance. Preset cues remain in the text.',planPage);deliveryHint.className='et-hint';
   move('preview',planPage);const json=field('planJson').closest('details');json.querySelector('summary')?.remove();const jsonLink=button('Edit attribution JSON →',plan);jsonLink.className='et-link-row';const jsonPage=page('attribution','Attribution JSON','play',jsonLink);jsonPage.append(...json.childNodes);json.remove();
-  const inspect=button('TTS inspector →',plan);inspect.dataset.et='ttsInspectorOpen';inspect.className='et-link-row';inspect.hidden=true;
-  const inspectorPage=page('ttsInspector','TTS inspector','play',inspect),inspector=field('ttsInspector');inspectorPage.append(...inspector.childNodes);inspector.remove();
-  const inspectPlan=button('TTS inspector →',planPage,()=>openPage('ttsInspector'));inspectPlan.dataset.et='ttsInspectorFromPlan';inspectPlan.className='et-link-row';inspectPlan.hidden=true;
+  const inspect=button('View calls →',plan);inspect.dataset.et='ttsInspectorOpen';inspect.className='et-link-row';inspect.hidden=true;
+  const inspectorPage=page('ttsInspector','Call inspector','play',inspect),inspector=field('ttsInspector');inspectorPage.append(...inspector.childNodes);inspector.remove();
+  moveLabel('paranoidMode',plan);plan.append(inspect);
+  const inspectPlan=button('View calls →',planPage,()=>openPage('ttsInspector'));inspectPlan.dataset.et='ttsInspectorFromPlan';inspectPlan.className='et-link-row';inspectPlan.hidden=true;
   for(const node of originalSettings)if(node.parentElement===settingsHome){if(node.nodeType===1 && (node.matches('[data-et]') || node.querySelector('[data-et]')))node.hidden=true;else node.remove();}
   for(const control of settings.querySelectorAll('select'))control.closest('label')?.classList.add('et-inline-field');
   select('cast');
@@ -3331,6 +3331,12 @@ function createDrawerNavigation(root) {
 }
 
 const DRAWER_UI_CSS=`
+  .ensemble-tts .et-key-saved{display:flex;align-items:center;gap:10px;font-size:.9em;margin:6px 0}
+  .ensemble-tts .et-more{margin:4px 0 8px}
+  .ensemble-tts [data-et="planDetails"]>h4+.et-link-row{border-top:0;margin-top:0}
+  .ensemble-tts .et-key-saved button{min-height:32px;padding:4px 10px}
+  .ensemble-tts .et-more-toggle{background:none;border:0;padding:4px 0;min-height:28px;font-size:.85em;opacity:.8;cursor:pointer;color:inherit;text-decoration:underline;text-underline-offset:3px}
+  .ensemble-tts .et-more>small{display:block}
 .ensemble-tts{padding:12px;max-width:540px}.ensemble-tts .et-header{margin-bottom:10px;padding-bottom:0;border:0;gap:6px}.ensemble-tts h2{font-size:18px}.ensemble-tts .et-save-state{font-size:11px}
 .ensemble-tts h3,.ensemble-tts h4{font-size:13px;text-transform:none;letter-spacing:0;margin:12px 0 8px}.ensemble-tts .et-task-panel>.et-hint{display:none}
 .ensemble-tts .et-current-message{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px;margin-bottom:8px}.ensemble-tts .et-current-message>span{flex:1}.ensemble-tts .et-current-message .et-btn-group{gap:5px;flex-wrap:wrap;order:2}.ensemble-tts .et-current-message button{font-size:12px;padding:5px 8px}.ensemble-tts [data-et="latestNotice"]{font-size:11px;opacity:.65;margin:0;order:1}
@@ -3360,7 +3366,7 @@ const DRAWER_UI_CSS=`
 .ensemble-tts .et-settings-link{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:3px 12px;text-align:left;width:100%;background:none;border:0;border-bottom:1px solid #8883;border-radius:0;padding:12px 2px}.ensemble-tts .et-settings-link strong{font-size:13px}.ensemble-tts .et-settings-link small{font-size:11px;opacity:.7;grid-column:1}.ensemble-tts .et-settings-link>span{grid-column:2;grid-row:1 / 3}
 .ensemble-tts [data-choir-destination]>label{display:block;margin:12px 0}.ensemble-tts [data-choir-destination] p,.ensemble-tts [data-choir-destination] small{font-size:12px;line-height:1.5;overflow-wrap:anywhere}.ensemble-tts [data-choir-destination]>button{margin:4px 6px 4px 0}.ensemble-tts .et-pagebar{border-bottom:1px solid #8883;padding-bottom:10px;align-items:center}.ensemble-tts .et-pagebar button{font-size:12px}.ensemble-tts .et-pagebar h3{font-size:14px;text-align:right;outline:none}
 .ensemble-tts [data-et="castFilter"]{width:100%;margin-bottom:6px}.ensemble-tts [data-editing="true"] .et-tab-home>:not(:has(.et-focused-cast)){display:none!important}.ensemble-tts .et-cast-row.et-focused-cast{padding-top:0}.ensemble-tts .et-focused-cast .et-cast-editor .et-control-group{padding-top:12px;border-top:1px solid #8883;border-bottom:0}.ensemble-tts [data-choir-pronunciation-page]>label{display:grid;gap:4px}
-.ensemble-tts .et-volume-limits>.et-pagebar{display:flex}.ensemble-tts .et-volume-limits>label{display:flex}.ensemble-tts .et-volume-limits input{width:76px}.ensemble-tts [data-et="planDetails"]{padding-top:10px;border-top:1px solid #8883}
+.ensemble-tts .et-volume-limits>.et-pagebar{display:flex}.ensemble-tts .et-volume-limits>label{display:flex}.ensemble-tts .et-volume-limits input{width:76px}.ensemble-tts [data-et="planDetails"]{padding-top:0}
 @media(max-width:400px){.ensemble-tts .et-current-message>.et-btn-group{width:100%}.ensemble-tts .et-settings-link{padding:14px 2px}.ensemble-tts .et-edit-pair,.ensemble-tts .et-tuning-grid{grid-template-columns:1fr}}
 `;
 
@@ -3858,7 +3864,7 @@ export async function setup(ctx) {
 
     <div data-et="npcs"></div>
     <section data-et="otherCast" hidden><span data-et="otherCastCount" hidden>0</span><div data-et="otherCastRows"></div></section>
-    <h4 class="et-subhead">Automatic casting</h4><p class="et-hint">Voice selection for characters discovered in the story.</p><div data-et="npcPolicyRoot" class="et-npc-policy"></div>
+    <h4 class="et-subhead">Automatic voices</h4><p class="et-hint">Voice selection for characters discovered in the story.</p><div data-et="npcPolicyRoot" class="et-npc-policy"></div>
     <p data-et="defaultStatus" role="status" aria-live="polite" style="font-size:.85em;opacity:.8"></p>
     </section><section data-choir-page="settings">
     <div class="et-section-header">
@@ -3902,7 +3908,7 @@ export async function setup(ctx) {
       <section class="et-tuning">
         <div class="et-tuning-head"><span class="et-tuning-title">Playback speed</span><span class="et-tuning-hint">Speaks voices faster or slower with the pitch kept. Type any speed from 0.07× to 16×, the browser maximum. Sound effects and ambience stay at normal speed.</span></div>
         <div class="et-tuning-slot" data-et="playbackSpeedSlot"></div>
-        <label class="et-tuning-max" title="Top end of every speed slider, from 1× to 16×. Typed speeds are not limited by it.">Slider maximum<span class="et-tuning-max-entry"><input data-et="speedSliderMax" type="number" min="1" max="16" step="0.25" inputmode="decimal"><span aria-hidden="true">×</span></span></label>
+        <label class="et-tuning-max" title="Top end of every speed slider, from 1× to 16×. Typed speeds are not limited by it.">Speed slider maximum<span class="et-tuning-max-entry"><input data-et="speedSliderMax" type="number" min="1" max="16" step="0.25" inputmode="decimal"><span aria-hidden="true">×</span></span></label>
       </section>
       <section class="et-tuning">
         <div class="et-tuning-head"><span class="et-tuning-title">Gap between voices</span><span class="et-tuning-hint">Silence between consecutive spoken blocks. Sound effects and ambience are not counted.</span></div>
@@ -3914,19 +3920,20 @@ export async function setup(ctx) {
       <label class="et-check" style="display:inline-flex" title="Scales every character's acting directions, planned or base style. Narration stays steady; lines without a direction stay natural. Takes effect on the next Play, with no re-planning.">Acting<select data-et="actingIntensity" style="width:auto">${ACTING_INTENSITY_LEVELS.map(([value,label])=>`<option value="${value}">${label}</option>`).join('')}</select></label>
       <label class="et-check" style="display:inline-flex">Highlight spoken text<select data-et="readAlong" style="width:auto"><option value="off">Off</option><option value="passage">Passage</option><option value="word">Word by word</option></select></label>
       <label class="et-check" title="Scroll the chat to the passage being read. Scrolling yourself pauses this until the next Play."><input data-et="followNarration" type="checkbox"> Follow narration</label>
-      <label class="et-check"><input data-et="auto" type="checkbox"> Auto-play new replies</label>
+      <label class="et-check"><input data-et="auto" type="checkbox"> Auto-play</label>
       <label class="et-check" hidden><input data-et="useStyle" type="checkbox" checked> Delivery styles</label>
-      <label class="et-check" title="Inspect final Choir TTS request bodies after planning. Keeps the last 50 attempted calls in memory for this chat; no credentials or saved debug logs."><input data-et="paranoidMode" type="checkbox"> Paranoid mode · inspect TTS requests</label>
+      <label class="et-check" title="Inspect final Choir TTS request bodies after planning. Keeps the last 50 attempted calls in memory for this chat; no credentials or saved debug logs."><input data-et="paranoidMode" type="checkbox"> Call inspector</label>
       <label class="et-check" hidden><input data-et="useFastClassifier" type="checkbox"> Fast Attribution (0ms instant for narration & 1-on-1 dialogue)</label>
     </div>
     </section><section data-choir-page="settings"><details>
       <summary>Skip tags and blocks</summary>
       <p class="et-hint">Automatic filtering skips interface panels. Add tags, classes or IDs below to exclude other blocks from speech across all chats.</p>
       <label>Custom skip rules<textarea data-et="ignoredTags" rows="2" placeholder="summary, .status-panel, #phone-panel" aria-label="Skip tags and blocks"></textarea></label>
-      <small>Separate entries with commas or spaces. For example, &lt;summary&gt;, .status-panel or #phone-panel. Text inside matching blocks is skipped too. Any other text, such as [POV], a word in CAPITALS like GABI_MONITOR_START or {"mode":"scene-monitor", skips every line that contains it.</small>
+      <small>Tags, classes, IDs or text markers, separated by commas or spaces.</small>
+      <div class="et-more"><button type="button" class="et-more-toggle" aria-expanded="false">Examples</button><small hidden>&lt;summary&gt;, .status-panel or #phone-panel skip that block and everything inside it. Any other text, such as [POV], a word in CAPITALS like GABI_MONITOR_START or {"mode":"scene-monitor", skips every line that contains it.</small></div>
       <label class="et-check"><input data-et="skipMeta" type="checkbox" checked> Skip non-story blocks</label>
       <div class="et-row"><button data-et="previewReading" class="et-btn-subtle">Preview text to read</button></div>
-      <small>The preview applies tag and interface filtering. Optional non-story checking runs when you plan a reply.</small>
+      <small>Shows the latest reply after these filters. No LLM call.</small>
       <pre data-et="readingPreview" role="status" hidden style="white-space:pre-wrap;overflow-wrap:anywhere;max-height:240px;overflow:auto;font:inherit;font-size:.85em"></pre>
     </details>
 
@@ -3941,14 +3948,14 @@ export async function setup(ctx) {
         <label class="et-check"><input data-et="allowLlmFallback" type="checkbox"> Allow LLM fallback after Jev fails (extra cost)</label>
         <label class="et-check" title="Balances speech clips. Grouped Gemini dialogue is balanced as a whole; other providers keep voices separate while matching is on."><input data-et="normalizeLoudness" type="checkbox" checked> Match passage loudness</label>
         <label hidden>Lumiverse API base<input data-et="apiBase" value="/api/v1"></label>
-        <label>Freesound API key (Foley)<input data-et="freesoundApiKey" type="password" placeholder="Freesound token"></label>
+        <label data-et="freesoundKeyField">Freesound API key<input data-et="freesoundApiKey" type="password" placeholder="Freesound token"></label>
       </div>
-      <p id="choir-chunk-hint" style="font-size:.85em;opacity:.75">Shorter chunks can reduce the first wait, but many short requests can cause gaps at faster speeds.</p>
-      <p style="font-size:.85em;opacity:.75">For smoother playback, try 2 prefetched speech clips and 2 concurrent TTS requests if your provider allows it. Effects and speech already saved before playback do not use speech lookahead slots. Prefetch 0 disables lookahead. More lookahead may generate speech you do not finish; changing playback speed does not speed up synthesis.</p>
+      <div class="et-more"><button type="button" class="et-more-toggle" aria-expanded="false">Tips</button><div hidden><p id="choir-chunk-hint" style="font-size:.85em;opacity:.75">Shorter chunks can reduce the first wait, but many short requests can cause gaps at faster speeds.</p>
+      <p style="font-size:.85em;opacity:.75">For smoother playback, try 2 prefetched speech clips and 2 concurrent TTS requests if your provider allows it. Effects and speech already saved before playback do not use speech lookahead slots. Prefetch 0 disables lookahead. More lookahead may generate speech you do not finish; changing playback speed does not speed up synthesis.</p></div></div>
       <div class="et-row">
         <label class="et-check"><input data-et="sectionButtons" type="checkbox"> Show message play controls</label>
         <label class="et-check"><input data-et="enableMixer" type="checkbox"> Floating audio mixer</label>
-        <label class="et-check" title="Use the Abyssal Constellation appearance for the mixer."><input data-et="abyssalMixerTheme" type="checkbox"> Match Abyssal Constellation</label>
+        <label class="et-check" title="Use the Abyssal Constellation appearance for the mixer."><input data-et="abyssalMixerTheme" type="checkbox"> Abyssal Constellation mixer theme</label>
         <label class="et-check"><input data-et="showAutoPlanAction" type="checkbox"> Show Auto-plan in chat toolbar</label>
       </div>
       <label data-et="extraVoicesWrap" style="margin-top:10px"><span data-et="extraVoicesLabel">Additional voices & community models (ID | description)</span><textarea data-et="extraVoices" rows="2" placeholder="voice_id | description (e.g. Fish Audio community model ID or Gemini voice)"></textarea></label>
@@ -5179,14 +5186,14 @@ export async function setup(ctx) {
   function npcPolicyEditor(container,initial,getDefaultRoute,onChange,prefix='',getShared=()=>false,voicePicker=null){
     const policy=structuredClone(initial || {mode:'llm',route:'',voice:'',voices:[]}),mode=document.createElement('select');
     policy.routeVoices ||= {};
-    for(const [value,name] of [['skip','Do not voice discovered characters'],['single','Use one shared voice'],['preferred','Choose from preferred voices'],['llm','Let the LLM decide']])option(mode,value,name);
+    for(const [value,name] of [['skip','Do not voice discovered characters'],['single','Use one shared voice'],['preferred','Choose from preferred voices'],['llm','Choose automatically']])option(mode,value,name);
     mode.value=policy.mode;const connection=defaultConnection(getShared()?'':policy.route,`${prefix}Casting connection`),voice=document.createElement('select'),pool=document.createElement('select');pool.multiple=true;pool.size=5;
     const selectedRoute=()=>connection.value || getDefaultRoute();
     const voiceField=voicePicker?.(voice,selectedRoute,`${prefix}Shared voice`,()=>{policy.voice=voice.value;onChange(read());});
     const poolField=voicePicker?.(pool,selectedRoute,`${prefix}Preferred voices`,()=>{policy.voices=[...pool.selectedOptions].map(item=>item.value);onChange(read());});
     const voiceLabel=voiceField?.node || defaultLabel(`${prefix}Shared voice`,voice),poolLabel=poolField?.node || defaultLabel(`${prefix}Preferred voices`,pool),connectionLabel=defaultLabel(`${prefix}Casting connection`,connection);
     const hint=document.createElement('small');hint.textContent='For discovered characters. Ctrl / Cmd-click to pick several voices.';
-    container.append(defaultLabel(`${prefix}Automatic casting`,mode),connectionLabel,voiceLabel,poolLabel,hint);let request=0;
+    container.append(defaultLabel(`${prefix}Automatic voices`,mode),connectionLabel,voiceLabel,poolLabel,hint);let request=0;
     const show=()=>{connection.disabled=getShared();connection.value=getShared()?'':policy.route || '';connectionLabel.hidden=policy.mode==='skip';voiceLabel.hidden=policy.mode!=='single';poolLabel.hidden=policy.mode!=='preferred';voiceField?.refresh();poolField?.refresh();};
     const fill=catalogue=>{
       if(voicePicker)catalogue=voicePicker.merge(catalogue,selectedRoute());
@@ -5257,7 +5264,7 @@ export async function setup(ctx) {
     const intro=document.createElement('p');intro.style.fontSize='.85em';intro.textContent='New chats start with these voices.';
     const tabs=document.createElement('div');tabs.className='et-default-tabs';tabs.setAttribute('role','tablist');tabs.setAttribute('aria-label','Default settings');
     const body=document.createElement('div');body.className='et-default-body';const panels=[];const buttons=[];
-    for(const [key,title] of [['lead','Voices'],['npc','Automatic casting']]){
+    for(const [key,title] of [['lead','Voices'],['npc','Automatic voices']]){
       const panel=document.createElement('div');panel.dataset.panel=key;panel.setAttribute('role','tabpanel');panel.id=`choir-default-${key}`;
       const button=document.createElement('button');button.type='button';button.textContent=title;button.id=`choir-default-tab-${key}`;button.setAttribute('role','tab');button.setAttribute('aria-controls',panel.id);panel.setAttribute('aria-labelledby',button.id);
       tabs.append(button);body.append(panel);panels.push(panel);buttons.push(button);
@@ -5273,7 +5280,7 @@ export async function setup(ctx) {
       const actor=draft.fixed[index] || {speaker:name,voice:'',style:''};draft.fixed[index]=actor;
       const section=document.createElement('div');section.className='et-grid';section.style.alignItems='start';const title=document.createElement('strong');title.textContent=name;title.style.gridColumn='1 / -1';
       const connection=defaultConnection(actor.route,`Default ${name} connection`),voice=document.createElement('select');let request=0;
-      const fill=catalogue=>{catalogue=mergeVoices(catalogue,connection.value || route());const selected=actor.voice || '';voice.replaceChildren();option(voice,'','Let the LLM decide');for(const item of catalogue)option(voice,item.id,item.name || item.id);if(selected && !catalogue.some(item=>item.id===selected))option(voice,selected,`${selected} · unavailable`);voice.value=selected;};
+      const fill=catalogue=>{catalogue=mergeVoices(catalogue,connection.value || route());const selected=actor.voice || '';voice.replaceChildren();option(voice,'','Choose automatically');for(const item of catalogue)option(voice,item.id,item.name || item.id);if(selected && !catalogue.some(item=>item.id===selected))option(voice,selected,`${selected} · unavailable`);voice.value=selected;};
       fill(voiceCatalogues.get(connection.value || route()) || []);
       const refresh=async()=>{field.refresh();const token=++request;voice.disabled=true;try{const catalogue=await ensureCatalogue(connection.value || route());if(token===request && dialog.isConnected)fill(catalogue);}catch(error){if(token===request)feedback.textContent=error.message;}finally{if(token===request)voice.disabled=false;}};
       voiceRefreshes.push(refresh);
@@ -5541,7 +5548,7 @@ export async function setup(ctx) {
     const calls=[...ttsRequestLog.map(call=>({...call,kind:'TTS'})),...plannerCallLog].sort((a,b)=>(a.at || 0)-(b.at || 0));
     $('clearTtsLog').disabled=!calls.length;
     const count=kind=>calls.filter(call=>call.kind===kind).length,tokens=plannerCallLog.reduce((sum,call)=>sum+(Number(call.input) || 0)+(Number(call.output) || 0),0);
-    $('ttsInspectorNote').textContent=`All calls since Paranoid mode was turned on or the log cleared, newest first: ${count('TTS')} TTS · ${count('LLM')} LLM (${tokens.toLocaleString()} tokens reported) · ${count('Decision')} Decision. Cache hits and replies planned from the casting written with the reply add none.`;
+    $('ttsInspectorNote').textContent=`All calls since the Call inspector was turned on or the log cleared, newest first: ${count('TTS')} TTS · ${count('LLM')} LLM (${tokens.toLocaleString()} tokens reported) · ${count('Decision')} Decision. Cache hits and replies planned from the casting written with the reply add none.`;
     if(!calls.length){node.textContent='No calls yet.';return;}
     for(const call of calls.reverse()){
       const row=document.createElement('div');row.className='et-hint';
@@ -5554,7 +5561,7 @@ export async function setup(ctx) {
   function renderTtsInspector(){
     const node=$('ttsRequests');
     $('ttsInspectorView').options[1].textContent=`Attempted calls (${ttsRequestLog.length})`;$('ttsInspectorView').options[2].textContent=`All calls (${plannerCallLog.length+ttsRequestLog.length})`;
-    if(!config?.paranoidMode){node.replaceChildren();$('ttsInspectorNote').textContent='Enable Paranoid mode in Settings → Planner.';return;}
+    if(!config?.paranoidMode){node.replaceChildren();$('ttsInspectorNote').textContent='Turn on Call inspector under Playback → This reply.';return;}
     if(node.closest('[data-choir-destination]').hidden)return;
     node.replaceChildren();
     if($('ttsInspectorView').value==='calls'){renderAllCalls(node);return;}
@@ -5572,7 +5579,7 @@ export async function setup(ctx) {
     };
     if(sent){
       for(const entry of [...ttsRequestLog].reverse())append(`Call ${entry.id} · ${entry.speaker} · ${entry.status}`,entry.body,`${entry.time} · ${entry.origin} · ${entry.connection}`);
-      if(!ttsRequestLog.length)node.textContent='No TTS calls recorded while Paranoid mode is enabled.';
+      if(!ttsRequestLog.length)node.textContent='No TTS calls recorded while the Call inspector is on.';
       return;
     }
     if(!plan?.segments?.length){node.textContent='No speech plan loaded. Use Plan latest or plan a saved message.';return;}
@@ -5888,19 +5895,19 @@ export async function setup(ctx) {
     const single=config.connectionMode==='one';route.value=single?'':actor.route || '';
     let rowVoices=voiceCatalogues.get(route.value || scope(config)) || [];
     voice.dataset.choirVoice='';
-    option(voice,'','Let LLM choose');
+    option(voice,'','Choose automatically');
     for(const item of rowVoices) option(voice,item.id,`${item.name || item.id} · ${item.gender==='female'?'Female':item.gender==='male'?'Male':item.gender==='neutral'?'Neutral':'Gender unknown'}${item.description ? ` · ${item.description}`:''}`);
     const assignedVoice=single?singleVoice(actor,config):actor.voice;
     if(assignedVoice && !rowVoices.some(v=>v.id===assignedVoice))option(voice,assignedVoice,`${assignedVoice} · unavailable`);
     voice.value=assignedVoice || '';
     const gender=document.createElement('select');
     gender.dataset.choirGender='';
-    for(const [value,label] of [['auto','All voices / let LLM infer'],['female','Female voices'],['male','Male voices'],['neutral','Neutral voices']])option(gender,value,label);
+    for(const [value,label] of [['auto','All voices'],['female','Female voices'],['male','Male voices'],['neutral','Neutral voices']])option(gender,value,label);
     gender.value=actor.gender || 'auto';
 
     let searchFilter='';
     const filterVoices=()=>{
-      const selected=voice.value;voice.replaceChildren();option(voice,'','Let LLM choose');
+      const selected=voice.value;voice.replaceChildren();option(voice,'','Choose automatically');
       const q=searchFilter.toLowerCase().trim();
       for(const item of rowVoices) {
         if(gender.value!=='auto' && item.gender && item.gender!==gender.value && item.id!==selected)continue;
@@ -6320,7 +6327,7 @@ export async function setup(ctx) {
     $('enableAmbience').checked=config.enableAmbience!==false;$('enableMusic').checked=config.enableMusic===true;$('loopMusic').checked=config.loopMusic===true;
     if($('enableMixer'))$('enableMixer').checked=Boolean(config.enableMixer);
     $('readAlong').value=config.readAlong || 'off';$('actingIntensity').value=String(normalizeActingIntensity(config.actingIntensity));$('followNarration').checked=Boolean(config.followNarration);
-    if($('freesoundApiKey'))$('freesoundApiKey').value=config.freesoundApiKey||'';$('concurrency').value=config.concurrency;
+    if($('freesoundApiKey')){$('freesoundApiKey').value=config.freesoundApiKey||'';syncFreesoundKey();}$('concurrency').value=config.concurrency;
     if($('plannerMode'))$('plannerMode').value=resolvePlannerMode(config);
     if($('useFastClassifier'))$('useFastClassifier').checked=Boolean(config.useFastClassifier);
     // The Jev key lives only in this session's field and is never saved with a chat, so a
@@ -8460,6 +8467,13 @@ export async function setup(ctx) {
   $('enableMusic').addEventListener('change',syncMusicPlayback);
   $('loopMusic').addEventListener('change',()=>{if(!$('loopMusic').checked && !controller && !currentAudio)stopBeds('music');updateTransport();});
   $('freesoundApiKey').addEventListener('input',()=>showFoleyStatus());
+  // Examples and Tips buttons show the longer help beneath them.
+  const toggleMore=event=>{const button=event.target.closest?.('.et-more-toggle');if(!button || !root.contains(button))return;const text=button.nextElementSibling,open=text.hidden;text.hidden=!open;button.setAttribute('aria-expanded',String(open));};
+  root.addEventListener('click',toggleMore);unsubs.push(()=>root.removeEventListener('click',toggleMore));
+  // A saved Freesound key folds to one line, so the Soundscape group stays short; Change shows the field again.
+  function syncFreesoundKey(editing=false){const saved=$('freesoundKeySaved'),field=$('freesoundKeyField');if(!saved || !field)return;const folded=Boolean($('freesoundApiKey').value.trim()) && !editing;saved.hidden=!folded;field.hidden=folded;}
+  $('freesoundApiKey').addEventListener('blur',()=>syncFreesoundKey());
+  $('freesoundKeyChange')?.addEventListener('click',()=>{syncFreesoundKey(true);$('freesoundApiKey').focus();});
 
   function dropVolatileSource(sourceKey){for(const cache of [foleyCache,paragraphAudioCache])for(const [key,entry] of cache)if(entry.sourceKey===sourceKey)cache.delete(key);}
   // The story moment lets the backend's Decision model pick among Freesound's results.

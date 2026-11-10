@@ -438,7 +438,7 @@ try{
   if(process.env.CHOIR_DEFAULT_SPEECH_SCREENSHOT)await defaultDialog.screenshot({path:process.env.CHOIR_DEFAULT_SPEECH_SCREENSHOT});
   await defaultDialog.getByRole('tab',{name:'Voices',exact:true}).click();assert.equal(await defaultDialog.getByRole('combobox',{name:'Default Narrator voice',exact:true}).isVisible(),true);assert.equal(await defaultDialog.getByRole('combobox',{name:'Default {{char}} voice',exact:true}).inputValue(),voiceId);
   if(process.env.CHOIR_DEFAULT_LEAD_SCREENSHOT)await defaultDialog.screenshot({path:process.env.CHOIR_DEFAULT_LEAD_SCREENSHOT});
-  await defaultDialog.getByRole('tab',{name:'Automatic casting',exact:true}).click();assert.deepEqual(await defaultDialog.getByRole('combobox',{name:'Default Automatic casting',exact:true}).locator('option').evaluateAll(nodes=>nodes.map(node=>node.value)),['skip','single','preferred','llm']);
+  await defaultDialog.getByRole('tab',{name:'Automatic voices',exact:true}).click();assert.deepEqual(await defaultDialog.getByRole('combobox',{name:'Default Automatic voices',exact:true}).locator('option').evaluateAll(nodes=>nodes.map(node=>node.value)),['skip','single','preferred','llm']);
   await defaultDialog.getByRole('button',{name:'Save default',exact:true}).click();await page.waitForFunction(()=>document.querySelector('[data-et="defaultStatus"]').textContent.startsWith('Default saved.'));
   await page.locator('[data-choir-tab="settings"]').click();
   await withDrawerControl(page,'chunk',()=>page.locator('[data-et="chunk"]').fill('8000'));await page.waitForFunction(()=>document.querySelector('[data-et="saveState"]').textContent==='Saved automatically' && window.fixtureStore.get('chat:fixture').chunk===8000);
@@ -470,7 +470,7 @@ try{
   assert.equal(await touch.locator('.et-character-speed').evaluateAll(nodes=>nodes.every(node=>node.scrollWidth<=node.clientWidth+1)),true);
   if(process.env.CHOIR_CHARACTER_SPEED_MOBILE_SCREENSHOT)await touch.locator('.et-cast-row').filter({has:touch.locator('[aria-label="Mira speed"]')}).screenshot({path:process.env.CHOIR_CHARACTER_SPEED_MOBILE_SCREENSHOT});
   await touch.getByRole('button',{name:'Close Mira editor',exact:true}).tap();
-  await showDrawerControl(touch,'abyssalMixerTheme');await touch.getByRole('checkbox',{name:'Match Abyssal Constellation',exact:true}).check();
+  await showDrawerControl(touch,'abyssalMixerTheme');await touch.getByRole('checkbox',{name:'Abyssal Constellation mixer theme',exact:true}).check();
   await touch.getByRole('button',{name:'Open Choir voice mixer',exact:true}).tap();
   assert.equal(await touch.locator('[data-choir-mixer]').evaluate(node=>getComputedStyle(node).getPropertyValue('--cm-bg').trim()),'#061323');
   const targets=await touch.locator('.cm-transport button').evaluateAll(nodes=>nodes.map(node=>{const rect=node.getBoundingClientRect();return {x:rect.x,width:rect.width,height:rect.height};}));assert.equal(targets.length,5);assert.ok(targets.every((rect,index)=>rect.width>=44 && rect.height>=44 && (!index || rect.x>=targets[index-1].x+targets[index-1].width)));

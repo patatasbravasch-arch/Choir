@@ -1,8 +1,8 @@
-# Paranoid mode: inspect TTS requests
+# Call inspector: inspect TTS requests
 
-1. Enable **Choir → Settings → Planner → Paranoid mode · inspect TTS requests**.
+1. Turn on **Choir → Playback → This reply → Call inspector**.
 2. Plan the message normally with LLM, Jev or Local.
-3. Open **Playback → TTS inspector**, also linked from **Speech plan**.
+3. Open **Playback → This reply → Call inspector**, also linked from **Speech plan**.
 
 **Prepared requests** shows the bodies that the current plan and settings prepare, after voice selection, pronunciation changes, tone injection, chunking and grouping. This view makes no planning or TTS calls. Use **Refresh view** after changing playback settings. Prepared requests may reuse cached audio rather than cause a new call.
 
