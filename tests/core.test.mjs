@@ -1268,3 +1268,22 @@ test('custom skip rules accept text markers: every line containing one is left o
   assert.equal(core.transcriptFromMessage('[pov: Mira]\nShe ran.','[POV'),'She ran.');
   assert.equal(core.transcriptFromMessage('[POV] Nolan\nHe ran.',''),'[POV] Nolan\nHe ran.');
 });
+
+test('silent gestures such as hands in pockets never become sound effects', async()=>{
+  const {injectedSoundCues, readInjectedPlan}=await import('../src/core.js');
+  const segments=[{speaker:'Narrator',text:'He shoved his hands in his pockets, nodded, and the door slammed behind him.'}];
+  const response=JSON.stringify({cues:[
+    {segment:0,trigger:'He shoved his hands',query:'hands in pockets'},
+    {segment:0,trigger:'nodded',query:'nod'},
+    {segment:0,trigger:'and the door slammed',query:'door slam'},
+  ]});
+  assert.deepEqual(parseSoundCues(response,segments).cues.map(cue=>cue.query),['door slam']);
+  const plan=readInjectedPlan('x<!--choir\nSFX|hands in pockets|He shoved his hands\nSFX|door slam|and the door slammed\n-->');
+  assert.deepEqual(injectedSoundCues(segments,plan).cues.map(cue=>cue.query),['door slam']);
+  // Real sounds that mention pockets or hands still play.
+  const kept=JSON.stringify({cues:[{segment:0,trigger:'He shoved his hands',query:'coins jingle'},{segment:0,trigger:'and the door slammed',query:'hand clap'}]});
+  assert.deepEqual(parseSoundCues(kept,segments).cues.map(cue=>cue.query),['coins jingle','hand clap']);
+  const prompt=soundCuePrompt(segments)[0].content;
+  assert.match(prompt,/hands in pockets/);
+  assert.match(prompt,/couch creak/);
+});

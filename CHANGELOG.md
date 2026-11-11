@@ -2,6 +2,10 @@
 
 Release notes for Choir on the `lunch-test` and `staging` branches, newest first. A few lunch-test builds between staging.29 and staging.30 were numbered `1.1.6-lunch-test.N`.
 
+**No sound effects for silent gestures.**
+- Choir no longer asks Freesound for gestures nobody can hear, such as **hands in pockets**, a nod, a shrug, a smile or a glance, whether the cue came from the sound LLM or from the reply's own plan.
+- The sound prompts now ask only for clearly audible moments and for plain sound-library words (**couch creak**, not **couch scramble**).
+
 **Tidier Playback tab.**
 - **Acting** sits with speed, gap and loudness under Playback; Reading keeps only what happens on screen.
 - A saved Freesound key shows as one line (**Freesound key saved · Change**).
