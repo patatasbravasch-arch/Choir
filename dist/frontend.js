@@ -29,10 +29,15 @@ function mergeSettingsChanges(latest, baseline, local) {
   return structuredClone(local);
 }
 
+// Choir's UUIDs come from Lumiverse's own frontend helper, ctx.uuid.v4() (frontend-uuid-v1):
 // crypto.randomUUID exists only in secure contexts, so a Lumiverse reached over plain HTTP
-// (a LAN or remote host) has none. Choir never calls it: getRandomValues works everywhere
-// and gives the same v4 IDs. Without any crypto object the bytes are merely unpredictable
-// enough for request and element IDs.
+// (a LAN or remote host) has none. A Lumiverse older than the helper gets the same v4 IDs
+// from getRandomValues, which works everywhere; crypto.randomUUID is never called.
+function hostUuid(ctx,cryptoApi=globalThis.crypto) {
+  if(typeof ctx?.uuid?.v4==='function' && (ctx.host?.capabilities?.['frontend-uuid-v1'] ?? 0)>=1)return ctx.uuid.v4();
+  return randomUuid(cryptoApi);
+}
+// Without any crypto object the bytes are merely unpredictable enough for request and element IDs.
 function randomUuid(cryptoApi=globalThis.crypto) {
   const bytes=new Uint8Array(16);
   if(typeof cryptoApi?.getRandomValues==='function')cryptoApi.getRandomValues(bytes);
@@ -3999,12 +4004,13 @@ export async function setup(ctx) {
   const setStyle=(node,name,value)=>{if(node.style[name]!==value)node.style[name]=value;};
   const drawerNavigation=createDrawerNavigation(root);
   for(const button of root.querySelectorAll('button'))button.type='button';
+  const uuid=()=>hostUuid(ctx);
   const pending = new Map(); const LIVENESS_AFTER_MS=30000,LIVENESS_EVERY_MS=15000,LIVENESS_REPLY_MS=10000;
   let audioNamespace,audioNamespaceError;
   for(let attempt=0;attempt<2;attempt++){
     try{
       audioNamespace=await ctx.settings.get('audio:namespace');
-      if(!audioNamespace){audioNamespace=randomUuid();await ctx.settings.set('audio:namespace',audioNamespace);}
+      if(!audioNamespace){audioNamespace=uuid();await ctx.settings.set('audio:namespace',audioNamespace);}
       audioNamespaceError=null;break;
     }catch(error){
       audioNamespaceError=error;
@@ -4044,7 +4050,7 @@ export async function setup(ctx) {
   }
   // Each saved mix gets its own revision, so an export can tell a replacement from the mix it read,
   // even when both have the same size and length.
-  const mixRevision=()=>randomUuid();
+  const mixRevision=()=>uuid();
   function invalidateRecordingAudio(key){const [,targetChat,messageId]=JSON.parse(key);invalidateVolatileAudio({kind:'delete',chatId:targetChat,messageId});}
   function readVolatileAudio(cache,key){
     const entry=cache.get(key);
@@ -4494,7 +4500,7 @@ export async function setup(ctx) {
   const mixerStop=document.createElement('button');mixerStop.type='button';mixerStop.dataset.choirAction='stop';mixerStop.innerHTML=ICON_STOP;mixerStop.title='Stop playback';mixerStop.setAttribute('aria-label','Stop');mixerStop.onclick=()=>stop();
   const transport=document.createElement('div');transport.className='cm-transport';transport.append(mixerPlanLatest,mixerPrevious,mixerPlay,mixerNext,mixerStop);
   const mixerSeek=makeSeekControl(),legend=document.createElement('small');legend.className='cm-legend';legend.innerHTML=`<span>${ICON_MUTED} Silent = mute</span><span>${ICON_MIC_OFF} No voice = skip & don’t generate</span>`;
-  const levels=document.createElement('div'),levelsBody=document.createElement('div');levels.className='cm-levels';levelsBody.className='cm-levels-body';levelsBody.id=`choir-channel-levels-${randomUuid()}`;
+  const levels=document.createElement('div'),levelsBody=document.createElement('div');levels.className='cm-levels';levelsBody.className='cm-levels-body';levelsBody.id=`choir-channel-levels-${uuid()}`;
   const channelTabs=document.createElement('div');channelTabs.className='cm-channel-tabs';channelTabs.setAttribute('role','tablist');channelTabs.setAttribute('aria-label','Mixer channels');
   channelsRoot.id=`${levelsBody.id}-panel`;channelsRoot.setAttribute('role','tabpanel');channelsRoot.tabIndex=0;
   const channelsTitle=document.createElement('button');channelsTitle.type='button';channelsTitle.className='cm-channels-title';channelsTitle.setAttribute('aria-label','Channel levels');channelsTitle.setAttribute('aria-controls',levelsBody.id);
@@ -4512,7 +4518,7 @@ export async function setup(ctx) {
   const mixerMessages=document.createElement('button');mixerMessages.type='button';mixerMessages.dataset.choirAction='message-controls';mixerMessages.setAttribute('aria-label','Show message play controls');mixerMessages.onclick=()=>{if(!chatId)return;$('sectionButtons').checked=!$('sectionButtons').checked;$('sectionButtons').dispatchEvent(new document.defaultView.Event('change'));};
   autoPlanRow.append(mixerAutoPlan,mixerAutoPlay,mixerSfx,mixerAmbience,mixerMusic,mixerFollow,mixerMessages);
   const mixerQuickButtons=new Map(quickButtonKeys.map((key,index)=>[key,[mixerAutoPlan,mixerAutoPlay,mixerSfx,mixerAmbience,mixerMusic,mixerFollow,mixerMessages][index]]));
-  const customizePanel=$('mixerLayoutOptions'),layoutPanel=$('mixerLayout');layoutPanel.id=`choir-mixer-layout-${randomUuid()}`;$('customizeMixer').setAttribute('aria-controls',layoutPanel.id);
+  const customizePanel=$('mixerLayoutOptions'),layoutPanel=$('mixerLayout');layoutPanel.id=`choir-mixer-layout-${uuid()}`;$('customizeMixer').setAttribute('aria-controls',layoutPanel.id);
   const showMixerLayout=open=>{layoutPanel.hidden=!open;$('customizeMixer').setAttribute('aria-expanded',String(open));drawerNavigation.showMixer(open);if(open)refreshMixerLayoutEditor();};
   const layoutBar=document.createElement('div');layoutBar.className='et-pagebar';const layoutTitle=layoutPanel.querySelector('h3');layoutTitle.textContent='Customize mixer';$('closeMixerLayout').textContent='←';$('closeMixerLayout').setAttribute('aria-label','Back to playback');layoutBar.append($('closeMixerLayout'),layoutTitle);layoutPanel.prepend(layoutBar);
   $('customizeMixer').onclick=()=>showMixerLayout(layoutPanel.hidden);
@@ -5468,7 +5474,7 @@ export async function setup(ctx) {
   function rpc(action,input,signal,timeoutMs=185000,onProgress) {
     if (signal?.aborted) return Promise.reject(abortError());
     return new Promise((resolve,reject) => {
-      const id=randomUuid();
+      const id=uuid();
       let lastProgress;
       const cancel=()=>{try{ctx.sendToBackend({namespace:'choir',id,action:'cancel'});}catch{}done(abortError());};
       const timer=setTimeout(()=>{
