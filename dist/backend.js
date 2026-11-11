@@ -1920,6 +1920,11 @@ const musicTerms = (list, allowed, max) => {
 };
 
 // Ambience and music entries may also be {stop:true}, which ends the current bed.
+// Gestures and looks make no sound a listener could recognize ("hands in pockets",
+// "nod", "glance"); a model sometimes still asks for them.
+const SILENT_SOUND=/\b(?:hands?\s+(?:in(?:to)?\s+)?(?:\w+\s+)?pockets?|nods?|nodding|shrugs?|shrugging|smiles?|smiling|grins?|grinning|smirks?|glances?|glancing|stares?|staring|gazes?|gazing|looks?|looking|winks?|blinks?|frowns?|pouts?|thinks?|thinking|eye\s*rolls?|rolls?\s+(?:her|his|their)?\s*eyes)\b/i;
+const silentSoundQuery=query=>SILENT_SOUND.test(String(query || ''));
+
 function segmentSoundCues(value, text, kind='sfx') {
   const cues = (Array.isArray(value) ? value : value ? [value] : []).flatMap(cue => {
     const stop = kind !== 'sfx' && cue?.stop === true;
@@ -1929,7 +1934,7 @@ function segmentSoundCues(value, text, kind='sfx') {
       if (!sound.feels.length && !sound.genres.length && !sound.keywords.length) return [];
     } else if (!stop) {
       const query = typeof cue?.query === 'string' ? cue.query.trim().replace(/\s+/g, ' ') : '';
-      if (!query) return [];
+      if (!query || kind === 'sfx' && silentSoundQuery(query)) return [];
       sound = {query};
     }
     const trigger = typeof cue.trigger === 'string' ? cue.trigger.trim() : '';
@@ -1988,8 +1993,8 @@ function soundCuePrompt(segments, {music=false, currentMusic=null}={}) {
   const playing = music && currentMusic ? [currentMusic.title && `"${currentMusic.title}"`, currentMusic.feels?.length && `(${currentMusic.feels.join(', ')})`].filter(Boolean).join(' ') : '';
   return [
     {role:'system',content:`You are the Foley editor for an audiobook. Choose short sound effects and looping background ambience that make the scene audible. Return ONLY JSON {"cues":[{"segment":0,"trigger":"exact words","query":"freesound search"}],"ambience":[{"segment":0,"trigger":"exact words","query":"freesound search"},{"segment":3,"trigger":"exact words","stop":true}]${music?',"music":[{"segment":0,"trigger":"exact words","feels":["Mysterious"],"genres":["Soundtrack"],"keywords":["harp","forest"]}]':''}}.
-Choose only concrete physical sounds that happen in the scene as it is told: objects, movement, impacts, doors, footsteps, weather, fire, water, animals, vehicles, machines, weapons, crowds. Skip sounds that are remembered, imagined, hypothetical, negated or metaphorical. Skip voices and vocal sounds such as speech, laughter, sighs, gasps, screams and singing, because the voice actors perform those. Skip music.
-segment is the index of the numbered segment where the sound happens. trigger copies 2 to 6 consecutive words exactly as written in that segment, in the original language, from the start of the sentence or clause where the sound happens; the effect plays right before those words. query is an English Freesound search of 1 to 3 words naming the sound source and action the way sound files are named, such as "door slam", "bottle clink", "egg crack" or "sword clash", whatever language the story uses. Never add places or scene details: every search word must match.
+Choose only concrete physical sounds that happen in the scene as it is told: objects, movement, impacts, doors, footsteps, weather, fire, water, animals, vehicles, machines, weapons, crowds. Skip sounds that are remembered, imagined, hypothetical, negated or metaphorical. Skip voices and vocal sounds such as speech, laughter, sighs, gasps, screams and singing, because the voice actors perform those. Skip music. Skip quiet gestures, postures and looks that a listener would not hear, such as hands in pockets, nodding, shrugging, smiling, glancing or settling into a seat: choose a sound only when a sound file of it would be clearly recognizable.
+segment is the index of the numbered segment where the sound happens. trigger copies 2 to 6 consecutive words exactly as written in that segment, in the original language, from the start of the sentence or clause where the sound happens; the effect plays right before those words. query is an English Freesound search of 1 to 3 words naming the sound source and action the way sound files are named, such as "door slam", "bottle clink", "egg crack" or "sword clash", whatever language the story uses. Use the plain words sound libraries use, such as "couch creak" rather than "couch scramble". Never add places or scene details: every search word must match.
 For sound effects, keep each spoken phrase intact. Anchor at a sentence start, after clause punctuation (comma, semicolon, colon or dash), or at a conjunction that begins a complete action group, such as "and slid" or "as the glass shattered". Include the subject with its action; never insert an effect between a name/pronoun and its verb, inside a noun phrase, or inside a quoted utterance. For "Once she took the bite, Kellin set the plate back on the walnut edge and slid his hand beneath the hoodie", use "Kellin set the plate" or "and slid his hand", never "set the plate" after Kellin. If the action has no nearby clean break, use the start of its sentence.
 Return at most ${soundCueLimit(segments)} cues in story order, at most one per sentence. Prefer fewer, clearly audible moments.
 ambience entries follow the same segment, trigger and query rules but start a quiet looping background bed for a sustained environment the scene clearly stays in, such as "rain", "tavern crowd", "forest birds", "wind" or "fire crackle". A bed starts right before its trigger words and lasts until the next ambience entry or the end of the text; an entry with "stop":true instead of a query ends it when the scene moves somewhere quiet. Return at most ${AMBIENCE_LIMIT} ambience entries in story order, none for brief sounds.${music?`
@@ -2136,7 +2141,7 @@ function injectedSoundCues(segments, plan) {
     return entries.flatMap(entry=>{
       const key=String(entry.trigger || '').toLowerCase().replace(/\s+/g,' ').trim(),from=(used.get(key) ?? -1)+1;
       const segment=segments.findIndex((item,index)=>index>=from && cueOffset(String(item.text || ''),entry.trigger)>=0);
-      if(segment<0)return [];
+      if(segment<0 || entries===plan.sfx && silentSoundQuery(entry.query))return [];
       used.set(key,segment);
       return [{segment,trigger:entry.trigger,query:entry.query}];
     });
@@ -2158,7 +2163,7 @@ function injectedSkipLines(lines, plan) {
 function injectionPrompt({cast=[], sfx=false, ambience=false, skip=true, language=true}={}) {
   const mark=pipeMark(cast);
   const sounds=[
-    sfx?'SFX|1 to 3 English search words naming the sound|2 to 6 exact consecutive words from your reply where it happens (at most 4, only concrete sounds that happen now: doors, steps, impacts, weather; never voices or music)':'',
+    sfx?'SFX|1 to 3 English search words naming the sound|2 to 6 exact consecutive words from your reply where it happens (at most 4, only clearly audible sounds that happen now: doors, steps, impacts, weather; never voices, music or silent gestures such as hands in pockets or a nod)':'',
     ambience?'AMB|1 to 3 English search words for a sustained background|2 to 6 exact words where the scene settles there (at most 2)':''
   ].filter(Boolean);
   return [
