@@ -4603,3 +4603,18 @@ test('a speaker change whose save fails leaves both the dropdown and playback on
   assert.equal(h.synthesis.length,generated,'playback still uses the saved Mira clips');
  }finally{await h.close();}
 });
+
+test('the drawer takes its UUIDs from Lumiverse\'s ctx.uuid helper when the host offers frontend-uuid-v1',async()=>{
+  const h=await harness({enabled:true});
+  try{
+    let count=0;const made=[];
+    h.ctx.host={...(h.ctx.host || {}),capabilities:{...(h.ctx.host?.capabilities || {}),'frontend-uuid-v1':1}};
+    h.ctx.uuid={v4:()=>{const id=`6f1c2a9e-3b4d-4e5f-8a6b-${(++count).toString(16).padStart(12,'0')}`;made.push(id);return id;}};
+    h.store.delete('audio:namespace');
+    await h.reload();
+    assert.equal(h.store.get('audio:namespace'),made[0]);
+    const before=h.requests.length;await h.plan();
+    const ids=h.requests.slice(before).filter(request=>request.action!=='cancel').map(request=>request.id);
+    assert.ok(ids.length>0);for(const id of ids)assert.ok(made.includes(id),id);
+  }finally{await h.close();}
+});

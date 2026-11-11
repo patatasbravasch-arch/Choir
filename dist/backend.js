@@ -29,10 +29,15 @@ function mergeSettingsChanges(latest, baseline, local) {
   return structuredClone(local);
 }
 
+// Choir's UUIDs come from Lumiverse's own frontend helper, ctx.uuid.v4() (frontend-uuid-v1):
 // crypto.randomUUID exists only in secure contexts, so a Lumiverse reached over plain HTTP
-// (a LAN or remote host) has none. Choir never calls it: getRandomValues works everywhere
-// and gives the same v4 IDs. Without any crypto object the bytes are merely unpredictable
-// enough for request and element IDs.
+// (a LAN or remote host) has none. A Lumiverse older than the helper gets the same v4 IDs
+// from getRandomValues, which works everywhere; crypto.randomUUID is never called.
+function hostUuid(ctx,cryptoApi=globalThis.crypto) {
+  if(typeof ctx?.uuid?.v4==='function' && (ctx.host?.capabilities?.['frontend-uuid-v1'] ?? 0)>=1)return ctx.uuid.v4();
+  return randomUuid(cryptoApi);
+}
+// Without any crypto object the bytes are merely unpredictable enough for request and element IDs.
 function randomUuid(cryptoApi=globalThis.crypto) {
   const bytes=new Uint8Array(16);
   if(typeof cryptoApi?.getRandomValues==='function')cryptoApi.getRandomValues(bytes);

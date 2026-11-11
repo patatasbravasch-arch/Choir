@@ -4,7 +4,7 @@ import {createHash} from 'node:crypto';
 import {speechPanel} from './fixtures/speech-panel.mjs';
 import {phoneWidget} from './fixtures/phone-widget.mjs';
 import {sfxCueOffset,spaceSoundEffects,SFX_MIN_SPACING} from '../src/core.js';
-import {randomUuid,sha256Hex,ignoredTagNames,characterCardRoles,validateCardRoles,cardAnalysisRoles,reconcileCardCast} from '../src/core.js';
+import {hostUuid,sha256Hex,ignoredTagNames,characterCardRoles,validateCardRoles,cardAnalysisRoles,reconcileCardCast} from '../src/core.js';
 import {normalizePlaybackRate,normalizeVoiceGap,speakerPlaybackRate,effectivePlaybackRate,browserPlaybackRate,PLAYBACK_RATE_LIMITS,VOICE_GAP_LIMITS,BROWSER_PLAYBACK_RATE_LIMITS} from '../src/core.js';
 import * as core from '../src/core.js';
 
@@ -273,16 +273,19 @@ test('card title identity matching preserves scenario casts, manual names, confl
   assert.deepEqual(reconcileCardCast(renamed,{name:'Kellin Beckett || Toxic Fans'}).fixed[2].aliases,['Kellin Beckett']);
 });
 
-test('HTTP UUID fallback uses secure random bytes, preserves v4 bits and generates distinct IDs',()=>{
+test('UUIDs come from Lumiverse\'s ctx.uuid helper; older hosts get getRandomValues IDs, never crypto.randomUUID',()=>{
+  let calls=0;
+  const lumiverse={host:{capabilities:{'frontend-uuid-v1':1}},uuid:{v4:()=>{calls++;return '6f1c2a9e-3b4d-4e5f-8a6b-7c8d9e0f1a2b';}}};
+  const noRandomUUID={randomUUID(){throw new Error('randomUUID must not be used');},getRandomValues:bytes=>bytes.fill(0)};
+  assert.equal(hostUuid(lumiverse,noRandomUUID),'6f1c2a9e-3b4d-4e5f-8a6b-7c8d9e0f1a2b');assert.equal(calls,1);
+  // The member alone is not enough: the documented check is the frontend-uuid-v1 capability too.
+  assert.equal(hostUuid({host:{capabilities:{'uuid-v1':1}},uuid:lumiverse.uuid},noRandomUUID),'00000000-0000-4000-8000-000000000000');assert.equal(calls,1);
+  assert.equal(hostUuid({},noRandomUUID),'00000000-0000-4000-8000-000000000000');
   const httpCrypto={getRandomValues:globalThis.crypto.getRandomValues.bind(globalThis.crypto)};
-  const ids=Array.from({length:1000},()=>randomUuid(httpCrypto));assert.equal(new Set(ids).size,1000);
+  const ids=Array.from({length:1000},()=>hostUuid(null,httpCrypto));assert.equal(new Set(ids).size,1000);
   for(const id of ids)assert.match(id,/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
-  assert.equal(randomUuid({getRandomValues:bytes=>bytes.fill(255)}),'ffffffff-ffff-4fff-bfff-ffffffffffff');
-  // crypto.randomUUID is never called, even where it exists: it is missing on plain-HTTP hosts.
-  const secureCrypto={randomUUID(){throw new Error('randomUUID must not be used');},getRandomValues:bytes=>bytes.fill(0)};
-  assert.equal(randomUuid(secureCrypto),'00000000-0000-4000-8000-000000000000');
-  // No crypto object at all still yields a well-formed v4 ID.
-  assert.match(randomUuid(null),/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  assert.equal(hostUuid(null,{getRandomValues:bytes=>bytes.fill(255)}),'ffffffff-ffff-4fff-bfff-ffffffffffff');
+  assert.match(hostUuid(null,null),/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
 });
 
 test('HTTP SHA-256 fallback preserves native saved-plan keys for UTF-8 and block boundaries',async()=>{
