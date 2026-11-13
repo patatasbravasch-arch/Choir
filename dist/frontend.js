@@ -34,7 +34,8 @@ function mergeSettingsChanges(latest, baseline, local) {
 // (a LAN or remote host) has none. A Lumiverse older than the helper gets the same v4 IDs
 // from getRandomValues, which works everywhere; crypto.randomUUID is never called.
 function hostUuid(ctx,cryptoApi=globalThis.crypto) {
-  if(typeof ctx?.uuid?.v4==='function' && (ctx.host?.capabilities?.['frontend-uuid-v1'] ?? 0)>=1)return ctx.uuid.v4();
+  // The helper throws once the extension's page context is unloaded; a save finishing late still gets an ID.
+  if(typeof ctx?.uuid?.v4==='function' && (ctx.host?.capabilities?.['frontend-uuid-v1'] ?? 0)>=1)try{return ctx.uuid.v4();}catch{}
   return randomUuid(cryptoApi);
 }
 // Without any crypto object the bytes are merely unpredictable enough for request and element IDs.
