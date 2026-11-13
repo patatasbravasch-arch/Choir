@@ -281,6 +281,8 @@ test('UUIDs come from Lumiverse\'s ctx.uuid helper; older hosts get getRandomVal
   // The member alone is not enough: the documented check is the frontend-uuid-v1 capability too.
   assert.equal(hostUuid({host:{capabilities:{'uuid-v1':1}},uuid:lumiverse.uuid},noRandomUUID),'00000000-0000-4000-8000-000000000000');assert.equal(calls,1);
   assert.equal(hostUuid({},noRandomUUID),'00000000-0000-4000-8000-000000000000');
+  const unloaded={host:lumiverse.host,uuid:{v4(){throw new Error('Spindle frontend context is inactive');}}};
+  assert.equal(hostUuid(unloaded,noRandomUUID),'00000000-0000-4000-8000-000000000000');
   const httpCrypto={getRandomValues:globalThis.crypto.getRandomValues.bind(globalThis.crypto)};
   const ids=Array.from({length:1000},()=>hostUuid(null,httpCrypto));assert.equal(new Set(ids).size,1000);
   for(const id of ids)assert.match(id,/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
