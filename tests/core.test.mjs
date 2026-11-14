@@ -57,6 +57,8 @@ test('a Freesound query without a match is retried shorter, keeping the sound, n
   assert.deepEqual(core.soundQueryFallbacks('paper cup pick up'),['paper cup pick up','paper cup pick','paper cup']);
   assert.deepEqual(core.soundQueryFallbacks('footsteps walking away'),['footsteps walking away','footsteps walking']);
   assert.deepEqual(core.soundQueryFallbacks('heavy metal bolt'),['heavy metal bolt','metal bolt','heavy metal']);
+  assert.deepEqual(core.soundQueryFallbacks('heels on wood'),['heels on wood','heels wood']);
+  assert.deepEqual(core.soundQueryFallbacks('ice in glass'),['ice in glass','ice glass']);
   for(const query of ['door slam','rain','  ',''])assert.deepEqual(core.soundQueryFallbacks(query),query.trim()?[query]:[]);
   for(const query of ['hand pull cloth rustle','handshake grip cloth','crowd murmuring room tone','paper cup pick up'])
     assert.ok(core.soundQueryFallbacks(query).every(candidate=>candidate.split(' ').length>=2),query);

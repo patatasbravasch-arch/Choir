@@ -4566,3 +4566,18 @@ test('the drawer takes its UUIDs from Lumiverse\'s ctx.uuid helper when the host
     assert.ok(ids.length>0);for(const id of ids)assert.ok(made.includes(id),id);
   }finally{await h.close();}
 });
+
+test('a large backend reply is fetched in parts and still plays, so no single message can close the page connection',async()=>{
+ const h=await harness();try{
+  await configureFoley(h);h.message.content='She listened. The page snapped under her thumb.';
+  const send=h.ctx.sendToBackend,parts=[];
+  const text=JSON.stringify({base64:btoa('FREESOUND_PREVIEW'),mimeType:'audio/mpeg'}),size=Math.ceil(text.length/3);
+  h.ctx.sendToBackend=request=>{
+    if(request.action==='freesoundPreview'){h.requests.push(structuredClone(request));setTimeout(()=>h.emitBackend({namespace:'choir',id:request.id,result:{choirTransfer:{id:'t1',parts:3,length:text.length}}}),0);return;}
+    if(request.action==='transferPart'){parts.push(request.input.index);setTimeout(()=>h.emitBackend({namespace:'choir',id:request.id,result:{data:text.slice(request.input.index*size,(request.input.index+1)*size)}}),0);return;}
+    return send(request);
+  };
+  await h.plan();await h.play();
+  assert.deepEqual(parts,[0,1,2]);assert.equal(await playedFoley(h),1);
+ }finally{await h.close();}
+});

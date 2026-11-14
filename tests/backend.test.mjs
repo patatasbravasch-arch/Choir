@@ -94,7 +94,7 @@ test('music file downloads accept octet-stream MP3s and preserve every byte acro
  for(const tail of [0,1,2]){
   const bytes=Uint8Array.from({length:1024*1024+tail},(_,index)=>index%251);bytes.set([0xff,0xfb,0x90,0]);
   const {files,calls}=stagedMusic(bytes),h=await withMusicFiles(files);h.send('musicAudio',{url:musicUrl});
-  const message=(await h.result()).message;assert.equal(message.error,undefined);assert.equal(message.result.mimeType,'audio/mpeg');
+  const message=await wholeReply(h,(await h.result()).message);assert.equal(message.error,undefined);assert.equal(message.result.mimeType,'audio/mpeg');
   assert.deepEqual(Buffer.from(message.result.base64,'base64'),Buffer.from(bytes));
   const {url,options}=calls.fetches[0];assert.equal(url,musicUrl);assert.equal(options.userId,'user-a');assert.equal(options.maxBytes,25*1024*1024);assert.equal(options.timeoutMs,60000);assert.equal(options.signal.aborted,false);
   assert.deepEqual(calls.reads.map(read=>read.offset),tail?[0,1024*1024]:[0]);assert.ok(calls.reads.every(read=>read.source.fileId==='music-file' && read.userId==='user-a'));
@@ -267,6 +267,17 @@ test('casting asks every provider for plain-text rows at temperature 0 with the 
     assert.ok(h.sent.some(item=>item.message.progress?.stage==='Waiting for planner response'));
   }
 });
+// Large replies arrive as a receipt; this fetches their parts the way the page does.
+async function wholeReply(h,message){
+  const transfer=message.result?.choirTransfer;if(!transfer)return message;
+  let text='';
+  for(let index=0;index<transfer.parts;index++){
+    const id=`part-${transfer.id}-${index}`;h.send('transferPart',{transfer:transfer.id,index},id);
+    while(!h.sent.some(item=>item.message.id===id))await new Promise(resolve=>setTimeout(resolve,5));
+    text+=h.sent.find(item=>item.message.id===id).message.result.data;
+  }
+  return {...message,result:JSON.parse(text)};
+}
 async function harness(generate, cors, provider, deadline, stream, decisions,connectionOverrides={},extraSpindle={}) {
   let handler;const sent=[];let wake;
   const connection={id:'llm-a',is_default:true,model:'gemini-flash-text',provider,...connectionOverrides};
@@ -1718,4 +1729,30 @@ test('alive reports only this session\'s still-running requests so a restart is 
   h.send('alive',{ids:['long']},'check-2','user-a','session-b');assert.deepEqual([...h.sent.find(item=>item.message.id==='check-2').message.result.running],[]);
   release();for(let i=0;i<50 && !h.sent.some(item=>item.message.id==='long' && (item.message.result || item.message.error));i++)await new Promise(resolve=>setTimeout(resolve,10));
   h.send('alive',{ids:['long']},'check-3');assert.deepEqual([...h.sent.find(item=>item.message.id==='check-3').message.result.running],[]);
+});
+
+test('replies over 1 MB go out as parts the page fetches in turn, under Lumiverse\'s 8 MB connection limit',async()=>{
+  const body='A'.repeat(3*1024*1024+5);
+  const h=await harness(null,async()=>({status:200,headers:{'content-type':'audio/mpeg'},body,encoding:'base64'}));
+  h.send('freesoundPreview',{url:'https://cdn.freesound.org/previews/1/1-hq.mp3'},'big');
+  const receipt=(await h.result()).message.result.choirTransfer;
+  assert.equal(receipt.parts,4);
+  let text='';
+  for(let index=0;index<receipt.parts;index++){
+    h.send('transferPart',{transfer:receipt.id,index},`part-${index}`);
+    const reply=h.sent.find(item=>item.message.id===`part-${index}`)||await new Promise(resolve=>{const wait=()=>{const found=h.sent.find(item=>item.message.id===`part-${index}`);found?resolve(found):setTimeout(wait,5);};wait();});
+    assert.ok(JSON.stringify(reply.message).length<1.1*1024*1024);
+    text+=reply.message.result.data;
+  }
+  assert.deepEqual({...JSON.parse(text)},{base64:body,mimeType:'audio/mpeg'});
+  for(const item of h.sent)assert.ok(JSON.stringify(item.message).length<1.1*1024*1024);
+  // Parts belong to the session that asked, and the reply is gone once fully read.
+  h.send('transferPart',{transfer:receipt.id,index:0},'other','user-a','session-b');
+  h.send('transferPart',{transfer:receipt.id,index:0},'again');
+  for(const id of ['other','again'])await new Promise(resolve=>{const wait=()=>h.sent.some(item=>item.message.id===id)?resolve():setTimeout(wait,5);wait();});
+  for(const id of ['other','again'])assert.match(h.sent.find(item=>item.message.id===id).message.error,/no longer available/);
+  // Small replies are unchanged.
+  const small=await harness(null,async()=>({status:200,headers:{'content-type':'audio/mpeg'},body:'QUJD'}));
+  small.send('freesoundPreview',{url:'https://cdn.freesound.org/previews/1/1-hq.mp3'});
+  assert.equal((await small.result()).message.result.base64,'QUJD');
 });

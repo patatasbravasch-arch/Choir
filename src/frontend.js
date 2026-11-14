@@ -1924,7 +1924,22 @@ export async function setup(ctx) {
   const saveOnHidden=()=>{if(docRoot?.visibilityState==='hidden')saveOnLeave();};docRoot?.addEventListener('visibilitychange',saveOnHidden);
   unsubs.push(()=>{root.removeEventListener('input',autoSaveEvent);root.removeEventListener('change',persistChange);viewRoot?.removeEventListener('pagehide',saveOnLeave);docRoot?.removeEventListener('visibilitychange',saveOnHidden);clearTimeout(autosaveTimer);});
 
-  function rpc(action,input,signal,timeoutMs=185000,onProgress) {
+  // A large reply (a music track, a Freesound preview) arrives as a receipt; its parts are
+  // fetched one at a time, because Lumiverse closes the page's connection when a single message
+  // would queue more than 8 MB, losing every other reply on the way.
+  async function rpc(action,input,signal,timeoutMs=185000,onProgress) {
+    const result=await rpcRequest(action,input,signal,timeoutMs,onProgress),transfer=result?.choirTransfer;
+    if(!transfer || typeof transfer.id!=='string' || !Number.isInteger(transfer.parts) || transfer.parts<1 || transfer.parts>200)return result;
+    let text='';
+    for(let index=0;index<transfer.parts;index++){
+      const part=await rpcRequest('transferPart',{transfer:transfer.id,index},signal,30000);
+      if(typeof part?.data!=='string')throw new Error(`${backendRequestKind(action)} reply arrived incomplete. Try again.`);
+      text+=part.data;
+    }
+    if(text.length!==transfer.length)throw new Error(`${backendRequestKind(action)} reply arrived incomplete. Try again.`);
+    return JSON.parse(text);
+  }
+  function rpcRequest(action,input,signal,timeoutMs=185000,onProgress) {
     if (signal?.aborted) return Promise.reject(abortError());
     return new Promise((resolve,reject) => {
       const id=uuid();

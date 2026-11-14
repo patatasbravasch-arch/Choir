@@ -1983,6 +1983,9 @@ export function soundQueryFallbacks(query){
   const words=String(query || '').trim().split(/\s+/).filter(Boolean);
   if(words.length<3)return words.length?[words.join(' ')]:[];
   const candidates=[words.join(' ')];
+  // Small words such as "on" and "in" rarely appear in sound names or tags, so "heels on wood" can find nothing; "heels wood" is tried next.
+  const bare=words.filter(word=>!QUERY_PARTICLES.has(word.toLowerCase()));
+  if(bare.length>=2 && bare.length<words.length)candidates.push(bare.join(' '));
   for(let size=words.length-1;size>=2;size--)
     for(const part of [words.slice(-size),words.slice(0,size)])
       if(!QUERY_PARTICLES.has(part[0].toLowerCase()) && !QUERY_PARTICLES.has(part.at(-1).toLowerCase()))candidates.push(part.join(' '));
