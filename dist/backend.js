@@ -1984,6 +1984,9 @@ function soundQueryFallbacks(query){
   const words=String(query || '').trim().split(/\s+/).filter(Boolean);
   if(words.length<3)return words.length?[words.join(' ')]:[];
   const candidates=[words.join(' ')];
+  // Small words such as "on" and "in" rarely appear in sound names or tags, so "heels on wood" can find nothing; "heels wood" is tried next.
+  const bare=words.filter(word=>!QUERY_PARTICLES.has(word.toLowerCase()));
+  if(bare.length>=2 && bare.length<words.length)candidates.push(bare.join(' '));
   for(let size=words.length-1;size>=2;size--)
     for(const part of [words.slice(-size),words.slice(0,size)])
       if(!QUERY_PARTICLES.has(part[0].toLowerCase()) && !QUERY_PARTICLES.has(part.at(-1).toLowerCase()))candidates.push(part.join(' '));
@@ -3041,6 +3044,19 @@ if (typeof spindle !== 'undefined' && typeof spindle?.registerMacro === 'functio
 // Spindle supplies this global before importing the backend bundle.
 const running = new Map();
 const identity = (user,session,id) => JSON.stringify([user,session || '',id]);
+// Lumiverse closes a page's connection once one message would queue more than 8 MB, and a
+// music track sent whole is often bigger; every reply still on its way is then lost. Large
+// replies are therefore kept here and fetched by the page one part at a time.
+const TRANSFER_PART = 1 << 20;
+const TRANSFER_KEEP_MS = 120000;
+const transfers = new Map();let transferCount = 0;
+function keepTransfer(user, session, text) {
+  const id = String(++transferCount), key = identity(user, session, `transfer:${id}`);
+  const entry = { text, parts: Math.ceil(text.length / TRANSFER_PART), timer: null };
+  const expire = () => { clearTimeout(entry.timer); entry.timer = setTimeout(() => transfers.delete(key), TRANSFER_KEEP_MS); };
+  entry.expire = expire; expire(); transfers.set(key, entry);
+  return { id, parts: entry.parts, length: text.length };
+}
 
 if (typeof spindle !== 'undefined' && spindle?.onFrontendMessage) {
 spindle.onFrontendMessage((message, userId, frontendSessionId) => {
@@ -3051,7 +3067,12 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
   const controller = new AbortController();
   running.set(key,controller);
   const send = payload => {
-    if (!controller.signal.aborted) spindle.sendToFrontend({namespace:'choir',id:message.id,...payload},userId,{frontendSessionId});
+    if (controller.signal.aborted) return;
+    if (payload.result !== undefined && message.action !== 'transferPart') {
+      const text = JSON.stringify(payload.result);
+      if (text !== undefined && text.length > TRANSFER_PART) payload = { result: { choirTransfer: keepTransfer(userId, frontendSessionId, text) } };
+    }
+    spindle.sendToFrontend({namespace:'choir',id:message.id,...payload},userId,{frontendSessionId});
   };
   let lastProgress={stage:'Starting request'};
   const progress=update=>{lastProgress=update;send({progress:update});};
@@ -3072,6 +3093,13 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
       if (info.delivery !== 'off' || (saved?.delivery ?? 'off') !== 'off')
         try { await spindle.userStorage?.setJson(injectFile(input.chatId), info, userId ? { userId } : {}); } catch {}
       send({ result: { interceptor: typeof spindle.registerInterceptor === 'function', macro: typeof spindle.registerMacro === 'function' } }); return;
+    }
+    if (message.action === 'transferPart') {
+      const key = identity(userId, frontendSessionId, `transfer:${input.transfer}`), entry = transfers.get(key), index = input.index;
+      if (!entry) throw new Error('This reply is no longer available. Try again.');
+      if (!Number.isInteger(index) || index < 0 || index >= entry.parts) throw new Error('Invalid reply part.');
+      if (index === entry.parts - 1) { clearTimeout(entry.timer); transfers.delete(key); } else entry.expire();
+      send({ result: { data: entry.text.slice(index * TRANSFER_PART, (index + 1) * TRANSFER_PART) } }); return;
     }
     // Lets the page tell a long request still running from one a backend restart forgot.
     if (message.action === 'alive') {
