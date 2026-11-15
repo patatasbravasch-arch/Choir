@@ -161,7 +161,7 @@ const sounds=[
   {id:2,name:'Bottle pick up',duration:0.8,tags:['bottle','glass','pickup'],previews:{'preview-hq-mp3':'https://freesound.test/pickup.mp3'}},
   {id:3,name:'Bottle clink',duration:0.5,tags:['bottle'],previews:{'preview-hq-mp3':'https://freesound.test/clink.mp3'}}];
 const moment='She reached for the glass bottle on the shelf and lifted it.';
-const search=async url=>{assert.equal(new URL(url).searchParams.get('page_size'),'8');return {status:200,body:JSON.stringify({results:sounds})};};
+const search=async url=>{assert.equal(new URL(url).searchParams.get('page_size'),'15');return {status:200,body:JSON.stringify({results:sounds})};};
 const soundOrder=async h=>JSON.parse(JSON.stringify((await h.result()).message.result.results)).map(sound=>sound.id);
 
 test('a Lumiverse Decision connection picks the Freesound clip heard in the story moment',async()=>{
@@ -1755,4 +1755,21 @@ test('replies over 1 MB go out as parts the page fetches in turn, under Lumivers
   const small=await harness(null,async()=>({status:200,headers:{'content-type':'audio/mpeg'},body:'QUJD'}));
   small.send('freesoundPreview',{url:'https://cdn.freesound.org/previews/1/1-hq.mp3'});
   assert.equal((await small.result()).message.result.base64,'QUJD');
+});
+
+test('ambience searches drop files with music or singing unless the search asks for music; effects keep them',async()=>{
+  const files=[
+    {id:1,name:'Medieval tavern with lute music',tags:['tavern','crowd','lute']},
+    {id:2,name:'Busy tavern crowd',tags:['tavern','crowd','chatter','music-production']},
+    {id:3,name:'Pub ambience, people singing',tags:['pub','singing']},
+    {id:4,name:'Inn chatter loop',tags:['inn','voices','field-recording']},
+  ].map(file=>({...file,duration:40,previews:{'preview-hq-mp3':`https://freesound.test/${file.id}.mp3`}}));
+  const ids=async(query,kind)=>{
+    const h=await harness(null,async()=>({status:200,body:JSON.stringify({results:files})}));
+    h.send('freesound',{apiKey:'test-freesound-key',query,kind,filter:'duration:[10 TO 120]'});
+    return JSON.parse(JSON.stringify((await h.result()).message.result.results)).map(sound=>sound.id);
+  };
+  assert.deepEqual(await ids('tavern crowd','ambience'),[2,4]);
+  assert.deepEqual(await ids('tavern music','ambience'),[1,2,3,4]);
+  assert.deepEqual(await ids('tavern crowd','sfx'),[1,2,3,4]);
 });

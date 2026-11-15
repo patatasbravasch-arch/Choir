@@ -851,6 +851,11 @@ if (typeof spindle !== 'undefined' && typeof spindle?.registerMacro === 'functio
 // Spindle supplies this global before importing the backend bundle.
 const running = new Map();
 const identity = (user,session,id) => JSON.stringify([user,session || '',id]);
+// Freesound ambience often carries a song or a band ("tavern crowd" with a lute playing), which
+// clashes with Choir's own music track. Such files are dropped unless the search asks for music.
+const MUSICAL_SOUND = /\b(?:music(?:al)?|songs?|sing(?:s|ing|er)?|vocals?|melod(?:y|ies|ic)|band|orchestra(?:l)?|choir|instrumental|soundtrack|guitar|piano|violin|cello|lute|harp|flute|accordion|bagpipes?|jazz|tune|radio|dj)\b/i;
+// "music-production" is a common tag on plain sound effects and says nothing about the sound.
+const musicalSound = (sound, query) => !MUSICAL_SOUND.test(query) && MUSICAL_SOUND.test(`${sound.name || ''} ${(sound.tags || []).join(' ')}`.replace(/[_-]+/g, ' ').replace(/\bmusic production\b/gi, ''));
 // Lumiverse closes a page's connection once one message would queue more than 8 MB, and a
 // music track sent whole is often bigger; every reply still on its way is then lost. Large
 // replies are therefore kept here and fetched by the page one part at a time.
@@ -1165,7 +1170,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
       const query = typeof input.query === 'string' ? input.query.trim() : '';
       if (!query) throw new Error('Search query is required.');
       const filter = typeof input.filter === 'string' && input.filter.trim() ? input.filter.trim() : 'duration:[0.1 TO 2.5]';
-      const url = `https://freesound.org/apiv2/search/?query=${encodeURIComponent(query)}&filter=${encodeURIComponent(filter)}&fields=id,name,duration,previews,tags&sort=score&page_size=8`;
+      const url = `https://freesound.org/apiv2/search/?query=${encodeURIComponent(query)}&filter=${encodeURIComponent(filter)}&fields=id,name,duration,previews,tags&sort=score&page_size=15`;
       const resData = await getJson(url, {'Accept':'application/json','Authorization':`Token ${apiKey}`}, controller.signal, 'Freesound');
       const results = (Array.isArray(resData?.results) ? resData.results : []).map(r => ({
         id: r.id,
@@ -1173,11 +1178,11 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
         duration: r.duration,
         previewUrl: r.previews?.['preview-hq-mp3'] || r.previews?.['preview-lq-mp3'] || Object.values(r.previews || {})[0] || null,
         tags: Array.isArray(r.tags) ? r.tags.slice(0, 8) : []
-      })).filter(r => r.previewUrl);
+      })).filter(r => r.previewUrl && !(input.kind === 'ambience' && musicalSound(r, query))).slice(0, 8);
       if (results.length > 1 && typeof input.moment === 'string' && input.moment.trim()) {
         const pick = await chooseSound(results.map(sound => `${sound.name} — tags: ${sound.tags.join(', ')} (${Math.round(sound.duration * 10) / 10}s)`), input, userId, controller.signal,
           { sound: query, moment: input.moment },
-          `The story needs a ${input.kind === 'ambience' ? 'looping background ambience' : 'short sound effect'} for this moment. Wanted sound: "${query}". Story moment: "${input.moment}". Which sound file best matches what is actually heard in the story moment? Reject files whose name or tags describe a different action, setting, or sound source.`);
+          `The story needs a ${input.kind === 'ambience' ? 'looping background ambience' : 'short sound effect'} for this moment. Wanted sound: "${query}". Story moment: "${input.moment}". Which sound file best matches what is actually heard in the story moment? Reject files whose name or tags describe a different action, setting, or sound source${input.kind === 'ambience' ? ', or that contain music or singing' : ''}.`);
         results.unshift(...results.splice(pick, 1));
       }
       send({ result: { query, results } }); return;

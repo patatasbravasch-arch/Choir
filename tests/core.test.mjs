@@ -1294,3 +1294,11 @@ test('silent gestures such as hands in pockets never become sound effects', asyn
   assert.match(prompt,/hands in pockets/);
   assert.match(prompt,/couch creak/);
 });
+
+test('sound prompts keep ambience free of music and ask music to fit the ambience playing with it',async()=>{
+  const {injectionPrompt}=await import('../src/core.js');
+  const prompt=soundCuePrompt([{speaker:'Narrator',text:'Rain hammered the roof.'}],{music:true})[0].content;
+  assert.match(prompt,/A bed is never music, a radio, a band or singing/);
+  assert.match(prompt,/Music plays at the same time as any ambience bed/);
+  assert.match(String(injectionPrompt({ambience:true,sfx:false,cast:[]})),/never music or singing/);
+});

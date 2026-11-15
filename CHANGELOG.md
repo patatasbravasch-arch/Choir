@@ -2,6 +2,10 @@
 
 Release notes for Choir on the `lunch-test` and `staging` branches, newest first. A few lunch-test builds between staging.29 and staging.30 were numbered `1.1.6-lunch-test.N`.
 
+**Ambience without music, music that fits the ambience.**
+- Ambience files from Freesound whose name or tags mention music, singing or instruments are skipped (a "tavern crowd" bed with a lute playing clashed with Choir's own music), unless the search itself asks for music.
+- The sound prompt now says music plays together with the ambience bed and must agree with it, and that a bed is never music.
+
 **Music no longer drops the connection on remote hosts.**
 - Lumiverse closes a page's connection when one message would queue more than 8 MB, and a whole music track was often sent as one 10–30 MB message. On a phone or remote host this lost the music and every sound reply still on its way, and Choir then wrongly reported that its backend had restarted. Replies over 1 MB now go out in parts the page fetches one at a time.
 - Sound searches with small words now also try them without: **heels on wood** is retried as **heels wood**.
