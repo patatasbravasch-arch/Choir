@@ -861,6 +861,13 @@ const musicalSound = (sound, query) => !MUSICAL_SOUND.test(query) && MUSICAL_SOU
 // replies are therefore kept here and fetched by the page one part at a time.
 const TRANSFER_PART = 1 << 20;
 const TRANSFER_KEEP_MS = 120000;
+// A reply sent while the page is reconnecting (a phone screen locking, a network change) is
+// dropped by the host. Final replies are kept for two minutes so the page can ask again.
+const FINISHED_KEEP_MS = 120000, finished = new Map();
+function keepFinished(key, reply) {
+  clearTimeout(finished.get(key)?.timer);
+  finished.set(key, { reply, timer: setTimeout(() => finished.delete(key), FINISHED_KEEP_MS) });
+}
 const transfers = new Map();let transferCount = 0;
 function keepTransfer(user, session, text) {
   const id = String(++transferCount), key = identity(user, session, `transfer:${id}`);
@@ -884,7 +891,9 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
       const text = JSON.stringify(payload.result);
       if (text !== undefined && text.length > TRANSFER_PART) payload = { result: { choirTransfer: keepTransfer(userId, frontendSessionId, text) } };
     }
-    spindle.sendToFrontend({namespace:'choir',id:message.id,...payload},userId,{frontendSessionId});
+    const reply = {namespace:'choir',id:message.id,...payload};
+    if ((payload.result !== undefined || payload.error !== undefined) && !['alive','ping','resend','transferPart'].includes(message.action)) keepFinished(key, reply);
+    spindle.sendToFrontend(reply,userId,{frontendSessionId});
   };
   let lastProgress={stage:'Starting request'};
   const progress=update=>{lastProgress=update;send({progress:update});};
@@ -910,13 +919,19 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
       const key = identity(userId, frontendSessionId, `transfer:${input.transfer}`), entry = transfers.get(key), index = input.index;
       if (!entry) throw new Error('This reply is no longer available. Try again.');
       if (!Number.isInteger(index) || index < 0 || index >= entry.parts) throw new Error('Invalid reply part.');
-      if (index === entry.parts - 1) { clearTimeout(entry.timer); transfers.delete(key); } else entry.expire();
+      entry.expire();
       send({ result: { data: entry.text.slice(index * TRANSFER_PART, (index + 1) * TRANSFER_PART) } }); return;
     }
     // Lets the page tell a long request still running from one a backend restart forgot.
     if (message.action === 'alive') {
       const ids = Array.isArray(input.ids) ? input.ids.filter(id => typeof id === 'string').slice(0, 200) : [];
-      send({ result: { running: ids.filter(id => running.has(identity(userId, frontendSessionId, id))) } }); return;
+      send({ result: { running: ids.filter(id => running.has(identity(userId, frontendSessionId, id))), finished: ids.filter(id => finished.has(identity(userId, frontendSessionId, id))) } }); return;
+    }
+    if (message.action === 'resend') {
+      const ids = Array.isArray(input.ids) ? input.ids.filter(id => typeof id === 'string').slice(0, 200) : [];
+      let resent = 0;
+      for (const id of ids) { const kept = finished.get(identity(userId, frontendSessionId, id)); if (kept) { spindle.sendToFrontend(kept.reply, userId, { frontendSessionId }); resent++; } }
+      send({ result: { resent } }); return;
     }
     if (message.action === 'ping') {
       send({result:{version:'__CHOIR_VERSION__',ready:true,decisionsAvailable:typeof spindle.decisions?.evaluate==='function'}});return;

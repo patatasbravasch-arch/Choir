@@ -1746,11 +1746,12 @@ test('replies over 1 MB go out as parts the page fetches in turn, under Lumivers
   }
   assert.deepEqual({...JSON.parse(text)},{base64:body,mimeType:'audio/mpeg'});
   for(const item of h.sent)assert.ok(JSON.stringify(item.message).length<1.1*1024*1024);
-  // Parts belong to the session that asked, and the reply is gone once fully read.
+  // Parts belong to the session that asked; a part can be read again while the reply is kept.
   h.send('transferPart',{transfer:receipt.id,index:0},'other','user-a','session-b');
-  h.send('transferPart',{transfer:receipt.id,index:0},'again');
+  h.send('transferPart',{transfer:receipt.id,index:3},'again');
   for(const id of ['other','again'])await new Promise(resolve=>{const wait=()=>h.sent.some(item=>item.message.id===id)?resolve():setTimeout(wait,5);wait();});
-  for(const id of ['other','again'])assert.match(h.sent.find(item=>item.message.id===id).message.error,/no longer available/);
+  assert.match(h.sent.find(item=>item.message.id==='other').message.error,/no longer available/);
+  assert.equal(h.sent.find(item=>item.message.id==='again').message.result.data,text.slice(3*1024*1024));
   // Small replies are unchanged.
   const small=await harness(null,async()=>({status:200,headers:{'content-type':'audio/mpeg'},body:'QUJD'}));
   small.send('freesoundPreview',{url:'https://cdn.freesound.org/previews/1/1-hq.mp3'});
@@ -1772,4 +1773,23 @@ test('ambience searches drop files with music or singing unless the search asks 
   assert.deepEqual(await ids('tavern crowd','ambience'),[2,4]);
   assert.deepEqual(await ids('tavern music','ambience'),[1,2,3,4]);
   assert.deepEqual(await ids('tavern crowd','sfx'),[1,2,3,4]);
+});
+
+test('finished replies are kept briefly so a page that missed one can ask for it again',async()=>{
+  const h=await harness(async()=>({content:'D0|Narrator|'}));
+  h.send('plan',{transcript:'"Hello."',config},'plan-1');
+  const first=(await h.result()).message;assert.ok(first.result);
+  await new Promise(resolve=>setTimeout(resolve,0));
+  h.send('alive',{ids:['plan-1','never']},'check');
+  const alive=h.sent.find(item=>item.message.id==='check').message.result;
+  assert.deepEqual([...alive.running],[]);assert.deepEqual([...alive.finished],['plan-1']);
+  const before=h.sent.length;
+  h.send('resend',{ids:['plan-1','never']},'again');
+  const replays=h.sent.slice(before).filter(item=>item.message.id==='plan-1');
+  assert.equal(replays.length,1);assert.deepEqual(JSON.parse(JSON.stringify(replays[0].message)),JSON.parse(JSON.stringify(first)));
+  assert.equal(replays[0].options.frontendSessionId,'session-a');
+  assert.equal(h.sent.find(item=>item.message.id==='again').message.result.resent,1);
+  // Another browser session cannot fetch this session's replies.
+  h.send('resend',{ids:['plan-1']},'spy','user-a','session-b');
+  assert.equal(h.sent.find(item=>item.message.id==='spy').message.result.resent,0);
 });

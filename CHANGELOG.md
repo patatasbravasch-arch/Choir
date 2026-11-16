@@ -2,6 +2,9 @@
 
 Release notes for Choir on the `lunch-test` and `staging` branches, newest first. A few lunch-test builds between staging.29 and staging.30 were numbered `1.1.6-lunch-test.N`.
 
+**Replies survive a brief disconnect.**
+- A reply the backend sends while the page is reconnecting (a phone screen locking, a network change) used to be lost: the request waited for its timeout, or a long one was wrongly reported as a backend restart. The backend now keeps finished replies for two minutes, and the page asks for a missing one again. A lost part of a large reply is fetched once more.
+
 **Ambience without music, music that fits the ambience.**
 - Ambience files from Freesound whose name or tags mention music, singing or instruments are skipped (a "tavern crowd" bed with a lute playing clashed with Choir's own music), unless the search itself asks for music.
 - The sound prompt now says music plays together with the ambience bed and must agree with it, and that a bed is never music.

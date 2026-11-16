@@ -458,7 +458,7 @@ export async function setup(ctx) {
   const drawerNavigation=createDrawerNavigation(root);
   for(const button of root.querySelectorAll('button'))button.type='button';
   const uuid=()=>hostUuid(ctx);
-  const pending = new Map(); const LIVENESS_AFTER_MS=30000,LIVENESS_EVERY_MS=15000,LIVENESS_REPLY_MS=10000;
+  const pending = new Map(); const LIVENESS_SHORTEST_MS=20000,LIVENESS_EVERY_MS=15000,LIVENESS_REPLY_MS=10000;
   let audioNamespace,audioNamespaceError;
   for(let attempt=0;attempt<2;attempt++){
     try{
@@ -1932,7 +1932,8 @@ export async function setup(ctx) {
     if(!transfer || typeof transfer.id!=='string' || !Number.isInteger(transfer.parts) || transfer.parts<1 || transfer.parts>200)return result;
     let text='';
     for(let index=0;index<transfer.parts;index++){
-      const part=await rpcRequest('transferPart',{transfer:transfer.id,index},signal,30000);
+      // A part lost while the page reconnects is asked for once more.
+      const part=await rpcRequest('transferPart',{transfer:transfer.id,index},signal,30000).catch(error=>{if(error?.name==='AbortError')throw error;return rpcRequest('transferPart',{transfer:transfer.id,index},signal,30000);});
       if(typeof part?.data!=='string')throw new Error(`${backendRequestKind(action)} reply arrived incomplete. Try again.`);
       text+=part.data;
     }
@@ -1954,13 +1955,14 @@ export async function setup(ctx) {
       const done=(error,result)=>{clearTimeout(timer);signal?.removeEventListener('abort',cancel);pending.delete(id);unwatch(id);error?reject(error):resolve(result);};
       done.progress=progress=>{lastProgress=progress;onProgress?.(progress);};
       pending.set(id,done); signal?.addEventListener('abort',cancel,{once:true});
-      if(timeoutMs>LIVENESS_AFTER_MS && !livenessUnsupported && !['alive','ping'].includes(action))watchLiveness(id,action);
+      if(timeoutMs>=LIVENESS_SHORTEST_MS && !livenessUnsupported && !['alive','ping','resend','transferPart'].includes(action))watchLiveness(id,action);
       try {ctx.sendToBackend({namespace:'choir',id,action,input});} catch(error){done(error);}
     });
   }
   // A backend restart forgets every running request and nothing ever answers it; without this
-  // check a plan would sit on "Planning" until its 10-minute timeout. Long requests are polled:
-  // an id the backend no longer runs, twice in a row, fails with the restart. Silence counts
+  // check a plan would sit on "Planning" until its 10-minute timeout. Requests of 20 s or more are
+  // polled: an id the backend neither runs nor has finished, twice in a row, fails with the
+  // restart; a finished one whose reply was lost is sent again. Silence counts
   // only once this backend has answered a check, so an older backend without it is never failed.
   const liveness=new Map();let livenessTimer=null,livenessSeen=false,livenessBusy=false,livenessUnsupported=false;
   function watchLiveness(id,action){
@@ -1972,8 +1974,12 @@ export async function setup(ctx) {
     if(livenessBusy)return;livenessBusy=true;
     const ids=[...liveness.keys()];
     try{
-      const {running=[]}=await rpc('alive',{ids},undefined,LIVENESS_REPLY_MS) || {};livenessSeen=true;
-      for(const id of ids){const watch=liveness.get(id);if(!watch)continue;watch.silent=0;watch.strikes=running.includes(id)?0:watch.strikes+1;
+      const {running=[],finished=[]}=await rpc('alive',{ids},undefined,LIVENESS_REPLY_MS) || {};livenessSeen=true;
+      // A request the backend finished but whose reply never arrived (the page was reconnecting)
+      // is sent again rather than reported lost.
+      const unanswered=ids.filter(id=>liveness.has(id) && finished.includes(id));
+      if(unanswered.length)void rpc('resend',{ids:unanswered},undefined,LIVENESS_REPLY_MS).catch(()=>{});
+      for(const id of ids){const watch=liveness.get(id);if(!watch)continue;watch.silent=0;watch.strikes=running.includes(id) || finished.includes(id)?0:watch.strikes+1;
         if(watch.strikes>=2)lose(id,`Choir's backend restarted while this ${backendRequestKind(watch.action)==='Choir'?'Choir':backendRequestKind(watch.action).toLowerCase()} request was running, so its work was lost. Try again.`);}
     }catch(error){
       // "Unknown Choir action" is an older backend: it is alive, it just cannot be checked.
