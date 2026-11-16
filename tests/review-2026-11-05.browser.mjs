@@ -286,3 +286,26 @@ test('the Acting control is visible in the drawer, in the Playback group beside 
     assert.equal(acting.closest('.et-control-group'),h.$('normalizeLoudness').closest('.et-control-group'));
   }finally{await h.close();}
 });
+
+test('a reply lost while the page reconnects is sent again instead of reported as a backend restart',async()=>{
+  const realSet=globalThis.setInterval,realClear=globalThis.clearInterval;let check=null;
+  globalThis.setInterval=(fn,ms,...rest)=>ms===15000?(check=fn,{liveness:true}):realSet(fn,ms,...rest);
+  globalThis.clearInterval=timer=>timer?.liveness?(check=null):realClear(timer);
+  const h=await harness();
+  try{
+    const send=h.ctx.sendToBackend;let lost=null;const resent=[];
+    h.ctx.sendToBackend=request=>{
+      // The backend finishes the plan, but its reply is dropped while the page reconnects.
+      if(['plan','planJev','planWithJev'].includes(request.action) && !lost){lost=request;return;}
+      if(request.action==='alive'){setTimeout(()=>h.emitBackend({namespace:'choir',id:request.id,result:{running:[],finished:request.input.ids.filter(id=>id===lost?.id)}}),0);return;}
+      if(request.action==='resend'){resent.push(...request.input.ids);setTimeout(()=>h.emitBackend({namespace:'choir',id:request.id,result:{resent:1}}),0);send(lost);return;}
+      return send(request);
+    };
+    h.$('latest').click();await until(()=>lost && check);
+    await check();
+    await until(()=>!h.$('latest').disabled);
+    assert.deepEqual(resent,[lost.id]);
+    assert.doesNotMatch(h.$('status').textContent,/restarted|stopped/);
+    assert.match(h.$('status').textContent,/Ready/);
+  }finally{await h.close();globalThis.setInterval=realSet;globalThis.clearInterval=realClear;}
+});
