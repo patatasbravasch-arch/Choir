@@ -4633,3 +4633,20 @@ test('a large backend reply is fetched in parts and still plays, so no single me
   assert.deepEqual(parts,[0,1,2]);assert.equal(await playedFoley(h),1);
  }finally{await h.close();}
 });
+
+test('a group chat whose cards write aliases as text or gather too many still loads its cast',async()=>{
+ const h=await harness();try{
+  let member='levi';h.ctx.getActiveChat=()=>({chatId:h.state.active,characterId:member});
+  h.state.character={name:'Levi Cline',description:JSON.stringify({characters:[{name:'Levi Cline',aliases:'Levi, , Mr. Cline, '+'x'.repeat(140),description:'Levi is tall.'}]})};
+  await h.reload();
+  assert.doesNotMatch(h.$('status').textContent,/aliases/i);
+  // The second member's card names the same person under many more names.
+  member='cole';
+  h.state.character={name:'Levi & Cole',description:JSON.stringify({characters:[{name:'Levi Cline',aliases:Array.from({length:40},(_,index)=>`Levi ${index}`),description:'Levi again.'},{name:'Cole Hart',aliases:'Cole',description:'Cole is short.'}]})};
+  await h.reload();
+  assert.doesNotMatch(h.$('status').textContent,/aliases/i);
+  const cast=h.store.get('chat:chat-a').fixed;
+  assert.ok(cast.every(actor=>(actor.aliases || []).length<=30 && (actor.aliases || []).every(alias=>alias.trim() && alias.length<=100)));
+  assert.ok(cast.some(actor=>actor.speaker==='Levi Cline'));
+ }finally{await h.close();}
+});

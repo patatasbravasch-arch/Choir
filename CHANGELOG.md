@@ -2,6 +2,9 @@
 
 Release notes for Choir on the `lunch-test` and `staging` branches, newest first. A few lunch-test builds between staging.29 and staging.30 were numbered `1.1.6-lunch-test.N`.
 
+**Group chats no longer fail with "Invalid character profile aliases."**
+- A card that writes its aliases as text (`"aliases": "Levi, Mr. Cline"`), or with an empty or overlong name, and a group chat whose cards together give one person more than 30 names, used to stop the cast from loading. Unusable aliases are now dropped, text aliases are split into names, and each person keeps at most 30.
+
 **Replies survive a brief disconnect.**
 - A reply the backend sends while the page is reconnecting (a phone screen locking, a network change) used to be lost: the request waited for its timeout, or a long one was wrongly reported as a backend restart. The backend now keeps finished replies for two minutes, and the page asks for a missing one again. A lost part of a large reply is fetched once more.
 
