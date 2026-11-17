@@ -1320,3 +1320,11 @@ test('unusable card aliases are dropped instead of rejecting the card or the cas
   assert.deepEqual(validateCardRoles([{name:'Mira',aliases:42}])[0].aliases,[]);
   assert.deepEqual(cardAliases(['Bo','bo','BO ',' Bob'],'Bob'),['Bo']);
 });
+
+test('a Name line that goes on with hero names and ages gives the name, and hero names become aliases',()=>{
+  const card={name:'Rook',description:'<setting>\n</setting>\n<rook>\n- Name: Rook Calloway. Hero name: Iron Tide ("Tide"). Age: 27. Pro hero, former academy student with a long list of details that runs well past one hundred characters.\n- Calm under pressure.\n</rook>'};
+  assert.deepEqual(characterCardRoles(card).map(role=>[role.name,[...role.aliases]]),[['Rook',['Rook Calloway','Iron Tide','Tide']]]);
+  // A title or an initial does not end the name.
+  const doctor={name:'Hale',description:'<hale>\n- Name: Dr. Mara J. Hale. Age: 40.\n</hale>'};
+  assert.deepEqual(characterCardRoles(doctor).map(role=>[role.name,[...role.aliases]]),[['Dr. Mara J. Hale',['Mara']]]);
+});
