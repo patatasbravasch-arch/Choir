@@ -1302,3 +1302,21 @@ test('sound prompts keep ambience free of music and ask music to fit the ambienc
   assert.match(prompt,/Music plays at the same time as any ambience bed/);
   assert.match(String(injectionPrompt({ambience:true,sfx:false,cast:[]})),/never music or singing/);
 });
+
+test('unusable card aliases are dropped instead of rejecting the card or the cast',async()=>{
+  const {cardAliases}=await import('../src/core.js');
+  // A JSON card that writes aliases as text, with an empty entry and one far too long.
+  const card={name:'Levi & Cole',description:JSON.stringify({characters:[
+    {name:'Levi Cline',aliases:'Levi, , Mr. Cline',description:'Levi is tall.'},
+    {name:'Cole Hart',aliases:['Cole','x'.repeat(140),'  '],description:'Cole is short.'},
+  ]})};
+  const roles=characterCardRoles(card);
+  assert.deepEqual(roles.map(role=>[role.name,[...role.aliases]]),[['Levi Cline',['Levi','Mr. Cline']],['Cole Hart',['Cole']]]);
+  // Profiles merged under one person can gather more than 30 names.
+  const many=Array.from({length:45},(_,index)=>`Name ${index}`);
+  const merged=validateCardRoles([{name:'Mira',aliases:many}]);
+  assert.equal(merged[0].aliases.length,30);
+  assert.deepEqual(validateCardRoles([{name:'Mira',aliases:'Mi; M | Mira'}])[0].aliases,['Mi','M']);
+  assert.deepEqual(validateCardRoles([{name:'Mira',aliases:42}])[0].aliases,[]);
+  assert.deepEqual(cardAliases(['Bo','bo','BO ',' Bob'],'Bob'),['Bo']);
+});

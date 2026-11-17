@@ -362,6 +362,21 @@ export function characterCardRoleDiscovery(card={}) {
   return {roles:roles.length?validateCardRoles(roles):[],needsAnalysis:needsAnalysis || !roles.length};
 }
 
+// Aliases are optional hints, so a card's unusable ones are dropped rather than rejecting the
+// card: a JSON card may write "aliases": "Bob, Bobby" as text, and merged or heading-derived
+// names may be empty, too long or too many.
+export function cardAliases(value,name='') {
+  const entries=Array.isArray(value)?value:typeof value==='string'?value.split(/[,;|]|\s+\/\s+/u):[];
+  const seen=new Set([normalizeName(name)]),aliases=[];
+  for(const entry of entries){
+    const alias=typeof entry==='string'?entry.trim():'';
+    if(!alias || alias.length>100 || seen.has(normalizeName(alias)))continue;
+    seen.add(normalizeName(alias));aliases.push(alias);
+    if(aliases.length===30)break;
+  }
+  return aliases;
+}
+
 export function validateCardRoles(roles) {
   if(!Array.isArray(roles) || roles.length>20)throw new Error('Card analysis must return at most 20 lead characters.');
   const names=new Set();
@@ -369,8 +384,7 @@ export function validateCardRoles(roles) {
     const name=typeof role?.name==='string'?role.name.trim():'';
     if(!name || name.length>100 || ['narrator','persona','user','{{user}}','{{char}}'].includes(normalizeName(name)) || names.has(normalizeName(name)))throw new Error('Card analysis returned invalid or duplicate character names.');
     names.add(normalizeName(name));
-    if(role.aliases!==undefined && (!Array.isArray(role.aliases) || role.aliases.length>30 || role.aliases.some(alias=>typeof alias!=='string' || !alias.trim() || alias.length>100)))throw new Error('Invalid character profile aliases.');
-    return {name,aliases:(role.aliases || []).map(alias=>alias.trim()).filter(alias=>normalizeName(alias)!==normalizeName(name)),description:String(role.description || '').slice(0,8000)};
+    return {name,aliases:cardAliases(role.aliases,name),description:String(role.description || '').slice(0,8000)};
   });
   // A short name shared by two people is not a usable alias.
   const aliasCounts=new Map();for(const role of result)for(const alias of new Set(role.aliases.map(normalizeName)))aliasCounts.set(alias,(aliasCounts.get(alias) || 0)+1);

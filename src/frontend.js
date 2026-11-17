@@ -1,7 +1,7 @@
 import { characterCardRoleDiscovery, namePronunciation, namePronunciationTarget, namePronunciations, respellNames, mergeSettingsChanges, reconcileCastDuplicates } from './core.js';
 import { createSetupWizard, saveSetupSettings, ONBOARDING_KEY } from './setup.js';
 import { ABYSSAL_THEME_CSS } from './abyssal-theme.js';
-import { hostUuid, sha256Hex, GEMINI_VOICES, OPENAI_VOICES, additionalVoices, apiErrorMessage, MAX_SPEECH_CHARS, MAX_CHANNEL_VOLUME, speechProviderFamily, speechRequestLimits, normalizeName, normalizeVoiceCatalogue, characterCardRoles, validateCardRoles, reconcileCardCast, unisonSpeakers, speechSourceUnits, mixUnisonAudio, speechDownloadWav, transcriptFromMessage, readableText, readAlongIndex, locatePassages, spokenLength, validateCastConfig, validatePlan, npcCastActor, parsePlanJson, speechBatches, groupedSpeechBatches, audioBytes, fastClassifyPlan, resolvePlannerMode, attributionPlan, restoreAttribution, passageKey, mixerVolume, loudnessGain, castExport, castImport, applySoundCues, cueOffset, sfxCueOffset, transcriptLines, withoutLines } from './core.js';
+import { hostUuid, cardAliases, sha256Hex, GEMINI_VOICES, OPENAI_VOICES, additionalVoices, apiErrorMessage, MAX_SPEECH_CHARS, MAX_CHANNEL_VOLUME, speechProviderFamily, speechRequestLimits, normalizeName, normalizeVoiceCatalogue, characterCardRoles, validateCardRoles, reconcileCardCast, unisonSpeakers, speechSourceUnits, mixUnisonAudio, speechDownloadWav, transcriptFromMessage, readableText, readAlongIndex, locatePassages, spokenLength, validateCastConfig, validatePlan, npcCastActor, parsePlanJson, speechBatches, groupedSpeechBatches, audioBytes, fastClassifyPlan, resolvePlannerMode, attributionPlan, restoreAttribution, passageKey, mixerVolume, loudnessGain, castExport, castImport, applySoundCues, cueOffset, sfxCueOffset, transcriptLines, withoutLines } from './core.js';
 import { normalizeSpeedSliderMax, normalizePlaybackRate, normalizeVoiceGap, speakerPlaybackRate, effectivePlaybackRate, browserPlaybackRate, PLAYBACK_RATE_LIMITS, VOICE_GAP_LIMITS } from './core.js';
 import { escapePattern, soundQueryFallbacks, speechLookaheadEnd, backendRequestKind, LIMITED_SPEECH_PEAK, softClipCurve, spaceSoundEffects, readInjectedPlan, injectedCastRows, injectedSoundCues, injectedSkipLines } from './core.js';
 import { createPlayedAudioCapture, playedAudioFilename, createWavArchive } from './played-audio.js';
@@ -3131,7 +3131,8 @@ export async function setup(ctx) {
     const mergeAliases=(actor,role)=>{
       const occupied=new Set(value.fixed.filter(other=>other!==actor).flatMap(other=>[other.speaker,...(other.aliases || [])]).map(normalizeName));
       const names=[...(actor.aliases || []),role.name,...(role.aliases || [])].filter(name=>normalizeName(name)!==normalizeName(actor.speaker) && !occupied.has(normalizeName(name)));
-      const aliases=[...new Map(names.map(name=>[normalizeName(name),name])).values()];
+      // A group chat merges every card's names into one lead; the list keeps to the cast's 30 usable aliases.
+      const aliases=cardAliases(names,actor.speaker);
       if(JSON.stringify(aliases)!==JSON.stringify(actor.aliases || [])){actor.aliases=aliases;renamed=true;}
     };
     if(roles.length){value.cardCastSourceTitle=character.name;value.cardCastSourceId=ctx.getActiveChat().characterId;}
@@ -3153,7 +3154,7 @@ export async function setup(ctx) {
       const template=value.fixed[2],occupied=new Set(value.fixed.filter((_,index)=>index!==2).map(actor=>normalizeName(actor.speaker)));
       const leads=roles.filter(role=>!occupied.has(normalizeName(role.name))).map((role,index)=>{
         const prior=Object.values(value.casts || {}).flat().find(actor=>matchesRole(actor,role));
-        const added={...template,...prior,speaker:role.name,voice:prior?.voice || (index===0?template.voice:''),aliases:[...new Set([...(roles.length===1?template.aliases || []:[]),...(role.aliases || [])])],pronunciation:prior?.pronunciation || (roles.length===1?template.pronunciation:'') || '',sayAs:prior?namePronunciation(prior):roles.length===1?namePronunciation(template):'',sayAsName:prior?prior.sayAsName || '':roles.length===1?template.sayAsName || '':''};
+        const added={...template,...prior,speaker:role.name,voice:prior?.voice || (index===0?template.voice:''),aliases:cardAliases([...(roles.length===1?template.aliases || []:[]),...(role.aliases || [])],role.name),pronunciation:prior?.pronunciation || (roles.length===1?template.pronunciation:'') || '',sayAs:prior?namePronunciation(prior):roles.length===1?namePronunciation(template):'',sayAsName:prior?prior.sayAsName || '':roles.length===1?template.sayAsName || '':''};
         transferChoices(prior,added);if(index===0)transferChoices(template,added);
         return added;
       });
@@ -3225,7 +3226,7 @@ export async function setup(ctx) {
   function personaFallbackCast(cast,name){
     if(!leadPlaceholder(cast.fixed,1))return cast;
     const taken=[...cast.fixed,...(cast.npcs || [])].some(actor=>[actor.speaker,...(actor.aliases || [])].some(alias=>normalizeName(alias)===normalizeName(name)));
-    return taken?cast:{...cast,fixed:cast.fixed.map((actor,index)=>index===1?{...actor,aliases:[...(actor.aliases || []),name]}:actor)};
+    return taken?cast:{...cast,fixed:cast.fixed.map((actor,index)=>index===1?{...actor,aliases:cardAliases([...(actor.aliases || []),name],actor.speaker)}:actor)};
   }
   async function plannerProfiles(cast,signal){
     const characterId=ctx.getActiveChat().characterId;
