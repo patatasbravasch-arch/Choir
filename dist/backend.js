@@ -283,9 +283,15 @@ function characterCardRoleDiscovery(card={}) {
   const clean=value=>value.replace(/[*_`]/g,'').replace(/^character(?:\s+\d+)?\s*:\s*/i,'').replace(/(?:['’]s)?\s+(?:data|profile|details|character sheet)$/i,'').trim().replace(/[\s.,;:!?]+$/u,'');
   const title=String(card.name || '').split(/\s*\|\s*/)[0];
   const titleNames=title.split(/\s+and\s+|\s*[&+]\s*|,\s*/i).map(name=>name.trim()).filter(Boolean);
-  const nameFields=text=>[...text.matchAll(/^\s*(?:[-*]\s*)?(?:\*\*)?(?:Character\s+)?Name(?:\*\*)?\s*:\s*([^\n\r]+)/gim)].map(match=>clean(match[1]));
-  const aliasFields=text=>[...text.matchAll(/(?:^|[.!?][ \t]+)[ \t]*(?:[-*]\s*)?(?:\*\*)?(?:Alias(?:es)?|Also known as|Nicknames?)(?:\*\*)?[ \t]*:[ \t]*([^\n\r]+)/gim)]
-    .flatMap(match=>clean(match[1]).replace(/[.!?]+$/g,'').split(/[,;|]|\s+\/\s+/u)).map(alias=>alias.trim())
+  // "Name: Shoto Todoroki. Hero name: Shoto. Age: 25." holds more than the name: it ends at the
+  // first sentence break, but not after a title such as "Dr." or an initial.
+  // Alias lists separate names with ; and |, so only a full stop, ! or ? ends one there.
+  const firstSentence=(value,list=false)=>value.split(list?/(?<!\b(?:Dr|Mr|Mrs|Ms|Mx|St|Jr|Sr|Prof|Capt|Lt|Sgt|Gen|Col|Mt|[A-Z]))[.!?]\s+/u:/(?<!\b(?:Dr|Mr|Mrs|Ms|Mx|St|Jr|Sr|Prof|Capt|Lt|Sgt|Gen|Col|Mt|[A-Z]))[.;!?]\s+|\s+\|\s+/u)[0];
+  const nameFields=text=>[...text.matchAll(/^\s*(?:[-*]\s*)?(?:\*\*)?(?:Character\s+)?Name(?:\*\*)?\s*:\s*([^\n\r]+)/gim)].map(match=>clean(firstSentence(match[1])));
+  // A name in brackets is its own alias: "Great Explosion Murder God Dynamight ("Dynamight")".
+  const bracketed=alias=>{const inner=alias.match(/\(\s*["“']?([^()"“”']+)["”']?\s*\)/u)?.[1]?.trim(),outer=alias.replace(/\s*\([^()]*\)\s*/gu,' ').trim();return inner?[outer,inner]:[alias];};
+  const aliasFields=text=>[...text.matchAll(/(?:^|[.!?][ \t]+)[ \t]*(?:[-*]\s*)?(?:\*\*)?(?:Alias(?:es)?|Also known as|Nicknames?|(?:Hero|Code|Stage|Pen|Villain)\s+name|Call\s*sign)(?:\*\*)?[ \t]*:[ \t]*([^\n\r]+)/gim)]
+    .flatMap(match=>clean(firstSentence(match[1],true)).replace(/[.!?]+$/g,'').split(/[,;|]|\s+\/\s+/u)).flatMap(alias=>bracketed(alias.trim())).map(alias=>alias.trim())
     .filter(alias=>alias && alias.length<=100 && !/[.!?][ \t]+/.test(alias));
   const profiles=[];let needsAnalysis=false;
   const secondary=value=>/^(?:NPCs?|supporting (?:cast|characters?)|secondary (?:cast|characters?)|side characters?|incidental characters?)$/i.test(String(value || '').trim());
@@ -330,7 +336,7 @@ function characterCardRoleDiscovery(card={}) {
     const fullName=names[0] || heading?.name || sectionTitle,key=normalizeName(fullName);
     if(seenSections.has(key))continue;seenSections.add(key);
     const short=titleNames.find(name=>normalizeName(name)===normalizeName(heading?.name) || new RegExp(`^${escapePattern(name)}(?:\\s|$)`,'i').test(fullName));
-    add(short || fullName,[...(short && normalizeName(short)!==key?[fullName]:[]),...(!short && fullName.includes(' ')?[fullName.split(' ')[0]]:[])],section.text,section.start);
+    add(short || fullName,[...(short && normalizeName(short)!==key?[fullName]:[]),...(!short && fullName.includes(' ')?[fullName.split(' ').find(word=>!/^(?:Dr|Mr|Mrs|Ms|Mx|Prof|Sir|Dame|Lady|Lord|Capt|Lt|Sgt|Gen|Col).?$/i.test(word))].filter(Boolean):[])],section.text,section.start);
     spans.push([section.start,section.start+section.text.length+section.tag.length*2+5]);
   }
   for(const heading of candidates){
